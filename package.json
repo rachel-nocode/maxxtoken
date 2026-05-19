@@ -1,0 +1,76 @@
+{
+  "name": "maxxtoken-menubar",
+  "private": true,
+  "version": "0.1.1",
+  "description": "MaxxToken menu bar app - reverse AI usage tracker that nudges you to use what you pay for",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "release": "electron-builder --publish always"
+  },
+  "build": {
+    "appId": "audio.witch.maxxtoken",
+    "productName": "MaxxToken",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "styles.css",
+      "assets/**/*",
+      "lib/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "assets/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "LSUIElement": true
+      }
+    },
+    "afterPack": "build/after-pack.js",
+    "publish": {
+      "provider": "github",
+      "owner": "rachel-nocode",
+      "repo": "maxxtoken"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "title": "MaxxToken ${version}",
+      "background": "build/dmg-background.png",
+      "icon": "assets/icon.icns",
+      "iconSize": 112,
+      "window": {
+        "width": 660,
+        "height": 420
+      },
+      "contents": [
+        {
+          "x": 170,
+          "y": 255,
+          "type": "file"
+        },
+        {
+          "x": 490,
+          "y": 255,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^42.1.0",
+    "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3"
+  }
+}
