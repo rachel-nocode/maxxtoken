@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MaxxToken</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="popover">
+      <div class="dot-grid" aria-hidden="true"></div>
+
+      <header class="head">
+        <div class="brand">
+          <img class="brand-icon" src="assets/icon.png" alt="" />
+          <span>Maxx<strong>Token</strong></span>
+        </div>
+        <div class="head-right">
+          <span class="cycle-pill" id="cycle-pill">cycle</span>
+          <button class="icon-btn forge-open" id="forge-btn" title="Idea Stream">◆</button>
+          <button class="icon-btn" id="settings-btn" title="Settings">⚙</button>
+        </div>
+      </header>
+
+      <!-- MAIN VIEW -->
+      <div id="view-main">
+        <section class="receipt">
+          <div class="receipt-rows">
+            <div class="receipt-stat">
+              <span class="rs-num green" id="t-captured">$0</span>
+              <span class="rs-label">put to work</span>
+            </div>
+            <div class="receipt-divider-v"></div>
+            <div class="receipt-stat">
+              <span class="rs-num red" id="t-burned">$0</span>
+              <span class="rs-label">left to maxx</span>
+            </div>
+            <div class="receipt-divider-v"></div>
+            <div class="receipt-stat">
+              <span class="rs-num mono" id="t-runway">—</span>
+              <span class="rs-label">time left to maxx</span>
+            </div>
+          </div>
+          <div class="receipt-meter"><span id="t-meter"></span></div>
+          <div class="receipt-foot">
+            <span class="stars" id="t-stars"></span>
+            <span class="verdict" id="t-verdict"></span>
+          </div>
+        </section>
+
+        <main class="list" id="list"></main>
+      </div>
+
+      <!-- FORGE VIEW -->
+      <div id="view-forge" hidden>
+        <div class="settings-head">
+          <button class="back-btn" id="forge-back">‹ Back</button>
+          <span>Idea Stream</span>
+        </div>
+        <div class="forge-target" id="forge-target">Loading…</div>
+        <div class="forge-stage" id="forge-stage"></div>
+        <div class="forge-actions">
+          <button class="forge-skip" id="forge-skip">✕ Skip</button>
+          <button class="forge-more" id="forge-more">More like this</button>
+          <button class="forge-block" id="forge-block">Never this vibe</button>
+          <button class="forge-start" id="forge-start">✦ Start build</button>
+        </div>
+        <div class="forge-note" id="forge-note"></div>
+      </div>
+
+      <!-- SETTINGS VIEW -->
+      <div id="view-settings" hidden>
+        <div class="settings-head">
+          <button class="back-btn" id="back-btn">‹ Back</button>
+          <span>Detected providers</span>
+        </div>
+        <div class="settings-note">Plan values stay automatic. Use the config file only for overrides.</div>
+        <div class="settings-body" id="settings-body"></div>
+        <div class="settings-billing">
+          <label>Open at login
+            <span class="toggle" id="open-at-login" data-settings-toggle></span>
+          </label>
+          <label>Terminal for builds
+            <select id="terminal-pref"></select>
+          </label>
+        </div>
+        <div class="settings-actions">
+          <button class="link-btn" id="open-config">Reveal config file</button>
+          <button class="primary-btn" id="save-config">Save</button>
+        </div>
+      </div>
+
+      <footer class="foot">
+        <span id="foot-left">MaxxToken</span>
+        <button class="ghost-btn" id="close-btn">Done</button>
+      </footer>
+    </div>
+    <script src="renderer.js"></script>
+  </body>
+</html>
