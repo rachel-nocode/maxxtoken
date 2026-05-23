@@ -1,0 +1,217 @@
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
+const { canonicalProviderId } = require('./provider-ids')
+
+const DIR = path.join(os.homedir(), '.maxxtoken')
+const FILE = path.join(DIR, 'config.json')
+const TRAY_METRICS = new Set(['left', 'spent', 'percent', 'target', 'reset', 'tokens'])
+
+// Default subscriptions. Costs are what people typically overspend on.
+const DEFAULT_CONFIG = {
+  billingDay: 1,
+  openAtLogin: true,
+  maxxAlertsEnabled: true,
+  maxxAlertHours: 48,
+  maxxAlertReservePct: 25,
+  sessionQuotaNotificationsEnabled: true,
+  quotaWarningNotificationsEnabled: false,
+  quotaWarningThresholds: [50, 20],
+  quotaWarningSessionThresholds: [50, 20],
+  quotaWarningWeeklyThresholds: [50, 20],
+  quotaWarningSessionEnabled: true,
+  quotaWarningWeeklyEnabled: true,
+  trayMetric: 'left',
+  tokenHistoryDays: 30,
+  onboardingComplete: false,
+  // null = not yet decided, true = on, false = declined.
+  missions: null,
+  providers: {
+    claude: { name: 'Claude', plan: 'Max', monthly: 200, enabled: false },
+    // Codex CLI runs on the OpenAI / ChatGPT Pro subscription.
+    codex: { name: 'ChatGPT', plan: 'Pro', monthly: 200, enabled: false },
+    openai: { name: 'OpenAI API', plan: 'Admin API', monthly: 50, enabled: false },
+    azureopenai: { name: 'Azure OpenAI', plan: 'Deployment', monthly: 20, enabled: false },
+    cursor: { name: 'Cursor', plan: 'Pro', monthly: 20, enabled: false },
+    copilot: { name: 'Copilot', plan: 'Pro', monthly: 10, enabled: false },
+    windsurf: { name: 'Windsurf', plan: 'Pro', monthly: 15, enabled: false },
+    kiro: { name: 'Kiro', plan: 'Free', monthly: 50, enabled: false },
+    opencode: { name: 'OpenCode', plan: 'Pro', monthly: 20, enabled: false },
+    opencodego: { name: 'OpenCode Go', plan: 'Pro', monthly: 20, enabled: false },
+    alibaba: { name: 'Alibaba', plan: 'Coding Plan', monthly: 20, enabled: false },
+    alibabatokenplan: { name: 'Alibaba Token Plan', plan: 'Token Plan', monthly: 20, enabled: false },
+    augment: { name: 'Augment', plan: 'Code', monthly: 30, enabled: false },
+    jetbrains: { name: 'JetBrains AI', plan: 'AI Pro', monthly: 20, enabled: false },
+    warp: { name: 'Warp', plan: 'AI', monthly: 20, enabled: false },
+    elevenlabs: { name: 'ElevenLabs', plan: 'Creator', monthly: 22, enabled: false },
+    kilo: { name: 'Kilo', plan: 'Pass', monthly: 20, enabled: false },
+    kimi: { name: 'Kimi', plan: 'Basic', monthly: 15, enabled: false },
+    moonshot: { name: 'Moonshot / Kimi API', plan: 'API', monthly: 20, enabled: false },
+    kimik2: { name: 'Kimi K2', plan: 'Credits', monthly: 20, enabled: false },
+    doubao: { name: 'Doubao', plan: 'Ark API', monthly: 20, enabled: false },
+    grok: { name: 'Grok', plan: 'Build', monthly: 99, enabled: false },
+    groq: { name: 'Groq', plan: 'API', monthly: 20, enabled: false },
+    gemini: { name: 'Gemini', plan: 'Pro', monthly: 20, enabled: false },
+    openrouter: { name: 'OpenRouter', plan: 'API', monthly: 20, enabled: false },
+    perplexity: { name: 'Perplexity', plan: 'Pro', monthly: 20, enabled: false },
+    mistral: { name: 'Mistral', plan: 'API', monthly: 20, enabled: false },
+    codebuff: { name: 'Codebuff', plan: 'Pro', monthly: 20, enabled: false },
+    commandcode: { name: 'Command Code', plan: 'Pro', monthly: 30, enabled: false },
+    crof: { name: 'Crof', plan: 'API', monthly: 20, enabled: false },
+    venice: { name: 'Venice', plan: 'API', monthly: 20, enabled: false },
+    deepseek: { name: 'DeepSeek', plan: 'API', monthly: 10, enabled: false },
+    deepgram: { name: 'Deepgram', plan: 'API', monthly: 20, enabled: false },
+    stepfun: { name: 'StepFun', plan: 'Step Plan', monthly: 20, enabled: false },
+    llmproxy: { name: 'LLM Proxy', plan: 'Quota Stats', monthly: 20, enabled: false },
+    ollama: { name: 'Ollama', plan: 'Cloud', monthly: 20, enabled: false },
+    abacus: { name: 'Abacus AI', plan: 'Credits', monthly: 20, enabled: false },
+    amp: { name: 'Amp', plan: 'Credits', monthly: 40, enabled: false },
+    factory: { name: 'Droid', plan: 'Factory', monthly: 20, enabled: false },
+    antigravity: { name: 'Antigravity', plan: 'Google AI', monthly: 20, enabled: false },
+    minimax: { name: 'MiniMax', plan: 'Coding Plan', monthly: 20, enabled: false },
+    manus: { name: 'Manus', plan: 'Pro', monthly: 20, enabled: false },
+    vertexai: { name: 'Vertex AI', plan: 'Google Cloud', monthly: 20, enabled: false },
+    synthetic: { name: 'Synthetic', plan: 'API', monthly: 20, enabled: false },
+    mimo: { name: 'Xiaomi MiMo', plan: 'Credits', monthly: 20, enabled: false },
+    bedrock: { name: 'AWS Bedrock', plan: 'Cost Explorer', monthly: 20, enabled: false },
+    zai: { name: 'z.ai', plan: 'API', monthly: 20, enabled: false },
+    t3chat: { name: 'T3 Chat', plan: 'Pro', monthly: 20, enabled: false },
+  },
+}
+
+function loadConfig(file = FILE) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const providers = normalizeProviders(raw.providers)
+    return {
+      billingDay: raw.billingDay || 1,
+      openAtLogin: raw.openAtLogin ?? DEFAULT_CONFIG.openAtLogin,
+      maxxAlertsEnabled: raw.maxxAlertsEnabled ?? DEFAULT_CONFIG.maxxAlertsEnabled,
+      maxxAlertHours: clampNumber(raw.maxxAlertHours, 1, 168, DEFAULT_CONFIG.maxxAlertHours),
+      maxxAlertReservePct: clampNumber(raw.maxxAlertReservePct, 1, 99, DEFAULT_CONFIG.maxxAlertReservePct),
+      sessionQuotaNotificationsEnabled: raw.sessionQuotaNotificationsEnabled ?? DEFAULT_CONFIG.sessionQuotaNotificationsEnabled,
+      quotaWarningNotificationsEnabled: raw.quotaWarningNotificationsEnabled ?? DEFAULT_CONFIG.quotaWarningNotificationsEnabled,
+      quotaWarningThresholds: normalizeQuotaWarningThresholds(raw.quotaWarningThresholds),
+      quotaWarningSessionThresholds: normalizeQuotaWarningThresholds(raw.quotaWarningSessionThresholds || raw.quotaWarningThresholds),
+      quotaWarningWeeklyThresholds: normalizeQuotaWarningThresholds(raw.quotaWarningWeeklyThresholds || raw.quotaWarningThresholds),
+      quotaWarningSessionEnabled: raw.quotaWarningSessionEnabled ?? DEFAULT_CONFIG.quotaWarningSessionEnabled,
+      quotaWarningWeeklyEnabled: raw.quotaWarningWeeklyEnabled ?? DEFAULT_CONFIG.quotaWarningWeeklyEnabled,
+      trayMetric: normalizeTrayMetric(raw.trayMetric),
+      tokenHistoryDays: normalizeTokenHistoryDays(raw.tokenHistoryDays),
+      onboardingComplete: raw.onboardingComplete === true,
+      missions: typeof raw.missions === 'boolean' ? raw.missions : null,
+      providerOrder: normalizeProviderOrder(raw.providerOrder, providers),
+      providers,
+    }
+  } catch {
+    return JSON.parse(JSON.stringify(DEFAULT_CONFIG))
+  }
+}
+
+function normalizeProviderOrder(rawOrder, providers) {
+  const all = Object.keys(providers || {})
+  const seen = new Set()
+  const out = []
+  if (Array.isArray(rawOrder)) {
+    for (const id of rawOrder) {
+      const canonical = canonicalProviderId(id)
+      if (!providers[canonical] || seen.has(canonical)) continue
+      seen.add(canonical)
+      out.push(canonical)
+    }
+  }
+  for (const id of all) if (!seen.has(id)) out.push(id)
+  return out
+}
+
+function normalizeProviders(rawProviders) {
+  const providers = { ...DEFAULT_CONFIG.providers }
+  const entries = Object.entries(rawProviders || {})
+  // Merge aliases first so an explicit canonical id wins if both exist.
+  for (const canonicalOnly of [false, true]) {
+    for (const [id, p] of entries) {
+      const canonical = canonicalProviderId(id)
+      if ((id === canonical) !== canonicalOnly) continue
+      if (!DEFAULT_CONFIG.providers[canonical]) continue
+      providers[canonical] = { ...providers[canonical], ...p }
+    }
+  }
+  for (const [id, provider] of Object.entries(providers)) {
+    providers[id] = normalizeProviderConfig(provider)
+  }
+  return providers
+}
+
+function saveConfig(config, file = FILE) {
+  fs.mkdirSync(DIR, { recursive: true })
+  const providers = normalizeProviders(config.providers)
+  const normalized = {
+    ...config,
+    trayMetric: normalizeTrayMetric(config.trayMetric),
+    tokenHistoryDays: normalizeTokenHistoryDays(config.tokenHistoryDays),
+    quotaWarningThresholds: normalizeQuotaWarningThresholds(config.quotaWarningThresholds),
+    quotaWarningSessionThresholds: normalizeQuotaWarningThresholds(config.quotaWarningSessionThresholds || config.quotaWarningThresholds),
+    quotaWarningWeeklyThresholds: normalizeQuotaWarningThresholds(config.quotaWarningWeeklyThresholds || config.quotaWarningThresholds),
+    providerOrder: normalizeProviderOrder(config.providerOrder, providers),
+    providers,
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(normalized, null, 2))
+  return normalized
+}
+
+// Billing cycle anchored to billingDay of the month.
+function billingCycle(billingDay = 1) {
+  const now = new Date()
+  let start = new Date(now.getFullYear(), now.getMonth(), billingDay)
+  if (start > now) start = new Date(now.getFullYear(), now.getMonth() - 1, billingDay)
+  const end = new Date(start.getFullYear(), start.getMonth() + 1, billingDay)
+  const dayMs = 86400000
+  return {
+    start,
+    end,
+    startMs: start.getTime(),
+    endMs: end.getTime(),
+    daysElapsed: Math.max(1, Math.floor((now - start) / dayMs)),
+    daysLeft: Math.max(0, Math.ceil((end - now) / dayMs)),
+    totalDays: Math.round((end - start) / dayMs),
+    label: start.toLocaleString('en-US', { month: 'short' }) + ' cycle',
+  }
+}
+
+function clampNumber(value, min, max, fallback) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(min, Math.min(max, Math.round(n)))
+}
+
+function normalizeTrayMetric(value) {
+  return TRAY_METRICS.has(value) ? value : DEFAULT_CONFIG.trayMetric
+}
+
+function normalizeTokenHistoryDays(value) {
+  return clampNumber(value, 1, 365, DEFAULT_CONFIG.tokenHistoryDays)
+}
+
+function normalizeQuotaWarningThresholds(raw) {
+  const values = (Array.isArray(raw) ? raw : DEFAULT_CONFIG.quotaWarningThresholds)
+    .map((value) => clampNumber(value, 0, 99, null))
+    .filter((value) => value != null)
+  const unique = [...new Set(values)].sort((a, b) => b - a)
+  return unique.length ? unique : [...DEFAULT_CONFIG.quotaWarningThresholds]
+}
+
+function normalizeProviderConfig(provider) {
+  const next = { ...provider }
+  if (next.alertsEnabled != null) next.alertsEnabled = next.alertsEnabled !== false
+  if (next.alertReservePct != null) next.alertReservePct = clampNumber(next.alertReservePct, 1, 99, DEFAULT_CONFIG.maxxAlertReservePct)
+  return next
+}
+
+module.exports = {
+  loadConfig,
+  saveConfig,
+  billingCycle,
+  FILE,
+  _private: { normalizeProviders, normalizeTrayMetric, normalizeTokenHistoryDays, normalizeQuotaWarningThresholds, normalizeProviderConfig },
+}

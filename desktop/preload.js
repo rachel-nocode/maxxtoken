@@ -1,0 +1,28 @@
+const { contextBridge, ipcRenderer } = require('electron')
+
+contextBridge.exposeInMainWorld('maxx', {
+  getSnapshot: () => ipcRenderer.invoke('get-snapshot'),
+  refreshProvider: (id) => ipcRenderer.invoke('refresh-provider', id),
+  getConfig: () => ipcRenderer.invoke('get-config'),
+  detectProviders: () => ipcRenderer.invoke('detect-providers'),
+  saveConfig: (config) => ipcRenderer.invoke('save-config', config),
+  setMissions: (enabled) => ipcRenderer.invoke('set-missions', enabled),
+  onSnapshot: (cb) => ipcRenderer.on('snapshot', (_e, snap) => cb(snap)),
+  close: () => ipcRenderer.send('close-popover'),
+  openConfigFile: () => ipcRenderer.send('open-config-file'),
+  openDebugLog: () => ipcRenderer.send('open-debug-log'),
+  openSite: () => ipcRenderer.send('open-site'),
+  openProviderLink: (id, kind) => ipcRenderer.invoke('open-provider-link', { id, kind }),
+  forgeIdeas: () => ipcRenderer.invoke('forge-ideas'),
+  forgeFeedback: (payload) => ipcRenderer.invoke('forge-feedback', payload),
+  forgeStart: (idea) => ipcRenderer.invoke('forge-start', idea),
+  forgeCopy: (idea) => ipcRenderer.invoke('forge-copy', idea),
+  getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
+  checkUpdates: () => ipcRenderer.invoke('check-updates'),
+  installUpdate: () => ipcRenderer.invoke('install-update'),
+  onUpdateStatus: (cb) => ipcRenderer.on('update-status', (_e, s) => cb(s)),
+  getApiKeyState: () => ipcRenderer.invoke('get-api-key-state'),
+  setApiKey: (id, key) => ipcRenderer.invoke('set-api-key', { id, key }),
+  startCopilotLogin: () => ipcRenderer.invoke('start-copilot-login'),
+  completeCopilotLogin: (id) => ipcRenderer.invoke('complete-copilot-login', id),
+})

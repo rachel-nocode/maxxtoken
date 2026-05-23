@@ -1,0 +1,53 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Build artifacts
+desktop/dist/
+desktop/node_modules/
+*.dmg
+*.zip
+*.pkg
+
+# Local tooling state — never push these
+.claude/
+.codex/
+.playwright-mcp/
+
+# Local debug output (logger writes to ~/Library/Application Support, but just in case)
+desktop/debug.log
+debug.log
+
+# Ad-hoc screenshots — not source
+maxxtoken-desktop*.png
+maxxtoken-mobile*.png
+maxxtoken-landing*.png
+
+# Private strategy / marketing one-offs (not source)
+MAXXTOKEN-TOKENMAXXING-STRATEGY.html
+TOKENMAXKING-DIFFERENTIATION.html
+claude-design-prompt.html
+maxxtoken-seo-audit-image-prompts.html
+maxxtoken-distribution-launch-strategy.html
+maxxtoken-competitive-teardown.html

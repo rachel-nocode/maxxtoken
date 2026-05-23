@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MaxxToken</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="popover">
+      <div class="dot-grid" aria-hidden="true"></div>
+
+      <header class="head">
+        <div class="brand">
+          <img class="brand-icon" src="assets/icon.png" alt="" />
+          <span>Maxx<strong>Token</strong></span>
+        </div>
+        <div class="head-right">
+          <span class="cycle-pill" id="cycle-pill">cycle</span>
+          <button class="icon-btn forge-open" id="forge-btn" title="Idea Stream" aria-label="Idea Stream">
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><polygon points="7,1.5 12.5,7 7,12.5 1.5,7"/></svg>
+          </button>
+          <button class="icon-btn" id="settings-btn" title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><circle cx="7" cy="7" r="2"/><line x1="7" y1="0.5" x2="7" y2="2.5"/><line x1="7" y1="11.5" x2="7" y2="13.5"/><line x1="0.5" y1="7" x2="2.5" y2="7"/><line x1="11.5" y1="7" x2="13.5" y2="7"/><line x1="2.4" y1="2.4" x2="3.8" y2="3.8"/><line x1="10.2" y1="10.2" x2="11.6" y2="11.6"/><line x1="11.6" y1="2.4" x2="10.2" y2="3.8"/><line x1="3.8" y1="10.2" x2="2.4" y2="11.6"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- MAIN VIEW -->
+      <div id="view-main">
+        <section class="receipt compact" id="receipt">
+          <div class="receipt-head">
+            <div class="mode-switch" role="group" aria-label="Usage view">
+              <button class="mode-btn active" id="mode-usage" aria-label="Show usage" title="Usage">
+                <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">
+                  <line x1="2.5" y1="11.5" x2="2.5" y2="7" />
+                  <line x1="7" y1="11.5" x2="7" y2="2.5" />
+                  <line x1="11.5" y1="11.5" x2="11.5" y2="5" />
+                </svg>
+              </button>
+              <button class="mode-btn" id="mode-tokens" aria-label="Show tokens" title="Tokens">
+                <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">
+                  <line x1="4.5" y1="2" x2="3" y2="12" />
+                  <line x1="10" y1="2" x2="8.5" y2="12" />
+                  <line x1="2" y1="5.5" x2="12" y2="5.5" />
+                  <line x1="2" y1="8.5" x2="12" y2="8.5" />
+                </svg>
+              </button>
+            </div>
+            <button class="receipt-toggle" id="receipt-toggle" aria-label="Expand summary" aria-expanded="false" title="Expand summary">
+              <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">
+                <polyline points="3.5,5.5 7,9 10.5,5.5" />
+              </svg>
+            </button>
+          </div>
+          <div class="receipt-rows">
+            <div class="receipt-stat">
+              <span class="rs-num green" id="t-captured">$0</span>
+              <span class="rs-label" id="t-captured-label">spent value</span>
+            </div>
+            <div class="receipt-divider-v"></div>
+            <div class="receipt-stat">
+              <span class="rs-num red" id="t-burned">$0</span>
+              <span class="rs-label" id="t-burned-label">left to maxx</span>
+            </div>
+            <div class="receipt-divider-v"></div>
+            <div class="receipt-stat">
+              <span class="rs-num mono" id="t-runway">—</span>
+              <span class="rs-label" id="t-runway-label">time left to maxx</span>
+            </div>
+          </div>
+          <div class="receipt-meter" id="receipt-meter"><span id="t-meter"></span></div>
+          <div class="receipt-foot">
+            <span class="stars" id="t-stars"></span>
+            <span class="verdict" id="t-verdict"></span>
+          </div>
+          <div class="maxx-target" id="maxx-target" hidden></div>
+          <div class="trend-strip" id="trend-strip" hidden></div>
+          <div class="history-strip" id="history-strip" hidden></div>
+          <div class="reset-queue" id="reset-queue" hidden></div>
+        </section>
+
+        <main class="list" id="list"></main>
+      </div>
+
+      <!-- ONBOARDING VIEW -->
+      <div id="view-onboarding" hidden>
+        <div class="onboarding-copy">
+          <h1>Pick your stack</h1>
+          <p>Turn on the plans you actually pay for. MaxxToken scans only those sources.</p>
+        </div>
+        <div class="onboarding-list" id="onboarding-list"></div>
+        <div class="settings-actions onboarding-actions">
+          <button class="link-btn" id="onboarding-skip">Skip</button>
+          <button class="primary-btn" id="onboarding-start">Scan usage</button>
+        </div>
+      </div>
+
+      <!-- FORGE VIEW -->
+      <div id="view-forge" hidden>
+        <div class="settings-head">
+          <button class="back-btn" id="forge-back"><svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><polyline points="8.5,3.5 5,7 8.5,10.5"/></svg> Back</button>
+          <span>Idea Stream</span>
+        </div>
+        <div class="forge-target" id="forge-target">Loading…</div>
+        <div class="forge-stage" id="forge-stage"></div>
+        <div class="forge-actions">
+          <button class="forge-skip" id="forge-skip">Skip</button>
+          <button class="forge-more" id="forge-more">More like this</button>
+          <button class="forge-block" id="forge-block">Never this vibe</button>
+          <button class="forge-start" id="forge-start">Start build</button>
+        </div>
+        <div class="forge-note" id="forge-note"></div>
+      </div>
+
+      <!-- MISSIONS CONSENT VIEW -->
+      <div id="view-missions" hidden>
+        <div class="settings-head">
+          <button class="back-btn" id="missions-back"><svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><polyline points="8.5,3.5 5,7 8.5,10.5"/></svg> Back</button>
+          <span>Idea missions</span>
+        </div>
+        <div class="missions-intro">
+          <div class="missions-badge"><svg viewBox="0 0 14 14" width="22" height="22" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><polygon points="7,1.5 12.5,7 7,12.5 1.5,7"/></svg></div>
+          <h2 class="missions-h">Turn unused tokens into builds</h2>
+          <p class="missions-p">
+            Missions are fresh app ideas — routed to the AI plan you're underusing most,
+            so you spend the tokens you already pay for instead of letting them reset.
+          </p>
+          <div class="missions-disclosure">
+            <span class="missions-disc-tag">What this turns on</span>
+            <p>
+              Enabling missions lets MaxxToken use your connected AI CLIs and
+              subscriptions (Claude and others) to generate ideas. That spends your
+              own tokens — that's the whole point of tokenmaxxing. Nothing runs until
+              you open a mission.
+            </p>
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button class="link-btn" id="missions-decline">Not now</button>
+          <button class="primary-btn" id="missions-enable">Enable missions</button>
+        </div>
+      </div>
+
+      <!-- SETTINGS VIEW -->
+      <div id="view-settings" hidden>
+        <div class="settings-head">
+          <button class="back-btn" id="back-btn"><svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><polyline points="8.5,3.5 5,7 8.5,10.5"/></svg> Back</button>
+          <span>Detected providers</span>
+        </div>
+        <div class="settings-note">Plan values stay automatic. Use the config file only for overrides.</div>
+        <div class="settings-body" id="settings-body"></div>
+        <div class="settings-billing">
+          <details class="pref-group">
+            <summary class="pref-summary">
+              <span class="pref-title">Notifications</span>
+              <span class="pref-meta" id="pref-meta-notifications"></span>
+              <svg class="pref-chevron" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><polyline points="3.5,5.5 7,9 10.5,5.5"/></svg>
+            </summary>
+            <div class="pref-rows">
+              <label>Idea missions
+                <span class="toggle" id="missions-toggle" data-settings-toggle></span>
+              </label>
+              <label>Maxx alerts
+                <span class="toggle" id="maxx-alerts-toggle" data-settings-toggle></span>
+              </label>
+              <label>Session restored
+                <span class="toggle" id="session-quota-toggle" data-settings-toggle></span>
+              </label>
+              <label>Quota warnings
+                <span class="toggle" id="quota-warning-toggle" data-settings-toggle></span>
+              </label>
+              <label>Session warning
+                <select id="quota-warning-session">
+                  <option value="50,20">50% + 20% left</option>
+                  <option value="40,15">40% + 15% left</option>
+                  <option value="25,10">25% + 10% left</option>
+                  <option value="20,0">20% + depleted</option>
+                </select>
+              </label>
+              <label>Weekly warning
+                <select id="quota-warning-weekly">
+                  <option value="50,20">50% + 20% left</option>
+                  <option value="40,15">40% + 15% left</option>
+                  <option value="25,10">25% + 10% left</option>
+                  <option value="20,0">20% + depleted</option>
+                </select>
+              </label>
+              <label>Alert window
+                <select id="maxx-alert-hours">
+                  <option value="6">6h before reset</option>
+                  <option value="12">12h before reset</option>
+                  <option value="24">24h before reset</option>
+                  <option value="48">48h before reset</option>
+                  <option value="72">72h before reset</option>
+                </select>
+              </label>
+              <label>Reserve floor
+                <select id="maxx-alert-reserve">
+                  <option value="15">15% unused</option>
+                  <option value="25">25% unused</option>
+                  <option value="40">40% unused</option>
+                  <option value="60">60% unused</option>
+                </select>
+              </label>
+            </div>
+          </details>
+
+          <details class="pref-group">
+            <summary class="pref-summary">
+              <span class="pref-title">App</span>
+              <span class="pref-meta" id="pref-meta-app"></span>
+              <svg class="pref-chevron" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><polyline points="3.5,5.5 7,9 10.5,5.5"/></svg>
+            </summary>
+            <div class="pref-rows">
+              <label>Menu bar
+                <select id="tray-metric">
+                  <option value="left">Value left</option>
+                  <option value="spent">Spent value</option>
+                  <option value="percent">Used percent</option>
+                  <option value="target">Next maxx</option>
+                  <option value="reset">Next reset</option>
+                  <option value="tokens">Tokens</option>
+                </select>
+              </label>
+              <label>Token history
+                <select id="token-history-days">
+                  <option value="1">Today</option>
+                  <option value="7">7 days</option>
+                  <option value="30">30 days</option>
+                  <option value="90">90 days</option>
+                  <option value="365">365 days</option>
+                </select>
+              </label>
+              <label>Open at login
+                <span class="toggle" id="open-at-login" data-settings-toggle></span>
+              </label>
+            </div>
+          </details>
+
+          <details class="pref-group">
+            <summary class="pref-summary">
+              <span class="pref-title">Updates</span>
+              <span class="pref-meta" id="pref-meta-updates">v—</span>
+              <svg class="pref-chevron" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><polyline points="3.5,5.5 7,9 10.5,5.5"/></svg>
+            </summary>
+            <div class="pref-rows">
+              <div class="update-row">
+                <div class="update-info">
+                  <div class="update-label">MaxxToken <span class="update-version" id="update-version">v—</span></div>
+                  <div class="update-sub" id="update-status">checking for updates…</div>
+                </div>
+                <button class="ghost-btn" id="check-updates">Check for updates</button>
+              </div>
+            </div>
+          </details>
+        </div>
+        <div class="settings-actions">
+          <button class="link-btn" id="open-config">Reveal config file</button>
+          <button class="link-btn" id="open-debug-log">Reveal debug log</button>
+          <button class="primary-btn" id="save-config">Save</button>
+        </div>
+      </div>
+
+      <footer class="foot">
+        <span id="foot-left">MaxxToken</span>
+        <button class="ghost-btn" id="close-btn">Done</button>
+      </footer>
+    </div>
+    <script src="renderer.js"></script>
+  </body>
+</html>
