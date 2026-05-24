@@ -15,6 +15,7 @@ try {
 }
 const app = electron && typeof electron === 'object' ? electron.app : null
 const safeStorage = electron && typeof electron === 'object' ? electron.safeStorage : null
+let processOverride = null
 
 function filePath() {
   if (!app || typeof app.getPath !== 'function') return null
@@ -22,14 +23,7 @@ function filePath() {
 }
 
 function loadAll() {
-  const override = process.env.MAXXTOKEN_SECRETS_JSON
-  if (override) {
-    try {
-      return JSON.parse(override) || {}
-    } catch {
-      return {}
-    }
-  }
+  if (processOverride) return processOverride
   try {
     const file = filePath()
     if (!file) return {}
@@ -80,4 +74,8 @@ function allKeys() {
   return loadAll()
 }
 
-module.exports = { getKey, setKey, hasKey, allKeys }
+function setProcessOverride(keys) {
+  processOverride = keys && typeof keys === 'object' ? { ...keys } : null
+}
+
+module.exports = { getKey, setKey, hasKey, allKeys, setProcessOverride }

@@ -211,7 +211,6 @@ function snapshotViaWorker() {
       env: {
         ...process.env,
         MAXXTOKEN_USER_DATA: app.getPath('userData'),
-        MAXXTOKEN_SECRETS_JSON: JSON.stringify(allKeys()),
       },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     })
@@ -247,7 +246,7 @@ function snapshotViaWorker() {
       activeSnapshotWorkers.delete(child)
       if (!settled) finish(new Error(`snapshot worker exited early (${signal || code})`))
     })
-    child.send({ type: 'snapshot', requestId })
+    child.send({ type: 'snapshot', requestId, secrets: allKeys() })
   })
 }
 

@@ -1,5 +1,6 @@
 const logger = require('./logger')
 const { snapshot } = require('./aggregate')
+const { setProcessOverride } = require('./secrets')
 
 if (process.env.MAXXTOKEN_USER_DATA) {
   logger.init(process.env.MAXXTOKEN_USER_DATA)
@@ -8,6 +9,7 @@ if (process.env.MAXXTOKEN_USER_DATA) {
 process.on('message', async (message) => {
   if (!message || message.type !== 'snapshot') return
   try {
+    setProcessOverride(message.secrets)
     logger.info('worker', 'snapshot requested', { requestId: message.requestId })
     const snap = await snapshot()
     safeSend({ type: 'snapshot-result', requestId: message.requestId, ok: true, snap })
