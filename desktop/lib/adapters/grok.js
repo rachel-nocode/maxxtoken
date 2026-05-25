@@ -522,10 +522,11 @@ async function read(cycle, options = {}) {
             sessions++
           }
         } catch {
-          // summary may not exist for very new sessions; fall back to dir mtime
+          // summary may not exist for very new sessions; prefer signal mtime before dir mtime
           try {
-            const dirStat = fs.statSync(sessDir)
-            const m = dirStat.mtimeMs
+            const signalPath = path.join(sessDir, 'signals.json')
+            const stat = fs.existsSync(signalPath) ? fs.statSync(signalPath) : fs.statSync(sessDir)
+            const m = stat.mtimeMs
             if (m >= cycle.startMs) {
               activeDays.add(new Date(m).toDateString())
               if (m > lastActive) lastActive = m
