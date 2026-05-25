@@ -435,7 +435,7 @@ function storagePanel(footprint) {
 function providerStatusInline(status) {
   if (!status) return ''
   const label = status.description || status.label || 'Status unknown'
-  return `<span class="status-pill ${h(status.indicator || 'unknown')}" title="${h(label)}">${h(status.label || 'Status')}</span>`
+  return `<span class="status-pill ${h(status.indicator || 'unknown')}" title="${h(label)}" aria-label="${h(label)}" role="img"></span>`
 }
 
 function providerStatusPanel(status) {
@@ -622,7 +622,7 @@ function providerCard(p) {
           ${providerIcon(p.id, glyph)}
           <span class="prov-id">
             <span class="prov-name">${h(p.name)}</span>
-            <span class="prov-sub">${h(p.plan)} · ${money(p.monthly)}/mo</span>
+            <span class="prov-sub">${h(p.plan)}</span>
           </span>
           ${refreshButton}
         </div>
@@ -655,32 +655,11 @@ function providerCard(p) {
     .join('')
   const meterKind = p.windows?.some((w) => quotaWarningKind(w) === 'weekly') ? 'weekly' : 'session'
   const meter = meterWithMarkers(usedPct || 0, usageTone(usedPct || 0), meterKind)
-  const usedMoney = moneyMaybeExact(p.spentValue ?? p.capturedValue)
-  const leftMoney = moneyMaybeExact(p.leftValue ?? p.burnValue)
   const tokenUsage = p.tokenUsage || null
   const showTokens = viewMode === 'tokens'
   const hasTokenSource = tokenUsage && Number.isFinite(Number(tokenUsage.total))
   const usageLabel = showTokens ? 'tokens' : p.usageLabel || 'used'
   const pctDisplay = showTokens ? (hasTokenSource ? tokens(tokenUsage.total) : '—') : pct
-  const valuePrefix = p.valueAccuracy === 'estimate' ? 'est. ' : ''
-  const sourceLabel = p.sourceLabel || tokenUsage?.source || ''
-  const sourceInline = sourceLabel ? `<span class="source-pill" title="Source">${h(sourceLabel)}</span>` : ''
-  const costLine = hasTokenSource && Number.isFinite(Number(tokenUsage.costUSD))
-    ? `<span><b>${moneyMaybeExact(Number(tokenUsage.costUSD))}</b> est. cost${tokenUsage.pricingSource ? ` · ${h(tokenUsage.pricingSource)}` : ''}</span>`
-    : ''
-  const summary = showTokens
-    ? hasTokenSource
-      ? `
-        <span><b>${tokens(tokenUsage.input)}</b> input</span>
-        <span><b>${tokens(tokenUsage.cached)}</b> cached</span>
-        <span class="prov-money"><b>${tokens(tokenUsage.output)}</b> output</span>
-        ${costLine}
-        ${sourceInline}`
-      : `<span class="token-missing">No token source yet</span>`
-    : `
-        <span><b>${usedMoney}</b> ${valuePrefix}spent</span>
-        <span class="prov-money"><b>${leftMoney}</b> left to maxx</span>
-        ${sourceInline}`
   const expandLabel = expanded ? 'Collapse details' : 'Show details'
   const expandedTokenDetails = expanded && showTokens && hasTokenSource ? tokenDetails(tokenUsage) : ''
 
@@ -692,7 +671,7 @@ function providerCard(p) {
           <span class="prov-name">${h(p.name)}</span>
           <span class="prov-sub">
             <span class="activity-dot ${p.activity}"></span>
-            ${h(p.plan)} · ${money(p.monthly)}/mo
+            <span class="prov-plan">${h(p.plan)}</span>
             ${providerStatusInline(p.status)}
           </span>
         </span>
@@ -706,9 +685,6 @@ function providerCard(p) {
         </button>
       </div>
       ${showTokens ? '' : meter}
-      <div class="prov-summary">
-        ${summary}
-      </div>
       ${body}
     </div>`
 }
@@ -725,10 +701,10 @@ function render() {
   $('receipt-meter').hidden = showTokens || receiptCollapsed
   $('t-captured').textContent = showTokens ? tokens(tokenTotals.total) : money(t.spent ?? t.captured)
   $('t-burned').textContent = showTokens ? tokens(tokenTotals.input) : money(t.left ?? t.remaining ?? t.burned)
-  $('t-runway').textContent = showTokens ? tokens(tokenTotals.output) : receiptCollapsed ? `${Math.round(t.capturedPct || 0)}%` : fmtRunway(combinedRunwayMs())
+  $('t-runway').textContent = showTokens ? tokens(tokenTotals.output) : receiptCollapsed ? `${Math.round(t.capturedPct || 0)}%` : summaryResetText()
   $('t-captured-label').textContent = showTokens ? 'total tokens' : 'spent value'
   $('t-burned-label').textContent = showTokens ? 'input tokens' : 'left to maxx'
-  $('t-runway-label').textContent = showTokens ? 'output tokens' : receiptCollapsed ? 'used' : 'time left to maxx'
+  $('t-runway-label').textContent = showTokens ? 'output tokens' : receiptCollapsed ? 'used' : 'target reset'
   $('t-meter').style.width = (t.capturedPct || 0) + '%'
   $('t-meter').className = usageTone(t.capturedPct || 0)
   $('t-stars').innerHTML = starRow(snap.rating.stars)
@@ -737,7 +713,12 @@ function render() {
   renderTrendStrip(showTokens)
   renderHistoryStrip(showTokens)
   renderResetQueue(showTokens)
+  renderOutputSignal(showTokens)
   const footEl = $('foot-left')
+  if (!footEl) {
+    $('list').innerHTML = snap.providers.map(providerCard).join('')
+    return
+  }
   if (showTokens) {
     if (tokenTotals.providerCount) {
       const cost = Number(tokenTotals.costUSD)
@@ -756,7 +737,32 @@ function render() {
       <span class="foot-chip"><span class="fc-l">Plans</span><span class="fc-v mono">${planVal}</span></span>`
   }
   $('list').innerHTML = snap.providers.map(providerCard).join('')
-  if (!showTokens) renderRunway()
+}
+
+function renderOutputSignal() {
+  const el = $('output-signal')
+  if (!el || !snap) return
+  const mainVisible = !$('view-main')?.hidden
+  el.hidden = !mainVisible
+  if (!mainVisible) return
+  const target = snap.maxxTarget
+  const left = Number(target?.valueLeft)
+  const reset = target?.resetAt ? fmtRunway(Math.max(0, Number(target.resetAt) - Date.now())) : null
+  const details = target
+    ? [
+        Number.isFinite(left) ? `${money(left)} left` : null,
+        reset ? `resets in ${reset}` : null,
+      ].filter(Boolean).join(' · ')
+    : 'Find the best model to spend before reset.'
+  el.innerHTML = `
+    <div class="signal-copy">
+      <span class="signal-kicker">Next maxx</span>
+      <b>${target ? `Use ${h(target.name)} before reset` : 'Start a Goal Burn'}</b>
+      <span>${h(details)}</span>
+    </div>
+    <button class="signal-action build-action" id="output-signal-action" data-open-goal-burn style="--build-progress:${target ? Math.max(24, Math.min(100, Math.round(Number(target.reservePct) || 42))) : 42}%">
+      <span>${ICON_SHARE} Start Goal Burn</span>
+    </button>`
 }
 
 function applyReceiptCollapsed() {
@@ -919,13 +925,12 @@ function renderResetQueue(showTokens) {
   }
   const rows = queue
     .map((item) => {
-      const value = item.valueLeft > 0 ? ` · ${moneyMaybeExact(item.valueLeft)} at risk` : ''
       const risk = item.historyRiskPct ? ` · ${Math.round(item.historyRiskPct)}% miss` : ''
       const label = `${item.providerName} ${item.windowLabel || ''}`.trim()
       return `
         <div class="reset-item ${item.urgent ? 'urgent' : ''}">
           <span class="reset-item-name">${h(label)}</span>
-          <span class="reset-item-meta">${Math.round(item.reservePct || 0)}% left${risk}${value}</span>
+          <span class="reset-item-meta">${Math.round(item.reservePct || 0)}% left${risk}</span>
           <span class="reset-item-time mono" data-reset="${item.resetAt || ''}">${countdown(item.resetAt)}</span>
         </div>`
     })
@@ -937,23 +942,6 @@ function renderResetQueue(showTokens) {
       <b>${queue.length}</b>
     </div>
     ${rows}`
-}
-
-// Combined runway = sum of each connected provider's soonest window reset.
-// That is the total time banked across the whole stack before value burns.
-function combinedRunwayMs() {
-  if (!snap) return 0
-  let total = 0
-  for (const p of snap.providers) {
-    if (!p.connected) continue
-    let soonest = Infinity
-    for (const w of p.windows || []) {
-      if (w.resetAt) soonest = Math.min(soonest, w.resetAt - Date.now())
-    }
-    if (soonest === Infinity && p.resetAt) soonest = p.resetAt - Date.now()
-    if (Number.isFinite(soonest) && soonest > 0) total += soonest
-  }
-  return total
 }
 
 function fmtRunway(ms) {
@@ -969,10 +957,24 @@ function fmtRunway(ms) {
   return `${m}m`
 }
 
-function renderRunway() {
+function summaryResetAt() {
+  const targetReset = Number(snap?.maxxTarget?.resetAt)
+  if (Number.isFinite(targetReset) && targetReset > Date.now()) return targetReset
+  const queueReset = Number(snap?.totals?.resetQueue?.[0]?.resetAt)
+  if (Number.isFinite(queueReset) && queueReset > Date.now()) return queueReset
+  return null
+}
+
+function summaryResetText() {
+  const resetAt = summaryResetAt()
+  return resetAt ? fmtRunway(Math.max(0, resetAt - Date.now())) : '—'
+}
+
+function renderSummaryReset() {
   if (viewMode === 'tokens') return
+  if (receiptCollapsed) return
   const el = document.getElementById('t-runway')
-  if (el) el.textContent = fmtRunway(combinedRunwayMs())
+  if (el) el.textContent = summaryResetText()
 }
 
 function renderMaxxTarget(showTokens) {
@@ -990,12 +992,11 @@ function renderMaxxTarget(showTokens) {
     : target.historyNote
       ? ` · ${h(target.historyNote.toLowerCase())}`
       : ''
-  const value = target.valueLeft ? ` · ${money(target.valueLeft)} left` : ''
   el.hidden = false
   el.innerHTML = `
     <span class="target-kicker">Next maxx</span>
     <b>${h(target.name)}</b>
-    <span>${h(target.reason)}${history}${value}${reset}</span>
+    <span>${h(target.reason)}${history}${reset}</span>
     <button class="maxx-target-action" id="maxx-target-action" title="Open Idea Stream" aria-label="Open Idea Stream">${ICON_DIAMOND_FILLED}</button>`
 }
 
@@ -1004,7 +1005,7 @@ function tickCountdowns() {
     const r = Number(el.dataset.reset)
     if (r) el.textContent = countdown(r)
   })
-  renderRunway()
+  renderSummaryReset()
 }
 
 /* ---------- icons ---------- */
@@ -1027,6 +1028,10 @@ const ICON_CHART = `<svg ${ICON_ATTRS}><line x1="2.5" y1="11.5" x2="2.5" y2="7"/
 const ICON_CREDIT_CARD = `<svg ${ICON_ATTRS}><rect x="2" y="3.5" width="10" height="7" rx="0"/><line x1="2" y1="5.5" x2="12" y2="5.5"/><line x1="3.5" y1="8.5" x2="5.5" y2="8.5"/></svg>`
 const ICON_HEARTBEAT = `<svg ${ICON_ATTRS}><polyline points="1,7 3.5,7 5,3 7,11 8.5,7 13,7"/></svg>`
 const ICON_CLOSE = `<svg ${ICON_ATTRS}><line x1="3.5" y1="3.5" x2="10.5" y2="10.5"/><line x1="10.5" y1="3.5" x2="3.5" y2="10.5"/></svg>`
+const ICON_CLOCK = `<svg ${ICON_ATTRS}><circle cx="7" cy="7" r="4.5"/><polyline points="7,4.5 7,7.2 9,8.5"/></svg>`
+const ICON_DIAL = `<svg ${ICON_ATTRS}><circle cx="7" cy="7" r="4.5"/><path d="M7 7 L10 5"/><path d="M3.5 9.5 A4.5 4.5 0 0 1 10.5 9.5"/></svg>`
+const ICON_STACK = `<svg ${ICON_ATTRS}><path d="M2.5 4.5 L7 2.5 L11.5 4.5 L7 6.5 Z"/><path d="M2.5 7 L7 9 L11.5 7"/><path d="M2.5 9.5 L7 11.5 L11.5 9.5"/></svg>`
+const ICON_SHARE = `<svg ${ICON_ATTRS}><circle cx="4" cy="7" r="1.6"/><circle cx="10.5" cy="3.8" r="1.6"/><circle cx="10.5" cy="10.2" r="1.6"/><line x1="5.5" y1="6.2" x2="9" y2="4.5"/><line x1="5.5" y1="7.8" x2="9" y2="9.5"/></svg>`
 
 /* ---------- settings ---------- */
 let config = null
@@ -1053,10 +1058,8 @@ function settingsRow(id, p) {
   const detected = snap?.providers?.find((provider) => provider.id === id)
   const connected = !!detected?.connected
   const plan = detected?.plan || p.plan
-  const monthly = Number(detected?.monthly ?? p.monthly) || 0
   const isKey = KEY_PROVIDERS.has(id)
   const hasKey = !!apiKeyState[id]
-  const price = monthly > 0 ? `${money(monthly)}/mo cap` : 'not counted'
   let state
   if (connected) state = 'detected'
   else if (isKey && !hasKey)
@@ -1098,7 +1101,6 @@ function settingsRow(id, p) {
           <div class="sp">${h(plan)} · ${state}</div>
         </span>
         ${alertReserveSelect(id, p)}
-        <span class="price-chip">${h(price)}</span>
         <span class="toggle ${p.enabled ? 'on' : ''}" data-toggle></span>
       </div>
       ${keyRow}
@@ -1109,7 +1111,7 @@ function onboardingRow(id, p) {
   const accent = ACCENT[id] || '#8b8f84'
   const glyph = GLYPH[id] || p.name[0]
   const detection = providerDetections[id]
-  const detail = detection?.detected ? `detected · ${detection.reason || 'local evidence'}` : `${p.plan} · ${money(p.monthly)}/mo`
+  const detail = detection?.detected ? `detected · ${detection.reason || 'local evidence'}` : p.plan
   return `
     <div class="sub-row" data-id="${h(id)}" style="--accent:${accent}">
       <div class="sub-row-main">
@@ -1348,9 +1350,19 @@ function showView(id) {
   for (const v of ['view-main', 'view-onboarding', 'view-forge', 'view-missions', 'view-settings']) {
     $(v).hidden = v !== id
   }
+  if ($('output-signal')) $('output-signal').hidden = id !== 'view-main'
 }
-const showMain = () => showView('view-main')
-const showSettings = () => showView('view-settings')
+function setPopoverMode(mode) {
+  if (window.maxx?.setPopoverMode) window.maxx.setPopoverMode(mode).catch(() => {})
+}
+const showMain = () => {
+  setPopoverMode('full')
+  showView('view-main')
+}
+const showSettings = () => {
+  setPopoverMode('full')
+  showView('view-settings')
+}
 
 /* ---------- Idea Stream ---------- */
 // CLIs that accept the mission prompt as an argument → "Start build" auto-runs.
@@ -1358,14 +1370,43 @@ const showSettings = () => showView('view-settings')
 const PROMPT_CLI = new Set(['claude', 'codex', 'gemini'])
 let forgeIdeas = []
 let forgeIndex = 0
+let missionContext = { models: [], history: [] }
+let missionFolder = ''
+let burnIdeas = []
+let burnTarget = null
+
+function setMissionLoading(id, loading) {
+  const el = $(id)
+  if (!el) return
+  el.classList.toggle('loading', loading)
+  el.disabled = !!loading
+}
+
+function renderMissionHubInfo() {
+  const info = {
+    project: [
+      { icon: ICON_DIAL, label: 'multi-model', title: 'Routes work across selected models' },
+      { icon: ICON_CLOCK, label: '2 min setup', title: 'Expected setup time' },
+      { icon: ICON_STACK, label: 'goal file + terminal', title: 'Mission output' },
+    ],
+    burn: [
+      { icon: ICON_DIAL, label: 'live signals', title: 'Uses current usage and idea signals' },
+      { icon: ICON_CLOCK, label: 'few sec load', title: 'Fetches ranked ideas before opening' },
+      { icon: ICON_STACK, label: 'ranked build cards', title: 'Mission output' },
+    ],
+  }
+  document.querySelectorAll('[data-mission-info]').forEach((el) => {
+    const items = info[el.dataset.missionInfo] || []
+    el.innerHTML = items
+      .map((item) => `<i title="${h(item.title)}">${item.icon}<span>${h(item.label)}</span></i>`)
+      .join('')
+  })
+}
 
 function ideaCard(idea) {
   if (!idea) {
     return `<div class="forge-empty">No more ideas. Tap Skip to pull a stranger batch.</div>`
   }
-  const dots = Array.from({ length: 3 }, (_, i) =>
-    `<span class="${i < idea.complexity ? 'on' : 'off'}">●</span>`,
-  ).join('')
   const source = idea.source === 'bank' ? 'IDEA BANK' : h(idea.source || 'Claude').toUpperCase()
   const tags = Array.isArray(idea.tags) ? idea.tags : []
   const tagHtml = tags.length
@@ -1385,14 +1426,33 @@ function ideaCard(idea) {
       ${idea.viralHook ? `<div class="idea-hook"><b>Share hook —</b> ${h(idea.viralHook)}</div>` : ''}
       ${idea.killMetric ? `<div class="idea-hook kill"><b>Kill metric —</b> ${h(idea.killMetric)}</div>` : ''}
       <div class="idea-meta">
-        <span class="idea-chip">Complexity <span class="dots">${dots}</span></span>
-        <span class="idea-chip">Build <b>~${h(idea.buildMinutes)}m</b></span>
-        ${idea.stack ? `<span class="idea-chip">${h(idea.stack)}</span>` : ''}
+        ${missionMetricChips(idea)}
       </div>
       <div class="idea-cli">
         Builds with <code>${h(idea.cli)}</code> — start tiny, compound hard.
       </div>
     </div>`
+}
+
+function complexityDots(value) {
+  const score = Math.min(3, Math.max(1, Number(value) || 2))
+  return Array.from({ length: 3 }, (_, i) => `<span class="${i < score ? 'on' : 'off'}"></span>`).join('')
+}
+
+function missionProgress(idea) {
+  const complexity = Math.min(3, Math.max(1, Number(idea?.complexity) || 2))
+  const minutes = Math.min(180, Math.max(30, Number(idea?.buildMinutes) || 90))
+  return Math.max(24, Math.min(100, Math.round((complexity / 3) * 45 + (minutes / 180) * 55)))
+}
+
+function missionMetricChips(idea) {
+  const minutes = Number(idea?.buildMinutes) || 90
+  const stack = String(idea?.stack || '').trim()
+  return [
+    `<span class="idea-chip metric-chip" title="Complexity">${ICON_DIAL}<span class="dots">${complexityDots(idea?.complexity)}</span></span>`,
+    `<span class="idea-chip metric-chip" title="Build time">${ICON_CLOCK}<b>~${h(minutes)}m</b></span>`,
+    stack ? `<span class="idea-chip metric-chip stack-chip" title="Stack">${ICON_STACK}<span>${h(stack)}</span></span>` : '',
+  ].filter(Boolean).join('')
 }
 
 function renderIdea() {
@@ -1403,12 +1463,14 @@ function renderIdea() {
   $('forge-more').disabled = !has
   $('forge-block').disabled = !has
   const startBtn = $('forge-start')
+  startBtn.classList.add('build-action')
+  startBtn.style.setProperty('--build-progress', has ? `${missionProgress(idea)}%` : '0%')
   if (has && !PROMPT_CLI.has(idea.cli)) {
-    startBtn.textContent = 'Copy prompt'
+    startBtn.innerHTML = `<span>${ICON_SHARE} Copy prompt</span>`
     startBtn.dataset.mode = 'copy'
     startBtn.title = `${idea.cli} can't take a prompt directly — copy it and paste it in`
   } else {
-    startBtn.textContent = 'Start build'
+    startBtn.innerHTML = `<span>${ICON_SHARE} Start build</span>`
     startBtn.dataset.mode = 'start'
     startBtn.title = ''
   }
@@ -1446,30 +1508,315 @@ async function loadForge() {
 }
 
 async function startForge() {
+  setPopoverMode('full')
   showView('view-forge')
   await loadForge()
 }
 
-// Missions are opt-in — gate the Idea Stream behind a one-time consent screen.
+function renderMissionModels() {
+  const models = Array.isArray(missionContext.models) ? missionContext.models : []
+  $('mission-model-list').innerHTML = models.length
+    ? models
+        .map((m, i) => {
+          const used = m.usedPct == null ? 'usage unknown' : `${m.usedPct}% used`
+          const prompt = m.supportsPrompt ? 'auto-start' : 'copy prompt'
+          return `
+            <label class="mission-model">
+              <input type="checkbox" data-mission-model="${h(m.id)}" ${m.selected ? 'checked' : ''}>
+              <span>
+                <b>${i + 1}. ${h(m.name)}</b>
+                <small>${h(m.plan || m.cli)} · ${h(used)} · ${h(prompt)}</small>
+              </span>
+            </label>`
+        })
+        .join('')
+    : `<div class="forge-empty">Connect a CLI-backed provider first.</div>`
+}
+
+function renderMissionHistory() {
+  const rows = Array.isArray(missionContext.history) ? missionContext.history.slice(0, 6) : []
+  const el = $('mission-history')
+  el.hidden = !rows.length
+  el.innerHTML = rows.length
+    ? `
+      <div class="mission-history-head">Recent missions</div>
+      ${rows
+        .map((m) => {
+          const dir = String(m.dir || '').split('/').filter(Boolean).pop() || 'project'
+          const date = m.createdAt ? new Date(m.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
+          const model = m.cli ? `Sent to ${m.cli}` : 'Goal copied'
+          const width = m.status === 'failed' ? 12 : 34
+          return `
+            <div class="mission-history-item">
+              <div class="mission-history-top">
+                <b>${h(m.title || 'Project Mission')}</b>
+                <span>${h(date)}</span>
+              </div>
+              <div class="mission-history-meta">${h(dir)} · ${h(model)}</div>
+              <div class="mission-progress"><span style="width:${width}%"></span></div>
+            </div>`
+        })
+        .join('')}`
+    : ''
+}
+
+function renderBurnIdeas() {
+  const target = burnTarget || {}
+  const targetBits = [
+    target.name ? `Use ${target.name}` : 'Use your fullest model',
+    target.usedPct == null ? null : `${target.usedPct}% used`,
+    Number.isFinite(Number(target.leftValue)) ? `${money(target.leftValue)} left` : null,
+  ].filter(Boolean)
+  $('burn-target').innerHTML = targetBits.length
+    ? `${h(targetBits.join(' · '))}`
+    : 'Finding the model with the most left…'
+  $('burn-list').innerHTML = burnIdeas.length
+    ? burnIdeas
+        .slice(0, 3)
+        .map((idea, i) => {
+          const canStart = PROMPT_CLI.has(idea.cli)
+          const action = canStart ? 'Start build' : 'Copy prompt'
+          const reason = idea.rankReason || idea.signal || idea.whyNow || ''
+          const progress = missionProgress(idea)
+          return `
+            <div class="burn-card">
+              <div class="burn-card-top">
+                <span>#${i + 1}</span>
+                <b>${h(idea.title)}</b>
+              </div>
+              <p>${h(idea.pitch)}</p>
+              ${idea.signal ? `<div class="burn-signal">${h(idea.signal)}</div>` : ''}
+              ${reason ? `<div class="burn-reason">${h(reason)}</div>` : ''}
+              <div class="burn-card-foot">
+                <div class="burn-metrics">${missionMetricChips(idea)}</div>
+                <button class="${canStart ? 'forge-start' : 'forge-more'} build-action" style="--build-progress:${progress}%" data-burn-action="${canStart ? 'start' : 'copy'}" data-burn-index="${i}">
+                  <span>${ICON_SHARE} ${action}</span>
+                </button>
+              </div>
+            </div>`
+        })
+        .join('')
+    : burnTarget
+      ? `<div class="forge-empty">No burn ideas found.</div>`
+      : `<div class="mission-loading"><span></span><b>Loading goal burn ideas…</b></div>`
+}
+
+async function loadBurnChallenges() {
+  burnIdeas = []
+  burnTarget = null
+  $('burn-note').textContent = 'Checking Google Trends, Hacker News, and GitHub…'
+  $('burn-list').innerHTML = `<div class="mission-loading"><span></span><b>Loading goal burn ideas…</b></div>`
+  renderBurnIdeas()
+  const res = await window.maxx.burnIdeas()
+  burnIdeas = Array.isArray(res.ideas) ? res.ideas : []
+  burnTarget = res.target || null
+  $('burn-note').textContent = burnIdeas.length ? 'Pick one to spend that model.' : 'No burn ideas found.'
+  renderBurnIdeas()
+}
+
+async function loadMissionContext() {
+  missionContext = await window.maxx.missionContext()
+  renderMissionModels()
+  renderMissionHistory()
+}
+
+function renderMissions() {
+  const enabled = config && config.missions === true
+  $('missions-consent').hidden = enabled
+  $('missions-hub').hidden = !enabled
+  const actions = document.querySelector('#view-missions .settings-actions')
+  if (actions) actions.hidden = enabled
+  if (enabled) {
+    setPopoverMode('compact')
+    renderMissionHubInfo()
+    $('mission-options').hidden = false
+    $('mission-project-form').hidden = true
+    $('mission-burn-panel').hidden = true
+    $('mission-history').hidden = false
+    $('mission-note').textContent = ''
+    $('missions-hub-note').textContent = ''
+    renderMissionHistory()
+    loadMissionContext().catch(() => {
+      $('mission-model-list').innerHTML = `<div class="forge-empty">Could not load models.</div>`
+    })
+  }
+}
+
+function selectedMissionModels() {
+  return Array.from(document.querySelectorAll('[data-mission-model]:checked')).map((el) => el.dataset.missionModel)
+}
+
+function missionPayload() {
+  return {
+    dir: missionFolder,
+    goal: $('mission-goal').value,
+    models: selectedMissionModels(),
+  }
+}
+
+function showProjectMission() {
+  setPopoverMode('full')
+  $('mission-options').hidden = true
+  $('mission-project-form').hidden = false
+  $('mission-burn-panel').hidden = true
+  $('mission-history').hidden = true
+  $('mission-note').textContent = ''
+  $('missions-hub-note').textContent = ''
+}
+
+function missionBack() {
+  if (!$('mission-project-form').hidden || !$('mission-burn-panel').hidden) {
+    showMissionHub()
+    return
+  }
+  showMain()
+}
+
+function showMissionHub(note = '') {
+  setPopoverMode('compact')
+  $('mission-project-form').hidden = true
+  $('mission-burn-panel').hidden = true
+  $('mission-options').hidden = false
+  $('mission-history').hidden = false
+  $('mission-note').textContent = ''
+  $('missions-hub-note').textContent = note
+  renderMissionHistory()
+}
+
+async function showBurnChallenge() {
+  setPopoverMode('full')
+  $('mission-options').hidden = true
+  $('mission-project-form').hidden = true
+  $('mission-burn-panel').hidden = false
+  $('mission-history').hidden = true
+  $('missions-hub-note').textContent = ''
+  await loadBurnChallenges()
+}
+
+// Missions are opt-in, then the button opens the mission launcher.
 async function openForge() {
   if (!config) config = await window.maxx.getConfig()
-  if (config.missions === true) {
-    await startForge()
-  } else {
-    showView('view-missions')
-  }
+  setPopoverMode('compact')
+  showView('view-missions')
+  renderMissions()
+}
+
+async function openGoalBurn() {
+  await openForge()
+  if (config?.missions !== true) return
+  setMissionLoading('mission-burn', true)
+  showBurnChallenge().catch((err) => {
+    $('burn-note').textContent = err && err.message ? err.message : 'Could not load burn ideas.'
+  }).finally(() => {
+    setMissionLoading('mission-burn', false)
+  })
 }
 
 $('forge-btn').addEventListener('click', openForge)
 $('forge-back').addEventListener('click', showMain)
-$('missions-back').addEventListener('click', showMain)
+$('missions-back').addEventListener('click', missionBack)
 $('missions-decline').addEventListener('click', async () => {
   config = await window.maxx.setMissions(false)
   showMain()
 })
 $('missions-enable').addEventListener('click', async () => {
   config = await window.maxx.setMissions(true)
-  await startForge()
+  renderMissions()
+})
+$('mission-project').addEventListener('click', () => {
+  setMissionLoading('mission-project', true)
+  requestAnimationFrame(() => {
+    showProjectMission()
+    setMissionLoading('mission-project', false)
+  })
+})
+$('mission-project-back').addEventListener('click', () => {
+  showMissionHub()
+})
+$('mission-burn').addEventListener('click', () => {
+  setMissionLoading('mission-burn', true)
+  showBurnChallenge().catch((err) => {
+    $('burn-note').textContent = err && err.message ? err.message : 'Could not load burn ideas.'
+  }).finally(() => {
+    setMissionLoading('mission-burn', false)
+  })
+})
+$('mission-burn-back').addEventListener('click', () => showMissionHub())
+$('mission-burn-refresh').addEventListener('click', () => {
+  loadBurnChallenges().catch((err) => {
+    $('burn-note').textContent = err && err.message ? err.message : 'Could not refresh burn ideas.'
+  })
+})
+$('burn-list').addEventListener('click', async (event) => {
+  const btn = event.target.closest('[data-burn-action]')
+  if (!btn) return
+  const idea = burnIdeas[Number(btn.dataset.burnIndex)]
+  if (!idea) return
+  btn.disabled = true
+  const action = btn.dataset.burnAction
+  $('burn-note').textContent = action === 'copy' ? 'Copying Goal Forge prompt…' : 'Pick a folder…'
+  try {
+    const res = action === 'copy' ? await window.maxx.burnCopy(idea) : await window.maxx.burnStart(idea)
+    if (res.canceled) {
+      $('burn-note').textContent = ''
+    } else if (res.ok) {
+      $('burn-note').textContent =
+        action === 'copy'
+          ? `Copied prompt for ${idea.cli}.`
+          : res.promptLaunched
+            ? `Launched ${res.cli} in ${res.terminal}. Goal copied too.`
+            : `Opened ${res.cli}. Goal copied for paste.`
+    } else {
+      $('burn-note').textContent = 'Could not start burn challenge: ' + (res.error || 'unknown')
+    }
+  } catch (err) {
+    $('burn-note').textContent = err && err.message ? err.message : 'Could not run burn challenge.'
+  } finally {
+    btn.disabled = false
+  }
+})
+$('mission-folder').addEventListener('click', async () => {
+  $('mission-note').textContent = 'Pick a folder…'
+  const res = await window.maxx.missionPickFolder()
+  if (res.canceled) {
+    $('mission-note').textContent = ''
+    return
+  }
+  if (res.ok) {
+    missionFolder = res.dir
+    $('mission-folder-label').textContent = res.dir
+    $('mission-note').textContent = ''
+  }
+})
+$('mission-copy').addEventListener('click', async () => {
+  $('mission-copy').disabled = true
+  $('mission-note').textContent = 'Forging goal…'
+  try {
+    const res = await window.maxx.missionCopyGoal(missionPayload())
+    $('mission-note').textContent = res.ok ? `Copied. Wrote ${res.goalPath}` : 'Could not copy goal.'
+  } catch (err) {
+    $('mission-note').textContent = err && err.message ? err.message : 'Could not copy goal.'
+  } finally {
+    $('mission-copy').disabled = false
+  }
+})
+$('mission-start').addEventListener('click', async () => {
+  $('mission-start').disabled = true
+  $('mission-note').textContent = 'Starting mission…'
+  try {
+    const res = await window.maxx.missionStartProject(missionPayload())
+    if (res.ok) {
+      missionContext.history = [res.mission, ...(Array.isArray(missionContext.history) ? missionContext.history : [])].filter(Boolean)
+      $('mission-goal').value = ''
+      showMissionHub(res.promptLaunched ? `Sent to ${res.cli}. Goal copied too.` : `Opened ${res.cli}. Goal copied for paste.`)
+    } else {
+      $('mission-note').textContent = 'Could not open terminal: ' + (res.error || 'unknown')
+    }
+  } catch (err) {
+    $('mission-note').textContent = err && err.message ? err.message : 'Could not start mission.'
+  } finally {
+    $('mission-start').disabled = false
+  }
 })
 $('forge-skip').addEventListener('click', async () => {
   await sendIdeaFeedback('skip')
@@ -1557,7 +1904,13 @@ $('maxx-target').addEventListener('click', async (event) => {
   await openForge()
 })
 
-$('close-btn').addEventListener('click', () => window.maxx.close())
+$('output-signal').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-open-goal-burn]')
+  if (!button) return
+  await openGoalBurn()
+})
+
+if ($('close-btn')) $('close-btn').addEventListener('click', () => window.maxx.close())
 $('mode-usage').addEventListener('click', () => {
   viewMode = 'usage'
   render()
@@ -1692,7 +2045,7 @@ async function init() {
     renderOnboarding()
     showView('view-onboarding')
     $('cycle-pill').textContent = 'first launch'
-    $('foot-left').textContent = 'Choose providers, then scan.'
+    if ($('foot-left')) $('foot-left').textContent = 'Choose providers, then scan.'
     return
   }
   snap = await window.maxx.getSnapshot()

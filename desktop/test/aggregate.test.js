@@ -146,12 +146,6 @@ test('config merge accepts CodexBar provider ids without ghost cards', () => {
   assert.equal(providers.ghost, undefined)
 })
 
-test('config normalizes menu bar metric', () => {
-  assert.equal(config._private.normalizeTrayMetric('target'), 'target')
-  assert.equal(config._private.normalizeTrayMetric('reset'), 'reset')
-  assert.equal(config._private.normalizeTrayMetric('nope'), 'left')
-})
-
 test('config clamps token history window like CodexBar cost history', () => {
   assert.equal(config._private.normalizeTokenHistoryDays(0), 1)
   assert.equal(config._private.normalizeTokenHistoryDays(90), 90)
@@ -416,6 +410,14 @@ test('provider detection can use extra CodexBar provider CLI binaries', () => {
   assert.equal(detections.amp.reason, 'Amp CLI found')
   assert.equal(detections.kiro.reason, 'Kiro CLI found')
   assert.equal(detections.opencodego.reason, 'OpenCode Go CLI found')
+})
+
+test('config normalizes menu bar metric', () => {
+  assert.equal(config._private.normalizeTrayMetric('target'), 'target')
+  assert.equal(config._private.normalizeTrayMetric('reset'), 'reset')
+  assert.equal(config._private.normalizeTrayMetric('left'), 'left')
+  assert.equal(config._private.normalizeTrayMetric('spent'), 'spent')
+  assert.equal(config._private.normalizeTrayMetric('nope'), 'left')
 })
 
 test('tray title formats configured menu bar metric', () => {

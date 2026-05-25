@@ -42,7 +42,6 @@ function trayTitleFromSnapshot(snap, metric = 'left', now = Date.now()) {
       const total = totals.tokens?.total || 0
       return total ? ` ${formatTokens(total)}` : fallback()
     }
-    case 'left':
     default:
       return fallback()
   }

@@ -113,27 +113,82 @@
         <div class="forge-note" id="forge-note"></div>
       </div>
 
-      <!-- MISSIONS CONSENT VIEW -->
+      <!-- MISSIONS VIEW -->
       <div id="view-missions" hidden>
         <div class="settings-head">
           <button class="back-btn" id="missions-back"><svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><polyline points="8.5,3.5 5,7 8.5,10.5"/></svg> Back</button>
-          <span>Idea missions</span>
+          <span>Missions</span>
         </div>
         <div class="missions-intro">
-          <div class="missions-badge"><svg viewBox="0 0 14 14" width="22" height="22" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><polygon points="7,1.5 12.5,7 7,12.5 1.5,7"/></svg></div>
-          <h2 class="missions-h">Turn unused tokens into builds</h2>
-          <p class="missions-p">
-            Missions are fresh app ideas — routed to the AI plan you're underusing most,
-            so you spend the tokens you already pay for instead of letting them reset.
-          </p>
-          <div class="missions-disclosure">
-            <span class="missions-disc-tag">What this turns on</span>
-            <p>
-              Enabling missions lets MaxxToken use your connected AI CLIs and
-              subscriptions (Claude and others) to generate ideas. That spends your
-              own tokens — that's the whole point of tokenmaxxing. Nothing runs until
-              you open a mission.
+          <div id="missions-consent">
+            <div class="missions-badge"><svg viewBox="0 0 14 14" width="22" height="22" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><polygon points="7,1.5 12.5,7 7,12.5 1.5,7"/></svg></div>
+            <h2 class="missions-h">Turn unused tokens into builds</h2>
+            <p class="missions-p">
+              Missions route long-running work into the AI plans you're underusing,
+              with a scoped goal, model order, and verification command.
             </p>
+            <div class="missions-disclosure">
+              <span class="missions-disc-tag">What this turns on</span>
+              <p>
+                Enabling missions lets MaxxToken use your connected AI CLIs and
+                subscriptions to launch project work. Nothing runs until you pick
+                a folder and start a mission.
+              </p>
+            </div>
+          </div>
+
+          <div id="missions-hub" hidden>
+            <div class="mission-options" id="mission-options">
+              <button class="mission-option" id="mission-project">
+                <span class="mission-card-title"><b>#1</b> Project Mission</span>
+                <small>Pick a repo goal, select models, and launch a scoped build.</small>
+                <span class="mission-card-info" data-mission-info="project"></span>
+              </button>
+              <button class="mission-option" id="mission-burn">
+                <span class="mission-card-title"><b>#2</b> Goal Burn</span>
+                <small>Pull live ideas and spend the plan closest to reset.</small>
+                <span class="mission-card-info" data-mission-info="burn"></span>
+              </button>
+            </div>
+            <div class="forge-note" id="missions-hub-note"></div>
+            <div class="mission-history" id="mission-history"></div>
+
+            <div class="mission-burn-panel" id="mission-burn-panel" hidden>
+              <div class="burn-target" id="burn-target">Loading burn target…</div>
+              <div class="burn-list" id="burn-list"></div>
+              <div class="mission-actions burn-actions">
+                <button class="forge-skip" id="mission-burn-back">Back</button>
+                <button class="forge-more" id="mission-burn-refresh">Refresh ideas</button>
+              </div>
+              <div class="forge-note" id="burn-note"></div>
+            </div>
+
+            <div class="mission-form" id="mission-project-form" hidden>
+              <div class="mission-field">
+                <label>Folder</label>
+                <div class="mission-folder-row">
+                  <button class="ghost-btn" id="mission-folder">Pick folder</button>
+                  <span id="mission-folder-label">No folder picked</span>
+                </div>
+              </div>
+
+              <div class="mission-field">
+                <label>Models</label>
+                <div class="mission-model-list" id="mission-model-list"></div>
+              </div>
+
+              <div class="mission-field">
+                <label>Goal</label>
+                <textarea id="mission-goal" class="mission-textarea" placeholder="Ship the smallest useful version of..."></textarea>
+              </div>
+
+              <div class="mission-actions">
+                <button class="forge-skip" id="mission-project-back">Back</button>
+                <button class="forge-more" id="mission-copy">Copy goal</button>
+                <button class="forge-start" id="mission-start">Start mission</button>
+              </div>
+              <div class="forge-note" id="mission-note"></div>
+            </div>
           </div>
         </div>
         <div class="settings-actions">
@@ -262,10 +317,7 @@
         </div>
       </div>
 
-      <footer class="foot">
-        <span id="foot-left">MaxxToken</span>
-        <button class="ghost-btn" id="close-btn">Done</button>
-      </footer>
+      <footer class="output-signal" id="output-signal" hidden></footer>
     </div>
     <script src="renderer.js"></script>
   </body>

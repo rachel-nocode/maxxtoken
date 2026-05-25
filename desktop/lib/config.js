@@ -26,6 +26,7 @@ const DEFAULT_CONFIG = {
   onboardingComplete: false,
   // null = not yet decided, true = on, false = declined.
   missions: null,
+  missionHistory: [],
   providers: {
     claude: { name: 'Claude', plan: 'Max', monthly: 200, enabled: false },
     // Codex CLI runs on the OpenAI / ChatGPT Pro subscription.
@@ -100,6 +101,7 @@ function loadConfig(file = FILE) {
       tokenHistoryDays: normalizeTokenHistoryDays(raw.tokenHistoryDays),
       onboardingComplete: raw.onboardingComplete === true,
       missions: typeof raw.missions === 'boolean' ? raw.missions : null,
+      missionHistory: normalizeMissionHistory(raw.missionHistory),
       providerOrder: normalizeProviderOrder(raw.providerOrder, providers),
       providers,
     }
@@ -122,6 +124,24 @@ function normalizeProviderOrder(rawOrder, providers) {
   }
   for (const id of all) if (!seen.has(id)) out.push(id)
   return out
+}
+
+function normalizeMissionHistory(raw) {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((item) => item && typeof item === 'object')
+    .slice(0, 20)
+    .map((item) => ({
+      id: String(item.id || Date.now()),
+      title: String(item.title || 'Project Mission').slice(0, 140),
+      dir: String(item.dir || ''),
+      cli: String(item.cli || ''),
+      models: Array.isArray(item.models) ? item.models.slice(0, 8).map((m) => String(m).slice(0, 80)) : [],
+      status: String(item.status || 'sent').slice(0, 40),
+      createdAt: Number(item.createdAt) || Date.now(),
+      goalPath: String(item.goalPath || ''),
+      promptLaunched: item.promptLaunched === true,
+    }))
 }
 
 function normalizeProviders(rawProviders) {
@@ -152,6 +172,7 @@ function saveConfig(config, file = FILE) {
     quotaWarningThresholds: normalizeQuotaWarningThresholds(config.quotaWarningThresholds),
     quotaWarningSessionThresholds: normalizeQuotaWarningThresholds(config.quotaWarningSessionThresholds || config.quotaWarningThresholds),
     quotaWarningWeeklyThresholds: normalizeQuotaWarningThresholds(config.quotaWarningWeeklyThresholds || config.quotaWarningThresholds),
+    missionHistory: normalizeMissionHistory(config.missionHistory),
     providerOrder: normalizeProviderOrder(config.providerOrder, providers),
     providers,
   }
@@ -213,5 +234,5 @@ module.exports = {
   saveConfig,
   billingCycle,
   FILE,
-  _private: { normalizeProviders, normalizeTrayMetric, normalizeTokenHistoryDays, normalizeQuotaWarningThresholds, normalizeProviderConfig },
+  _private: { normalizeProviders, normalizeTrayMetric, normalizeTokenHistoryDays, normalizeQuotaWarningThresholds, normalizeProviderConfig, normalizeMissionHistory },
 }

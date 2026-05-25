@@ -15,6 +15,7 @@ const HISTORY_DIR = path.join(os.homedir(), '.maxxtoken')
 const HISTORY_FILE = path.join(HISTORY_DIR, 'idea-history.jsonl')
 const FRESH_COUNT = 6
 const CANDIDATE_COUNT = 26
+const BURN_COUNT = 3
 
 // Rotating angle prompts — a few are sampled per batch so each generation
 // explores different territory instead of the model converging on its favorites.
@@ -576,6 +577,8 @@ function shapeIdea(idea, i, cli, source) {
     complexity: Math.min(3, Math.max(1, Number(idea.complexity) || 2)),
     buildMinutes: Math.min(360, Math.max(30, Number(idea.buildMinutes) || 90)),
     stack: String(idea.stack || '').slice(0, 90),
+    signal: String(idea.signal || idea.trend || '').slice(0, 160),
+    rankReason: String(idea.rankReason || '').slice(0, 220),
     cli,
     source,
   }
@@ -662,25 +665,132 @@ function fallbackIdeas(targetCli) {
 
 function buildFirstPrompt(idea, cli) {
   return [
-    `Build a small, polished first version of this moonshot app: "${idea.title}".`,
+    `GOAL: build a small, polished first version of "${idea.title}" in {{PROJECT_DIR}}`,
     ``,
+    `DONE WHEN:`,
+    `- The first useful interaction for "${idea.title}" works locally`,
+    `- The app includes the concept, kill metric, and a clear first action`,
+    `- VERIFY exits 0`,
+    ``,
+    `SCOPE:`,
+    `- edit: {{PROJECT_DIR}}/**`,
+    `- do not touch: {{PROJECT_DIR}}/.git/**, {{PROJECT_DIR}}/node_modules/**, {{PROJECT_DIR}}/dist/**, {{PROJECT_DIR}}/build/**, files outside {{PROJECT_DIR}}`,
+    ``,
+    `CONSTRAINTS:`,
+    `- Ship the smallest local MVP that proves the core mechanic`,
+    `- Use existing project conventions when working inside an existing repo`,
+    `- No broad rewrites, no unnecessary dependencies`,
+    ``,
+    `VERIFY: {{VERIFY}}`,
+    ``,
+    `ON FAILURE: after 4 iterations without progress, dump the blocker, last failing command, changed files, and next recommended action to {{PROJECT_DIR}}/goal-forge-report.html, then stop.`,
+    ``,
+    `CONTEXT:`,
     `Concept: ${idea.pitch}`,
     idea.moonshot ? `Moonshot north star: ${idea.moonshot}` : '',
     idea.firstTinyBuild ? `Tiny first build: ${idea.firstTinyBuild}` : '',
     idea.viralHook ? `Share hook: ${idea.viralHook}` : '',
     idea.killMetric ? `Kill metric: ${idea.killMetric}` : '',
     idea.whyNow ? `Why now: ${idea.whyNow}` : '',
+    idea.signal ? `Internet signal: ${idea.signal}` : '',
+    idea.rankReason ? `Why this was ranked: ${idea.rankReason}` : '',
     idea.tags && idea.tags.length ? `Tags: ${idea.tags.join(', ')}` : '',
     `Suggested stack: ${idea.stack}`,
-    ``,
-    `Start by scaffolding the project in this folder, then implement the smallest`,
-    `local MVP that proves the core mechanic. Keep the scope tight, but make the`,
-    `first interaction feel like the beginning of something much bigger. Include`,
-    `the kill metric in the README or first screen so the experiment can be judged fast.`,
-    ``,
     `Use ${cli} for the build.`,
+    ``,
+    `NON-GOALS:`,
+    `- Do not turn this into a generic CRUD wrapper`,
+    `- Do not expand beyond the tiny first build until DONE WHEN passes`,
   ]
     .filter(Boolean)
+    .join('\n')
+}
+
+function decodeEntities(value) {
+  return String(value || '')
+    .replace(/<!\[CDATA\[(.*?)\]\]>/gs, '$1')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+}
+
+function stripTags(value) {
+  return decodeEntities(value).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function xmlItems(xml, limit = 10) {
+  const out = []
+  const itemRe = /<item\b[\s\S]*?<\/item>/gi
+  let match
+  while ((match = itemRe.exec(xml)) && out.length < limit) {
+    const item = match[0]
+    const title = item.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
+    const traffic = item.match(/<ht:approx_traffic[^>]*>([\s\S]*?)<\/ht:approx_traffic>/i)
+    const news = [...item.matchAll(/<ht:news_item_title[^>]*>([\s\S]*?)<\/ht:news_item_title>/gi)]
+      .slice(0, 2)
+      .map((m) => stripTags(m[1]))
+      .filter(Boolean)
+    if (title) {
+      out.push({
+        source: 'Google Trends',
+        title: stripTags(title[1]),
+        detail: traffic ? stripTags(traffic[1]) : news.join(' · '),
+      })
+    }
+  }
+  return out
+}
+
+async function googleTrendSignals() {
+  const resp = await fetchWithTimeout('https://trends.google.com/trending/rss?geo=US', {}, 9000)
+  if (!resp.ok) return []
+  return xmlItems(await resp.text(), 12)
+}
+
+async function hackerNewsSignals() {
+  const top = await fetchWithTimeout('https://hacker-news.firebaseio.com/v0/topstories.json', {}, 7000)
+  if (!top.ok) return []
+  const ids = (await top.json()).slice(0, 8)
+  const items = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const resp = await fetchWithTimeout(`https://hacker-news.firebaseio.com/v0/item/${id}.json`, {}, 5000)
+        if (!resp.ok) return null
+        const item = await resp.json()
+        return item && item.title ? { source: 'Hacker News', title: item.title, detail: `${item.score || 0} points` } : null
+      } catch {
+        return null
+      }
+    }),
+  )
+  return items.filter(Boolean)
+}
+
+async function githubSignals() {
+  const resp = await fetchWithTimeout('https://github.com/trending?since=daily', {
+    headers: { 'User-Agent': 'MaxxToken' },
+  }, 9000)
+  if (!resp.ok) return []
+  const html = await resp.text()
+  return [...html.matchAll(/<h2[^>]*>\s*<a[^>]*href="\/([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)]
+    .slice(0, 8)
+    .map((m) => ({ source: 'GitHub Trending', title: stripTags(m[2]).replace(/\s*\/\s*/g, '/'), detail: m[1] }))
+    .filter((item) => item.title)
+}
+
+async function collectSignals() {
+  const settled = await Promise.allSettled([googleTrendSignals(), hackerNewsSignals(), githubSignals()])
+  const signals = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+  return signals.slice(0, 24)
+}
+
+function signalPrompt(signals) {
+  if (!signals.length) return 'Live signal fetch failed; infer from evergreen builder-market demand.'
+  return signals
+    .slice(0, 18)
+    .map((s, i) => `${i + 1}. [${s.source}] ${s.title}${s.detail ? ` — ${s.detail}` : ''}`)
     .join('\n')
 }
 
@@ -749,6 +859,42 @@ function buildIdeaPrompt(recentContext, lenses, extraAvoid) {
     '{"title": str, "pitch": str (1 sentence), "moonshot": str (1 sentence),',
     '"firstTinyBuild": str (1 sentence), "viralHook": str (1 sentence),',
     '"killMetric": str (1 sentence), "whyNow": str (1 sentence),',
+    '"tags": [1-4 short lowercase strings], "complexity": 1|2|3,',
+    '"buildMinutes": int, "stack": str (short)}',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+function buildBurnPrompt(recentContext, signals, targetProvider) {
+  const seed = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
+  return [
+    'You are the Burn Challenge engine for MaxxToken.',
+    'Your job: turn live internet demand signals into three high-value startup-style app ideas',
+    'that a builder can start immediately to burn unused AI subscription quota.',
+    `Randomness seed: ${seed}`,
+    '',
+    BUILDER_CONTEXT,
+    '',
+    `Route these ideas to: ${targetProvider?.name || 'the most unused model'} (${targetProvider?.cli || 'claude'}).`,
+    '',
+    'LIVE SIGNALS:',
+    signalPrompt(signals),
+    '',
+    recentContext,
+    '',
+    `Return exactly ${BURN_COUNT} ideas ranked from highest expected value to lowest.`,
+    'The #1 idea must be the strongest synthesis of search trend heat, builder demand,',
+    'shareability, and tiny-MVP feasibility. The other two should be meaningfully different.',
+    '',
+    'No generic AI wrapper. No todo apps. No dashboards unless the signal makes them urgent.',
+    'Each idea should feel like a sharp startup seed, but the first build must be doable today.',
+    '',
+    'Return ONLY a JSON array, no prose. Each item:',
+    '{"title": str, "pitch": str (1 sentence), "moonshot": str (1 sentence),',
+    '"firstTinyBuild": str (1 sentence), "viralHook": str (1 sentence),',
+    '"killMetric": str (1 sentence), "whyNow": str (1 sentence),',
+    '"signal": str (the live signal used), "rankReason": str (why it ranked here),',
     '"tags": [1-4 short lowercase strings], "complexity": 1|2|3,',
     '"buildMinutes": int, "stack": str (short)}',
   ]
@@ -827,6 +973,61 @@ async function generateIdeas(targetProvider) {
   }
 }
 
+async function generateBurnIdeas(targetProvider) {
+  const cli = (targetProvider && targetProvider.cli) || 'claude'
+  const history = readHistory()
+  const signals = await collectSignals().catch(() => [])
+  const creds = readClaudeCredentials()
+  const fallback = () => finalize(padFromBank([], cli, history).slice(0, BURN_COUNT), cli)
+  if (!creds) return { signals, ideas: fallback() }
+  const recentContext = promptHistory(history)
+
+  try {
+    let token = creds.data.claudeAiOauth.accessToken
+    const exp = creds.data.claudeAiOauth.expiresAt
+    if (exp && exp - Date.now() < 5 * 60 * 1000) {
+      const t = await refresh(creds)
+      if (t) token = t
+    }
+
+    const call = (tok) =>
+      fetchWithTimeout(MESSAGES_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + tok,
+          'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'oauth-2025-04-20',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: 4200,
+          temperature: 0.9,
+          messages: [{ role: 'user', content: buildBurnPrompt(recentContext, signals, targetProvider) }],
+        }),
+      }, 30000)
+
+    let resp = await call(token)
+    if (resp.status === 401) {
+      const t = await refresh(creds)
+      if (t) {
+        token = t
+        resp = await call(token)
+      }
+    }
+    if (!resp.ok) return { signals, ideas: fallback() }
+    const data = await resp.json()
+    const text = (data.content || []).map((b) => b.text || '').join('')
+    const raw = extractJson(text)
+    const picked = []
+    if (raw && raw.length) pickFresh(raw, cli, 'Signals', history, picked)
+    const ideas = finalize(padFromBank(picked, cli, history).slice(0, BURN_COUNT), cli)
+    return { signals, ideas }
+  } catch {
+    return { signals, ideas: fallback() }
+  }
+}
+
 function recordIdeaFeedback(idea, feedback) {
   if (!idea || !feedback) return
   writeHistory({
@@ -848,4 +1049,4 @@ function recordIdeaFeedback(idea, feedback) {
   })
 }
 
-module.exports = { generateIdeas, recordIdeaFeedback }
+module.exports = { generateIdeas, generateBurnIdeas, recordIdeaFeedback }

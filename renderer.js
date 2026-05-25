@@ -298,7 +298,7 @@ function providerCard(p) {
           ${providerIcon(p.id, glyph)}
           <span class="prov-id">
             <span class="prov-name">${h(p.name)}</span>
-            <span class="prov-sub">${h(p.plan)} · ${money(p.monthly)}/mo</span>
+            <span class="prov-sub">${h(p.plan)}</span>
           </span>
           ${refreshButton}
         </div>
@@ -330,24 +330,11 @@ function providerCard(p) {
     .map((d) => `<span>${h(d.label)} <b>${h(d.value)}</b></span>`)
     .join('')
   const meter = `<div class="prov-meter"><span class="${usageTone(usedPct || 0)}" style="width:${usedPct || 0}%"></span></div>`
-  const usedMoney = moneyMaybeExact(p.spentValue ?? p.capturedValue)
-  const leftMoney = moneyMaybeExact(p.leftValue ?? p.burnValue)
   const tokenUsage = p.tokenUsage || null
   const showTokens = viewMode === 'tokens'
   const hasTokenSource = tokenUsage && Number.isFinite(Number(tokenUsage.total))
   const usageLabel = showTokens ? 'tokens' : p.usageLabel || 'used'
   const pctDisplay = showTokens ? (hasTokenSource ? tokens(tokenUsage.total) : '—') : pct
-  const valuePrefix = p.valueAccuracy === 'estimate' ? 'est. ' : ''
-  const summary = showTokens
-    ? hasTokenSource
-      ? `
-        <span><b>${tokens(tokenUsage.input)}</b> input</span>
-        <span><b>${tokens(tokenUsage.cached)}</b> cached</span>
-        <span class="prov-money"><b>${tokens(tokenUsage.output)}</b> output</span>`
-      : `<span class="token-missing">No token source yet</span>`
-    : `
-        <span><b>${usedMoney}</b> ${valuePrefix}spent</span>
-        <span class="prov-money"><b>${leftMoney}</b> left to maxx</span>`
   const expandLabel = expanded ? 'Collapse details' : 'Show details'
 
   return `
@@ -358,7 +345,7 @@ function providerCard(p) {
           <span class="prov-name">${h(p.name)}</span>
           <span class="prov-sub">
             <span class="activity-dot ${p.activity}"></span>
-            ${h(p.plan)} · ${money(p.monthly)}/mo
+            ${h(p.plan)}
           </span>
         </span>
         <span class="prov-pct">
@@ -371,9 +358,6 @@ function providerCard(p) {
         </button>
       </div>
       ${showTokens ? '' : meter}
-      <div class="prov-summary">
-        ${summary}
-      </div>
       ${body}
       ${
         expanded
@@ -471,10 +455,8 @@ function settingsRow(id, p) {
   const detected = snap?.providers?.find((provider) => provider.id === id)
   const connected = !!detected?.connected
   const plan = detected?.plan || p.plan
-  const monthly = Number(detected?.monthly ?? p.monthly) || 0
   const isKey = KEY_PROVIDERS.has(id)
   const hasKey = !!apiKeyState[id]
-  const price = monthly > 0 ? `${money(monthly)}/mo cap` : 'not counted'
   let state
   if (connected) state = 'detected'
   else if (isKey && !hasKey)
@@ -505,7 +487,6 @@ function settingsRow(id, p) {
           <div class="sn">${h(p.name)}</div>
           <div class="sp">${h(plan)} · ${state}</div>
         </span>
-        <span class="price-chip">${h(price)}</span>
         <span class="toggle ${p.enabled ? 'on' : ''}" data-toggle></span>
       </div>
       ${keyRow}
@@ -521,7 +502,7 @@ function onboardingRow(id, p) {
         ${providerIcon(id, glyph)}
         <span class="sub-info">
           <div class="sn">${h(p.name)}</div>
-          <div class="sp">${h(p.plan)} · ${money(p.monthly)}/mo</div>
+          <div class="sp">${h(p.plan)}</div>
         </span>
         <span class="toggle ${p.enabled ? 'on' : ''}" data-toggle></span>
       </div>

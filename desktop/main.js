@@ -1,9 +1,10 @@
 const { app, Tray, BrowserWindow, Menu, nativeImage, ipcMain, shell, dialog, screen, clipboard, Notification } = require('electron')
 const { autoUpdater } = require('electron-updater')
+const fs = require('fs')
 const path = require('path')
 const { fork } = require('child_process')
 const { loadConfig, saveConfig, FILE } = require('./lib/config')
-const { generateIdeas, recordIdeaFeedback } = require('./lib/ideas')
+const { generateIdeas, generateBurnIdeas, recordIdeaFeedback } = require('./lib/ideas')
 const { openBuild } = require('./lib/launch')
 const { setKey, hasKey, allKeys } = require('./lib/secrets')
 const { requestDeviceCode, pollForToken } = require('./lib/copilot-auth')
@@ -116,7 +117,8 @@ const activeSnapshotWorkers = new Set()
 const copilotLoginSessions = new Map()
 
 const POPOVER_WIDTH = 420
-const POPOVER_HEIGHT = 800
+const POPOVER_HEIGHT = 720
+const POPOVER_COMPACT_HEIGHT = 610
 const REFRESH_INTERVAL_MS = 30 * 60 * 1000
 const SNAPSHOT_WORKER_TIMEOUT_MS = 90 * 1000
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
@@ -334,16 +336,29 @@ function positionPopover() {
   const sameDisplay = trayDisplay.id === cursorDisplay.id
   const area = display.workArea
   const margin = 8
+  const popoverBounds = popover.getBounds()
+  const popoverHeight = popoverBounds.height || POPOVER_HEIGHT
   const minX = area.x + margin
   const maxX = Math.max(minX, area.x + area.width - POPOVER_WIDTH - margin)
   const minY = area.y + margin
-  const maxY = Math.max(minY, area.y + area.height - POPOVER_HEIGHT - margin)
+  const maxY = Math.max(minY, area.y + area.height - popoverHeight - margin)
   const centerX = sameDisplay ? anchor.x : cursor.x
   const x = Math.min(maxX, Math.max(minX, Math.round(centerX - POPOVER_WIDTH / 2)))
   let y = sameDisplay ? Math.round(anchor.y + 4) : area.y + margin
   if (y > maxY) y = area.y + margin
   y = Math.min(maxY, Math.max(minY, y))
   popover.setPosition(x, y, false)
+}
+
+function setPopoverMode(mode) {
+  if (!popover || popover.isDestroyed()) return { ok: false }
+  const height = mode === 'compact' ? POPOVER_COMPACT_HEIGHT : POPOVER_HEIGHT
+  const bounds = popover.getBounds()
+  if (bounds.height !== height || bounds.width !== POPOVER_WIDTH) {
+    popover.setSize(POPOVER_WIDTH, height, false)
+    if (tray) positionPopover()
+  }
+  return { ok: true, height }
 }
 
 async function togglePopover() {
@@ -534,6 +549,7 @@ ipcMain.handle('save-config', (_e, config) => {
   return readSnapshot({ force: true })
 })
 ipcMain.on('close-popover', () => popover && popover.hide())
+ipcMain.handle('set-popover-mode', (_e, mode) => setPopoverMode(mode))
 ipcMain.on('open-config-file', () => shell.showItemInFolder(FILE))
 ipcMain.on('open-debug-log', () => {
   const p = logger.getLogPath()
@@ -557,6 +573,239 @@ function leastUsedProvider(snap) {
   return { id: p.id, name: p.name, cli: CLI_FOR[p.id] }
 }
 
+function mostLeftProvider(snap) {
+  const providers = Array.isArray(snap?.providers) ? snap.providers : []
+  const tracked = providers.filter((p) => p.connected && CLI_FOR[p.id])
+  if (!tracked.length) return { id: 'claude', name: 'Claude', plan: 'Max', cli: 'claude', leftValue: null, usedPct: null }
+  const p = tracked
+    .map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      plan: provider.plan || '',
+      cli: CLI_FOR[provider.id],
+      leftValue: Number(provider.leftValue ?? provider.burnValue ?? provider.remainingValue),
+      usedPct: provider.capturedPct == null ? null : Math.round(provider.capturedPct),
+    }))
+    .sort((a, b) => {
+      const av = Number.isFinite(a.leftValue) ? a.leftValue : -1
+      const bv = Number.isFinite(b.leftValue) ? b.leftValue : -1
+      if (bv !== av) return bv - av
+      const au = Number.isFinite(a.usedPct) ? a.usedPct : 101
+      const bu = Number.isFinite(b.usedPct) ? b.usedPct : 101
+      return au - bu || a.name.localeCompare(b.name)
+    })[0]
+  return p || { id: 'claude', name: 'Claude', plan: 'Max', cli: 'claude', leftValue: null, usedPct: null }
+}
+
+const PROMPT_CAPABLE_CLIS = new Set(['claude', 'codex', 'gemini'])
+
+function projectMissionModels(snap, selectedIds = null) {
+  const selected = selectedIds instanceof Set ? selectedIds : null
+  const providers = Array.isArray(snap?.providers) ? snap.providers : []
+  const rows = providers
+    .filter((p) => p.connected && CLI_FOR[p.id])
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      plan: p.plan || '',
+      cli: CLI_FOR[p.id],
+      usedPct: p.capturedPct == null ? null : Math.round(p.capturedPct),
+      supportsPrompt: PROMPT_CAPABLE_CLIS.has(CLI_FOR[p.id]),
+    }))
+    .sort((a, b) => {
+      const ap = Number.isFinite(a.usedPct) ? a.usedPct : 101
+      const bp = Number.isFinite(b.usedPct) ? b.usedPct : 101
+      return ap - bp || a.name.localeCompare(b.name)
+    })
+
+  const models = rows.length
+    ? rows
+    : [
+        { id: 'claude', name: 'Claude', plan: 'Max', cli: 'claude', usedPct: null, supportsPrompt: true },
+        { id: 'codex', name: 'ChatGPT', plan: 'Pro', cli: 'codex', usedPct: null, supportsPrompt: true },
+      ]
+
+  return models.map((m, i) => ({
+    ...m,
+    selected: selected ? selected.has(m.id) : i < Math.min(3, models.length),
+  }))
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function detectVerifyCommand(dir) {
+  const pkgPath = path.join(dir, 'package.json')
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
+    const scripts = pkg && pkg.scripts ? pkg.scripts : {}
+    const cmds = []
+    if (scripts.test && scripts.test !== 'echo "Error: no test specified" && exit 1') cmds.push('npm test')
+    if (scripts.build) cmds.push('npm run build')
+    if (!cmds.length && scripts.lint) cmds.push('npm run lint')
+    if (cmds.length) return cmds.join(' && ')
+  } catch {
+    /* not a node project */
+  }
+  return '# TODO: add the project verification command'
+}
+
+function missionGoalTitle(prompt) {
+  const oneLine = String(prompt || '').trim().split(/\n+/)[0] || 'complete the selected project mission'
+  return oneLine.length > 120 ? `${oneLine.slice(0, 117)}...` : oneLine
+}
+
+function buildGoalBlock({ dir, goal, models }) {
+  const verify = detectVerifyCommand(dir)
+  const folder = path.basename(dir)
+  const modelOrder = models.map((m, i) => `${i + 1}. ${m.name} (${m.cli}${m.plan ? `, ${m.plan}` : ''})`).join('; ')
+  return `GOAL: ${missionGoalTitle(goal)} in ${folder}
+
+DONE WHEN:
+- The requested project change from the raw mission prompt is implemented inside ${dir}
+- goal.html exists in ${dir} and contains the final mission goal block
+- VERIFY exits 0, or the blocker is documented in goal-forge-report.html
+
+SCOPE:
+- edit: ${dir}/**
+- do not touch: ${dir}/.git/**, ${dir}/node_modules/**, ${dir}/dist/**, ${dir}/build/**, files outside ${dir}
+
+CONSTRAINTS:
+- Use the existing project style and tooling before adding new dependencies
+- Keep changes focused on the raw mission prompt
+- Prefer small, verifiable steps over broad rewrites
+
+VERIFY: ${verify}
+
+ON FAILURE: after 4 iterations without progress, dump the blocker, last failing command, changed files, and next recommended action to ${dir}/goal-forge-report.html, then stop.
+
+CONTEXT:
+- Suggested model order: ${modelOrder || 'current model'}
+- Raw mission prompt: ${String(goal || '').trim()}
+
+NON-GOALS:
+- Do not rewrite unrelated features
+- Do not change secrets, credentials, generated build output, or dependency lockfiles unless required by the mission`
+}
+
+function goalHtml({ goalBlock, models }) {
+  const modelRows = models
+    .map((m, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(m.name)}</td><td>${escapeHtml(m.cli)}</td><td>${escapeHtml(m.plan || '')}</td></tr>`)
+    .join('')
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MaxxToken Project Mission</title>
+  <style>
+    body { margin: 0; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Inter", sans-serif; background: #0b0d08; color: #f3f5ee; }
+    main { max-width: 860px; margin: 0 auto; padding: 34px 22px; }
+    h1 { margin: 0 0 8px; font-size: 30px; }
+    p { color: #a5aa9b; }
+    pre { white-space: pre-wrap; background: #14170f; border: 1px solid #2a2f22; border-radius: 12px; padding: 18px; overflow-x: auto; }
+    .callout { background: #17200f; border-left: 4px solid #b9ff55; border-radius: 10px; padding: 14px 16px; margin: 20px 0; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+    th, td { text-align: left; border-bottom: 1px solid #252a20; padding: 8px; }
+    th { color: #b9ff55; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Project Mission</h1>
+    <p>Copy this block into a goal-capable agent, or use the MaxxToken launched terminal session.</p>
+    <pre>${escapeHtml(goalBlock)}</pre>
+    <div class="callout">
+      <strong>Why this works:</strong> it gives the model a done-state, scope fence, verification command, model order, and a failure stop condition before the long run starts.
+    </div>
+    <table>
+      <thead><tr><th>Order</th><th>Model</th><th>CLI</th><th>Plan</th></tr></thead>
+      <tbody>${modelRows}</tbody>
+    </table>
+  </main>
+</body>
+</html>`
+}
+
+function materializeIdeaPrompt(idea, dir = '') {
+  const projectDir = dir || '<chosen project folder>'
+  const verify = dir ? detectVerifyCommand(dir) : '<your verification command>'
+  return String((idea && (idea.firstPrompt || idea.pitch)) || '')
+    .replaceAll('{{PROJECT_DIR}}', projectDir)
+    .replaceAll('{{VERIFY}}', verify)
+}
+
+function ideaGoalHtml(idea, prompt) {
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MaxxToken Burn Challenge</title>
+  <style>
+    body { margin: 0; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Inter", sans-serif; background: #0b0d08; color: #f3f5ee; }
+    main { max-width: 860px; margin: 0 auto; padding: 34px 22px; }
+    h1 { margin: 0 0 8px; font-size: 30px; }
+    p { color: #a5aa9b; }
+    pre { white-space: pre-wrap; background: #14170f; border: 1px solid #2a2f22; border-radius: 12px; padding: 18px; overflow-x: auto; }
+    .callout { background: #17200f; border-left: 4px solid #b9ff55; border-radius: 10px; padding: 14px 16px; margin: 20px 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>${escapeHtml(idea?.title || 'Burn Challenge')}</h1>
+    <p>${escapeHtml(idea?.pitch || '')}</p>
+    <pre>${escapeHtml(prompt)}</pre>
+    <div class="callout"><strong>Why this works:</strong> this is a Goal Forge prompt with done-state, scope fence, verification command, and failure protocol.</div>
+  </main>
+</body>
+</html>`
+}
+
+function buildProjectMission(payload, snap) {
+  const dir = String(payload?.dir || '').trim()
+  const goal = String(payload?.goal || '').trim()
+  if (!dir) throw new Error('Pick a folder first.')
+  if (!goal) throw new Error('Write the goal first.')
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error('Folder does not exist.')
+
+  const selectedIds = new Set(Array.isArray(payload?.models) ? payload.models.map((m) => String(m)) : [])
+  const models = projectMissionModels(snap, selectedIds).filter((m) => m.selected)
+  if (!models.length) throw new Error('Pick at least one model.')
+
+  const goalBlock = buildGoalBlock({ dir, goal, models })
+  const prompt = `Use this as a loop-ready MaxxToken Project Mission. If your environment supports a goal command, run the GOAL block as the goal. If it does not, work through the block directly and stop when DONE WHEN is true.
+
+${goalBlock}`
+  const goalPath = path.join(dir, 'goal.html')
+  fs.writeFileSync(goalPath, goalHtml({ goalBlock, models }))
+  return { dir, goalPath, goalBlock, prompt, models, title: missionGoalTitle(goal) }
+}
+
+function recordProjectMission(mission, result, first) {
+  const cfg = loadConfig()
+  const entry = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    title: mission.title || 'Project Mission',
+    dir: mission.dir,
+    cli: first.cli || '',
+    models: mission.models.map((m) => m.name),
+    status: result.ok ? 'sent' : 'failed',
+    createdAt: Date.now(),
+    goalPath: mission.goalPath,
+    promptLaunched: PROMPT_CAPABLE_CLIS.has(first.cli),
+  }
+  cfg.missionHistory = [entry, ...(Array.isArray(cfg.missionHistory) ? cfg.missionHistory : [])].slice(0, 20)
+  saveConfig(cfg)
+  return entry
+}
+
 ipcMain.handle('forge-ideas', async () => {
   const snap = await readSnapshot({ staleOk: true })
   const target = leastUsedProvider(snap)
@@ -570,7 +819,7 @@ ipcMain.handle('forge-feedback', (_e, payload) => {
 })
 
 ipcMain.handle('forge-copy', (_e, idea) => {
-  clipboard.writeText(String((idea && (idea.firstPrompt || idea.pitch)) || ''))
+  clipboard.writeText(materializeIdeaPrompt(idea))
   recordIdeaFeedback(idea, 'start')
   return { ok: true }
 })
@@ -583,12 +832,114 @@ ipcMain.handle('forge-start', async (_e, idea) => {
   })
   if (picked.canceled || !picked.filePaths.length) return { ok: false, canceled: true }
   recordIdeaFeedback(idea, 'start')
+  const prompt = materializeIdeaPrompt(idea, picked.filePaths[0])
+  fs.writeFileSync(path.join(picked.filePaths[0], 'goal.html'), ideaGoalHtml(idea, prompt))
   const result = await openBuild({
     dir: picked.filePaths[0],
     cli: idea.cli || 'claude',
-    prompt: idea.firstPrompt || idea.pitch || '',
+    prompt,
   })
   return { ok: result.ok, terminal: result.terminal, dir: picked.filePaths[0], error: result.error }
+})
+
+ipcMain.handle('burn-ideas', async () => {
+  const snap = await readSnapshot({ staleOk: true })
+  const target = mostLeftProvider(snap)
+  const { signals, ideas } = await generateBurnIdeas(target)
+  return {
+    target: {
+      ...target,
+      supportsPrompt: PROMPT_CAPABLE_CLIS.has(target.cli),
+    },
+    signals: signals.slice(0, 6),
+    ideas,
+  }
+})
+
+ipcMain.handle('burn-copy', (_e, idea) => {
+  const prompt = materializeIdeaPrompt(idea)
+  clipboard.writeText(prompt)
+  recordIdeaFeedback(idea, 'start')
+  return { ok: true }
+})
+
+ipcMain.handle('burn-start', async (_e, idea) => {
+  if (!idea) return { ok: false, error: 'No idea selected.' }
+  const picked = await dialog.showOpenDialog(popover, {
+    title: 'Where do you want to build ' + (idea.title || 'this burn challenge') + '?',
+    properties: ['openDirectory', 'createDirectory'],
+    buttonLabel: 'Build here',
+  })
+  if (picked.canceled || !picked.filePaths.length) return { ok: false, canceled: true }
+  const dir = picked.filePaths[0]
+  const prompt = materializeIdeaPrompt(idea, dir)
+  const goalPath = path.join(dir, 'goal.html')
+  fs.writeFileSync(goalPath, ideaGoalHtml(idea, prompt))
+  clipboard.writeText(prompt)
+  recordIdeaFeedback(idea, 'start')
+  const supportsPrompt = PROMPT_CAPABLE_CLIS.has(idea.cli)
+  const result = await openBuild({
+    dir,
+    cli: idea.cli || 'claude',
+    prompt: supportsPrompt ? prompt : '',
+  })
+  return {
+    ok: result.ok,
+    terminal: result.terminal,
+    dir,
+    goalPath,
+    copied: true,
+    promptLaunched: supportsPrompt,
+    cli: idea.cli,
+    error: result.error,
+  }
+})
+
+ipcMain.handle('mission-context', async () => {
+  const snap = await readSnapshot({ staleOk: true })
+  const cfg = loadConfig()
+  return { models: projectMissionModels(snap), history: Array.isArray(cfg.missionHistory) ? cfg.missionHistory : [] }
+})
+
+ipcMain.handle('mission-pick-folder', async () => {
+  const picked = await dialog.showOpenDialog(popover, {
+    title: 'Pick project folder',
+    properties: ['openDirectory', 'createDirectory'],
+    buttonLabel: 'Use folder',
+  })
+  if (picked.canceled || !picked.filePaths.length) return { ok: false, canceled: true }
+  return { ok: true, dir: picked.filePaths[0] }
+})
+
+ipcMain.handle('mission-copy-goal', async (_e, payload) => {
+  const snap = await readSnapshot({ staleOk: true })
+  const mission = buildProjectMission(payload, snap)
+  clipboard.writeText(mission.prompt)
+  return { ok: true, dir: mission.dir, goalPath: mission.goalPath }
+})
+
+ipcMain.handle('mission-start-project', async (_e, payload) => {
+  const snap = await readSnapshot({ staleOk: true })
+  const mission = buildProjectMission(payload, snap)
+  const first = mission.models[0]
+  clipboard.writeText(mission.prompt)
+  const result = await openBuild({
+    dir: mission.dir,
+    cli: first.cli || 'claude',
+    prompt: PROMPT_CAPABLE_CLIS.has(first.cli) ? mission.prompt : '',
+  })
+  const entry = recordProjectMission(mission, result, first)
+  return {
+    ok: result.ok,
+    terminal: result.terminal,
+    dir: mission.dir,
+    goalPath: mission.goalPath,
+    copied: true,
+    promptLaunched: PROMPT_CAPABLE_CLIS.has(first.cli),
+    cli: first.cli,
+    mission: entry,
+    error: result.error,
+  }
 })
 
 let updateTimer = null
