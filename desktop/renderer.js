@@ -747,18 +747,19 @@ function renderOutputSignal() {
   if (!mainVisible) return
   const target = snap.maxxTarget
   const left = Number(target?.valueLeft)
-  const reset = target?.resetAt ? fmtRunway(Math.max(0, Number(target.resetAt) - Date.now())) : null
+  const resetAt = Number(target?.resetAt)
+  const reset = Number.isFinite(resetAt) && resetAt > Date.now() ? fmtRunway(Math.max(0, resetAt - Date.now())) : null
   const details = target
     ? [
-        Number.isFinite(left) ? `${money(left)} left` : null,
-        reset ? `resets in ${reset}` : null,
+        Number.isFinite(left) ? h(`${money(left)} left`) : null,
+        reset ? `resets in <span class="signal-reset mono" data-signal-reset="${resetAt}">${h(reset)}</span>` : null,
       ].filter(Boolean).join(' · ')
-    : 'Find the best model to spend before reset.'
+    : h('Find the best model to spend before reset.')
   el.innerHTML = `
     <div class="signal-copy">
       <span class="signal-kicker">Next maxx</span>
       <b>${target ? `Use ${h(target.name)} before reset` : 'Start a Goal Burn'}</b>
-      <span>${h(details)}</span>
+      <span>${details}</span>
     </div>
     <button class="signal-action build-action" id="output-signal-action" data-open-goal-burn style="--build-progress:${target ? Math.max(24, Math.min(100, Math.round(Number(target.reservePct) || 42))) : 42}%">
       <span>${ICON_SHARE} Start Goal Burn</span>
@@ -1004,6 +1005,10 @@ function tickCountdowns() {
   document.querySelectorAll('[data-reset]').forEach((el) => {
     const r = Number(el.dataset.reset)
     if (r) el.textContent = countdown(r)
+  })
+  document.querySelectorAll('[data-signal-reset]').forEach((el) => {
+    const r = Number(el.dataset.signalReset)
+    if (r) el.textContent = fmtRunway(Math.max(0, r - Date.now()))
   })
   renderSummaryReset()
 }
