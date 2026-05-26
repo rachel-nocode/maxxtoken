@@ -451,12 +451,6 @@ function storagePanel(footprint) {
     </div>`
 }
 
-function providerStatusInline(status) {
-  if (!status) return ''
-  const label = status.description || status.label || 'Status unknown'
-  return `<span class="status-pill ${h(status.indicator || 'unknown')}" title="${h(label)}" aria-label="${h(label)}" role="img"></span>`
-}
-
 function providerStatusPanel(status) {
   if (!status) return ''
   const detail = status.description ? `<div class="status-detail">${h(status.description)}</div>` : ''
@@ -470,6 +464,17 @@ function providerStatusPanel(status) {
       ${detail}
       ${link}
     </div>`
+}
+
+function providerDotState(p) {
+  const indicator = p.status?.indicator || ''
+  const statusLabel = p.status?.description || p.status?.label || ''
+  if (p.error) return { cls: 'error', label: statusLabel ? `Usage fetch failed · ${statusLabel}` : 'Usage fetch failed' }
+  if (indicator === 'major' || indicator === 'critical') return { cls: indicator, label: statusLabel || 'Provider outage' }
+  if (indicator === 'minor' || indicator === 'maintenance' || indicator === 'unknown') return { cls: indicator, label: statusLabel || 'Provider status degraded' }
+  if (p.activity === 'stale') return { cls: 'stale', label: statusLabel ? `${statusLabel} · data stale` : 'Data stale' }
+  if (p.activity === 'live') return { cls: 'live', label: statusLabel || 'Operational' }
+  return { cls: 'none', label: statusLabel || 'Not active' }
 }
 
 function providerActions(p) {
@@ -681,6 +686,7 @@ function providerCard(p) {
   const pctDisplay = showTokens ? (hasTokenSource ? tokens(tokenUsage.total) : '—') : pct
   const expandLabel = expanded ? 'Collapse details' : 'Show details'
   const expandedTokenDetails = expanded && showTokens && hasTokenSource ? tokenDetails(tokenUsage) : ''
+  const dot = providerDotState(p)
 
   return `
     <div class="prov ${expanded ? 'open' : ''} ${p.urgent ? 'urgent' : ''}" style="--accent:${accent}">
@@ -689,9 +695,8 @@ function providerCard(p) {
         <span class="prov-id">
           <span class="prov-name">${h(p.name)}</span>
           <span class="prov-sub">
-            <span class="activity-dot ${p.activity}"></span>
+            <span class="activity-dot ${h(dot.cls)}" title="${h(dot.label)}" aria-label="${h(dot.label)}" role="img"></span>
             <span class="prov-plan">${h(p.plan)}</span>
-            ${providerStatusInline(p.status)}
           </span>
         </span>
         <span class="prov-pct">

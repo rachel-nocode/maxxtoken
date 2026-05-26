@@ -694,13 +694,25 @@ body {
   background: var(--muted-2);
 }
 
-.activity-dot.live {
+.activity-dot.live,
+.activity-dot.none {
   background: var(--green);
   box-shadow: 0 0 6px var(--green);
 }
 
-.activity-dot.stale {
+.activity-dot.stale,
+.activity-dot.minor,
+.activity-dot.maintenance,
+.activity-dot.unknown {
   background: #d9a441;
+  box-shadow: 0 0 6px rgba(217, 164, 65, 0.65);
+}
+
+.activity-dot.error,
+.activity-dot.major,
+.activity-dot.critical {
+  background: var(--red);
+  box-shadow: 0 0 6px rgba(255, 111, 84, 0.7);
 }
 
 .prov-pct {
@@ -967,70 +979,6 @@ body {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, #6fd0b6, var(--green));
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 18px;
-  height: 14px;
-  border-radius: 999px;
-  border: 1px solid var(--line-soft);
-  color: var(--muted-2);
-  background: #0d0f0a;
-}
-
-.status-pill::before {
-  content: "";
-  display: block;
-}
-
-.status-pill.none {
-  color: var(--green);
-  border-color: rgba(183, 255, 66, 0.22);
-}
-
-.status-pill.none::before {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: currentColor;
-  box-shadow: 0 0 8px currentColor;
-}
-
-.status-pill.minor,
-.status-pill.maintenance,
-.status-pill.unknown {
-  color: var(--yellow);
-  border-color: rgba(255, 214, 89, 0.25);
-}
-
-.status-pill.minor::before,
-.status-pill.maintenance::before,
-.status-pill.unknown::before {
-  width: 0;
-  height: 0;
-  border-left: 4px solid transparent;
-  border-right: 4px solid transparent;
-  border-bottom: 7px solid currentColor;
-}
-
-.status-pill.major,
-.status-pill.critical {
-  color: var(--red);
-  border-color: rgba(255, 111, 84, 0.34);
-  background: var(--red-bg);
-}
-
-.status-pill.major::before,
-.status-pill.critical::before {
-  width: 7px;
-  height: 7px;
-  background:
-    linear-gradient(45deg, transparent 42%, currentColor 42% 58%, transparent 58%),
-    linear-gradient(-45deg, transparent 42%, currentColor 42% 58%, transparent 58%);
 }
 
 /* rate-limit windows */
