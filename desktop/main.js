@@ -129,6 +129,7 @@ function fullSnapshotFromWidgetCache(cache) {
   const config = loadConfig()
   const cachedProviders = (cache.providers || []).map((provider) => ({
     ...provider,
+    links: provider.links || providerLinks.linksForProvider(provider.id),
     monthly: provider.monthly ?? config.providers?.[provider.id]?.monthly ?? 0,
     windows: [provider.primaryWindow, provider.secondaryWindow].filter(Boolean),
     tokenUsage: provider.tokenUsage
@@ -152,6 +153,7 @@ function fullSnapshotFromWidgetCache(cache) {
       name: provider.name,
       plan: provider.plan,
       monthly: provider.monthly,
+      links: providerLinks.linksForProvider(id),
       connected: false,
       activity: 'none',
       capturedPct: null,

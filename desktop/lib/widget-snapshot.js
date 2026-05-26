@@ -1,6 +1,7 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const providerLinks = require('./provider-links')
 
 const DIR = path.join(os.homedir(), '.maxxtoken')
 const FILE = path.join(DIR, 'widget-snapshot.json')
@@ -14,6 +15,7 @@ function compactProvider(provider) {
     name: provider.name,
     plan: provider.plan,
     monthly: provider.monthly ?? null,
+    links: provider.links || providerLinks.linksForProvider(provider.id),
     connected: provider.connected === true,
     needsKey: provider.needsKey === true,
     activity: provider.activity || 'none',
@@ -114,6 +116,8 @@ function compactWindow(window) {
           tone: window.pace.tone,
           leftLabel: window.pace.leftLabel,
           willLastToReset: window.pace.willLastToReset,
+          expectedUsedPercent: window.pace.expectedUsedPercent ?? null,
+          projectedAtResetPercent: window.pace.projectedAtResetPercent ?? null,
         }
       : null,
   }

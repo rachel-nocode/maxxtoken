@@ -839,7 +839,14 @@ test('widget snapshot exports compact token-maxxing state and keeps enabled prov
         leftValue: 140,
         sourceLabel: 'local Claude logs',
         windows: [
-          { label: 'Weekly', kind: '7d', usedPct: 30, resetAt: Date.parse('2026-05-22T12:00:00Z'), history: { missRiskPct: 80 } },
+          {
+            label: 'Weekly',
+            kind: '7d',
+            usedPct: 30,
+            resetAt: Date.parse('2026-05-22T12:00:00Z'),
+            history: { missRiskPct: 80 },
+            pace: { tone: 'reserve', leftLabel: '20% in reserve', willLastToReset: true, expectedUsedPercent: 50, projectedAtResetPercent: 80 },
+          },
           { label: 'Session', kind: '5h', usedPct: 10, resetAt: Date.parse('2026-05-21T15:00:00Z') },
         ],
         tokenUsage: {
@@ -880,8 +887,12 @@ test('widget snapshot exports compact token-maxxing state and keeps enabled prov
   assert.deepEqual(compact.enabledProviderIds, ['claude', 'cursor'])
   assert.equal(compact.providers.length, 2)
   assert.equal(compact.providers[0].sourceLabel, 'local Claude logs')
+  assert.equal(compact.providers[0].links.status, 'https://status.claude.com/')
+  assert.equal(compact.providers[0].links.dashboard, 'https://claude.ai/settings/usage')
   assert.equal(compact.providers[0].primaryWindow.label, 'Weekly')
   assert.equal(compact.providers[0].primaryWindow.historyRiskPct, 80)
+  assert.equal(compact.providers[0].primaryWindow.pace.expectedUsedPercent, 50)
+  assert.equal(compact.providers[0].primaryWindow.pace.projectedAtResetPercent, 80)
   assert.equal(compact.providers[0].secondaryWindow.label, 'Session')
   assert.equal(compact.providers[0].tokenUsage.total, 123)
   assert.equal(compact.providers[0].tokenUsage.costUSD, 0.04)

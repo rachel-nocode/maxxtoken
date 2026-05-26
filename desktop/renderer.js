@@ -198,8 +198,19 @@ const $ = (id) => document.getElementById(id)
 let snap = null
 const expandedProviders = new Set()
 let refreshingProvider = null
-let viewMode = 'usage'
-let receiptCollapsed = localStorage.getItem('maxxtoken-receipt-collapsed') !== 'false'
+const THEME_KEY = 'maxxtoken-theme'
+
+function currentTheme() {
+  return localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'
+}
+
+function applyTheme(theme = currentTheme()) {
+  document.documentElement.dataset.theme = theme
+  if (document.body) document.body.dataset.theme = theme
+  localStorage.setItem(THEME_KEY, theme)
+}
+
+applyTheme()
 
 function money(n) {
   const v = Math.round(n)
@@ -258,14 +269,6 @@ function countdown(resetAt) {
   return `${pad(h)}h ${pad(m)}m ${pad(s % 60)}s`
 }
 
-function starRow(stars) {
-  let out = ''
-  for (let i = 0; i < 5; i++) {
-    out += `<span class="${i < stars ? 'on' : 'off'}">★</span>`
-  }
-  return out
-}
-
 function providerIcon(id, fallback) {
   const icon = PROVIDER_ICON[id]
   if (!icon) return `<span class="prov-icon">${h(fallback)}</span>`
@@ -312,6 +315,82 @@ function meterWithMarkers(pct, tone, kind, className = 'prov-meter') {
   return `<div class="${className}"><span class="${tone}" style="width:${pct}%"></span>${quotaWarningMarkers(kind)}</div>`
 }
 
+function compactWindowLabel(w) {
+  const kind = quotaWarningKind(w)
+  if (kind === 'session') return '5H'
+  if (kind === 'weekly') return '7D'
+  if (w?.kind === 'cycle') return '30D'
+  return String(w?.label || w?.kind || 'usage').slice(0, 4).toUpperCase()
+}
+
+function pickCollapsedWindows(windows = []) {
+  const has = (w) => w && Number.isFinite(Number(w.usedPct))
+  const lower = (w) => String(`${w?.label || ''} ${w?.kind || ''}`).toLowerCase()
+  const session = windows.find((w) => has(w) && quotaWarningKind(w) === 'session' && lower(w).includes('session'))
+    || windows.find((w) => has(w) && quotaWarningKind(w) === 'session')
+  const weekly = windows.find((w) => has(w) && quotaWarningKind(w) === 'weekly' && lower(w).includes('weekly'))
+    || windows.find((w) => has(w) && quotaWarningKind(w) === 'weekly')
+  const picked = [session, weekly].filter(Boolean)
+  for (const window of windows) {
+    if (picked.length >= 2) break
+    if (has(window) && !picked.includes(window)) picked.push(window)
+  }
+  return picked.slice(0, 2)
+}
+
+function collapsedWindowBars(p, fallbackPct, fallbackKind) {
+  const windows = pickCollapsedWindows(p.windows || [])
+  if (!windows.length) return meterWithMarkers(fallbackPct, usageTone(fallbackPct), fallbackKind)
+  return `
+    <div class="prov-window-bars">
+      ${windows
+        .map((w) => {
+          const pct = Math.max(0, Math.min(100, Math.round(Number(w.usedPct) || 0)))
+          return `
+            <div class="prov-window-line" title="${h(w.label || 'Usage')} · ${pct}% used">
+              <span class="prov-window-label mono">${h(compactWindowLabel(w))}</span>
+              ${compactPaceRail(w, pct)}
+              <span class="prov-window-pct mono">${pct}%</span>
+            </div>`
+        })
+        .join('')}
+    </div>`
+}
+
+function compactPaceRail(w, usedPct) {
+  const expectedPct =
+    w.pace && Number.isFinite(Number(w.pace.expectedUsedPercent))
+      ? Math.max(0, Math.min(100, Math.round(Number(w.pace.expectedUsedPercent))))
+      : usedPct
+  const projectedPct =
+    w.pace && Number.isFinite(Number(w.pace.projectedAtResetPercent))
+      ? Number(w.pace.projectedAtResetPercent)
+      : null
+  const a = Math.max(0, Math.min(100, usedPct))
+  const e = Math.max(0, Math.min(100, expectedPct))
+  const ahead = a < e - 2
+  const behind = a > e + 2
+  const uid = `cpb${Math.random().toString(36).slice(2, 9)}`
+  const tickX = Math.max(0, Math.min(99.6, e - 0.2))
+  const burnout = Number.isFinite(projectedPct) && projectedPct >= 100 && a < 100
+  return `
+    <div class="prov-rail ${ahead ? 'reserve' : behind ? 'deficit' : 'onpace'}">
+      <svg class="prov-rail-svg" viewBox="0 0 100 18" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <pattern id="${uid}" patternUnits="userSpaceOnUse" width="3" height="10" patternTransform="rotate(45)">
+            <rect width="1.5" height="10" fill="#b6f24a"/>
+          </pattern>
+        </defs>
+        <rect class="pr-track" x="0" y="4" width="100" height="10"/>
+        <rect class="pr-fill" x="0" y="4" width="${behind ? e : a}" height="10"/>
+        ${behind ? `<rect class="pr-stripes" x="${e}" y="4" width="${Math.max(0, a - e)}" height="10" fill="url(#${uid})"/>` : ''}
+        ${ahead ? `<rect class="pr-reserve" x="${a}" y="15.2" width="${e - a}" height="1.2"/>` : ''}
+        ${burnout ? `<rect class="pr-burnout" x="99.2" y="2" width="0.8" height="14"/>` : ''}
+        <rect class="pr-tick" x="${tickX}" y="2" width="0.8" height="14"/>
+      </svg>
+    </div>`
+}
+
 function windowHistoryMini(w) {
   const points = Array.isArray(w.historySeries) ? w.historySeries.slice(-24) : []
   if (points.length < 2) return ''
@@ -331,7 +410,7 @@ function windowHistoryMini(w) {
     </div>`
 }
 
-function paceBarSvg(usedPct, expectedPct, windowLabel, projectedPct) {
+function paceBarSvg(usedPct, expectedPct, projectedPct) {
   const a = Math.max(0, Math.min(100, usedPct))
   const e = Math.max(0, Math.min(100, expectedPct))
   const ahead = a < e - 2
@@ -364,7 +443,6 @@ function paceBarSvg(usedPct, expectedPct, windowLabel, projectedPct) {
         ${ahead ? `<rect class="pb-reserve" x="${a}" y="13.2" width="${e - a}" height="1.1"/>` : ''}
         <rect class="pb-tick ${onPace ? 'on' : 'off'}" x="${tickX}" y="3" width="0.6" height="11"/>
       </svg>
-      ${windowLabel ? `<span class="pacebar-win mono">${h(windowLabel)}</span>` : ''}
     </div>`
 }
 
@@ -379,7 +457,6 @@ function windowRow(w) {
     w.resetAt &&
     ((w.kind === '5h' && left < 90 * 60000 && w.usedPct < 50) ||
       (w.kind !== '5h' && left < 2 * 86400000 && w.usedPct < 60))
-  const winLabel = w.kind === '5h' ? '5H' : w.kind === 'cycle' ? '30D' : '7D'
   const tierLabel = w.kind === '5h' ? 'SESSION · 5H' : w.kind === 'cycle' ? 'BILLING · 30D' : 'WEEKLY · 7D'
   const ahead = expectedPct - usedPct > 2
   const behind = usedPct - expectedPct > 2
@@ -395,7 +472,7 @@ function windowRow(w) {
         <span class="win-pct mono">${usedPct}<i>%</i></span>
         <span class="win-reset mono ${urgent ? 'urgent' : ''}" data-reset="${w.resetAt || ''}">${countdown(w.resetAt)}</span>
       </div>
-      ${paceBarSvg(usedPct, expectedPct, winLabel, projectedPct)}
+      ${paceBarSvg(usedPct, expectedPct, projectedPct)}
     </div>`
 }
 
@@ -438,6 +515,26 @@ function providerStatusInline(status) {
   return `<span class="status-pill ${h(status.indicator || 'unknown')}" title="${h(label)}" aria-label="${h(label)}" role="img"></span>`
 }
 
+function providerLinkStack(p) {
+  const links = p.links || {}
+  const status = p.status || {}
+  const statusLabel = status.description || status.label || 'Status page'
+  const items = [
+    links.status
+      ? `
+        <button class="provider-mini-link status ${h(status.indicator || 'unknown')}" data-provider-id="${h(p.id)}" data-provider-link="status" aria-label="Open ${h(p.name)} status" title="${h(statusLabel)}"></button>`
+      : null,
+    links.dashboard
+      ? `
+        <button class="provider-mini-link dashboard" data-provider-id="${h(p.id)}" data-provider-link="dashboard" aria-label="Open ${h(p.name)} usage dashboard" title="Usage dashboard">
+          ${ICON_CHART}
+        </button>`
+      : null,
+  ].filter(Boolean)
+  if (!items.length) return ''
+  return `<span class="provider-link-stack">${items.join('')}</span>`
+}
+
 function providerStatusPanel(status) {
   if (!status) return ''
   const detail = status.description ? `<div class="status-detail">${h(status.description)}</div>` : ''
@@ -475,7 +572,11 @@ function providerActions(p) {
 }
 
 function modelBreakdownRows(tokenUsage) {
-  const rows = Array.isArray(tokenUsage?.modelBreakdowns) ? tokenUsage.modelBreakdowns : []
+  const rows = Array.isArray(tokenUsage?.modelBreakdowns)
+    ? tokenUsage.modelBreakdowns
+    : Array.isArray(tokenUsage?.topModels)
+      ? tokenUsage.topModels
+      : []
   const total = Math.max(1, Number(tokenUsage?.total) || 0)
   return rows
     .filter((row) => Number(row?.total) > 0)
@@ -485,8 +586,7 @@ function modelBreakdownRows(tokenUsage) {
       const rowTotal = Number(row.total) || 0
       const pct = Math.max(3, Math.round((rowTotal / total) * 100))
       const cost = Number(row.costUSD)
-      const pricing = row.pricingSource ? ` · ${row.pricingSource}` : ''
-      const costText = Number.isFinite(cost) ? `${moneyMaybeExact(cost)} est.${pricing}` : 'tokens only'
+      const costText = Number.isFinite(cost) ? `${moneyMaybeExact(cost)} est.` : 'tokens only'
       const detail = [
         Number(row.input) > 0 ? `${tokens(row.input)} in` : null,
         Number(row.cached) > 0 ? `${tokens(row.cached)} cached` : null,
@@ -508,36 +608,76 @@ function modelBreakdownRows(tokenUsage) {
     .join('')
 }
 
-function dayLabel(day) {
-  const parts = String(day || '').split('-').map((part) => Number(part))
-  if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return String(day || 'day')
-  return new Date(parts[0], parts[1] - 1, parts[2]).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+function localDayKey(date) {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
 }
 
-function dailyBreakdownRows(tokenUsage) {
-  const rows = Array.isArray(tokenUsage?.dailyBreakdown) ? tokenUsage.dailyBreakdown : []
-  const maxTotal = Math.max(...rows.map((row) => Number(row.total) || 0), 1)
-  return rows
-    .filter((row) => Number(row?.total) > 0)
-    .slice(0, 7)
-    .map((row) => {
-      const total = Number(row.total) || 0
-      const pct = Math.max(3, Math.round((total / maxTotal) * 100))
-      const cost = Number(row.costUSD)
-      const meta = Number.isFinite(cost) ? `${moneyMaybeExact(cost)} est.` : `${row.requests || 0} req`
-      return `
-        <div class="token-day-row">
-          <span class="token-day-label">${h(dayLabel(row.date))}</span>
-          <div class="token-day-bar" aria-hidden="true"><span style="width:${pct}%"></span></div>
-          <span class="token-day-total mono">${tokens(total)}</span>
-          <span class="token-day-cost">${h(meta)}</span>
-        </div>`
+function tokenCostLine(label, usage) {
+  const total = Number(usage?.total) || 0
+  const cost = Number(usage?.costUSD)
+  const hasCost = usage?.hasCost !== false || total === 0
+  const costText = hasCost && Number.isFinite(cost) ? moneyMaybeExact(cost) : 'tokens only'
+  return `
+    <div class="token-cost-row">
+      <span>${h(label)}</span>
+      <b>${h(costText)} · ${tokens(total)} tokens</b>
+    </div>`
+}
+
+function tokenCostRows(tokenUsage) {
+  const rows = Array.isArray(tokenUsage?.dailyBreakdown)
+    ? tokenUsage.dailyBreakdown
+    : Array.isArray(tokenUsage?.dailyUsage)
+      ? tokenUsage.dailyUsage
+      : []
+  const byDay = new Map()
+  for (const row of rows) {
+    const key = String(row?.date || row?.dayKey || row?.day || '')
+    if (!key) continue
+    const prev = byDay.get(key) || { total: 0, costUSD: 0, hasCost: false }
+    const cost = Number(row.costUSD)
+    byDay.set(key, {
+      total: prev.total + (Number(row.total ?? row.totalTokens) || 0),
+      costUSD: prev.costUSD + (Number.isFinite(cost) ? cost : 0),
+      hasCost: prev.hasCost || Number.isFinite(cost),
     })
-    .join('')
+  }
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  const todayUsage = byDay.get(localDayKey(today)) || { total: 0, costUSD: 0, hasCost: true }
+  const yesterdayUsage = byDay.get(localDayKey(yesterday)) || { total: 0, costUSD: 0, hasCost: true }
+  const totalCost = Number(tokenUsage?.costUSD)
+  const hasTotalCost = Number.isFinite(totalCost) || rows.some((row) => Number.isFinite(Number(row.costUSD)))
+  const totalUsage = {
+    total: Number(tokenUsage?.total) || rows.reduce((sum, row) => sum + (Number(row.total ?? row.totalTokens) || 0), 0),
+    costUSD: Number.isFinite(totalCost)
+      ? totalCost
+      : rows.reduce((sum, row) => sum + (Number(row.costUSD) || 0), 0),
+    hasCost: hasTotalCost,
+  }
+  const historyDays = Number(tokenUsage?.historyDays) || 30
+  return `
+    <div class="token-costs">
+      <div class="token-models-head">
+        <span>Cost</span>
+        <b>estimated</b>
+      </div>
+      ${tokenCostLine('Today', todayUsage)}
+      ${tokenCostLine('Yesterday', yesterdayUsage)}
+      ${tokenCostLine(`Last ${historyDays} days`, totalUsage)}
+    </div>`
 }
 
 function serviceTierRows(tokenUsage) {
-  const rows = Array.isArray(tokenUsage?.serviceTierBreakdowns) ? tokenUsage.serviceTierBreakdowns : []
+  const rows = Array.isArray(tokenUsage?.serviceTierBreakdowns)
+    ? tokenUsage.serviceTierBreakdowns
+    : Array.isArray(tokenUsage?.serviceTiers)
+      ? tokenUsage.serviceTiers
+      : []
   const total = Math.max(1, Number(tokenUsage?.total) || 0)
   return rows
     .filter((row) => Number(row?.total) > 0)
@@ -568,23 +708,14 @@ function serviceTierRows(tokenUsage) {
 }
 
 function tokenDetails(tokenUsage) {
-  const dailyRows = dailyBreakdownRows(tokenUsage)
+  const costRows = tokenCostRows(tokenUsage)
   const tierRows = serviceTierRows(tokenUsage)
   const modelRows = modelBreakdownRows(tokenUsage)
-  const pricingSources = Array.isArray(tokenUsage?.pricingSources) ? tokenUsage.pricingSources.filter(Boolean) : []
-  const pricingText = pricingSources.length ? `${pricingSources.join(' + ')} pricing` : ''
-  if (!dailyRows && !tierRows && !modelRows && !pricingText) return ''
-  const hiddenCount = Math.max(0, (tokenUsage.modelBreakdowns || []).length - 5)
+  if (!costRows && !tierRows && !modelRows) return ''
+  const modelBreakdowns = tokenUsage.modelBreakdowns || tokenUsage.topModels || []
+  const hiddenCount = Math.max(0, modelBreakdowns.length - 5)
   return `
-    ${pricingText ? `<div class="token-pricing-source">${h(pricingText)}</div>` : ''}
-    ${dailyRows ? `
-      <div class="token-models token-days">
-        <div class="token-models-head">
-          <span>Daily burn</span>
-          <b>${h(tokenUsage.historyDays || 30)}d</b>
-        </div>
-        ${dailyRows}
-      </div>` : ''}
+    ${costRows}
     ${tierRows ? `
       <div class="token-models">
         <div class="token-models-head">
@@ -650,18 +781,18 @@ function providerCard(p) {
       </div>`
   }
 
-  const extra = (p.extra || [])
-    .map((d) => `<span>${h(d.label)} <b>${h(d.value)}</b></span>`)
-    .join('')
   const meterKind = p.windows?.some((w) => quotaWarningKind(w) === 'weekly') ? 'weekly' : 'session'
   const meter = meterWithMarkers(usedPct || 0, usageTone(usedPct || 0), meterKind)
+  const collapsedMeters = collapsedWindowBars(p, usedPct || 0, meterKind)
   const tokenUsage = p.tokenUsage || null
-  const showTokens = viewMode === 'tokens'
   const hasTokenSource = tokenUsage && Number.isFinite(Number(tokenUsage.total))
-  const usageLabel = showTokens ? 'tokens' : p.usageLabel || 'used'
-  const pctDisplay = showTokens ? (hasTokenSource ? tokens(tokenUsage.total) : '—') : pct
   const expandLabel = expanded ? 'Collapse details' : 'Show details'
-  const expandedTokenDetails = expanded && showTokens && hasTokenSource ? tokenDetails(tokenUsage) : ''
+  const linkStack = providerLinkStack(p)
+  const expandedTokenDetails = expanded
+    ? hasTokenSource
+      ? tokenDetails(tokenUsage)
+      : '<div class="token-missing">No token source yet</div>'
+    : ''
 
   return `
     <div class="prov ${expanded ? 'open' : ''} ${p.urgent ? 'urgent' : ''}" style="--accent:${accent}">
@@ -672,333 +803,40 @@ function providerCard(p) {
           <span class="prov-sub">
             <span class="activity-dot ${p.activity}"></span>
             <span class="prov-plan">${h(p.plan)}</span>
-            ${providerStatusInline(p.status)}
           </span>
         </span>
         <span class="prov-pct">
-          <span class="pn mono">${pctDisplay}</span>
-          <span class="pl">${h(usageLabel)}</span>
+          <span class="pn mono">${pct}</span>
+          <span class="pl">${h(p.usageLabel || 'used')}</span>
         </span>
+        ${linkStack}
         ${refreshButton}
         <button class="prov-expand" data-provider-toggle="${h(p.id)}" aria-label="${expandLabel} for ${h(p.name)}" aria-expanded="${expanded}">
           ${expanded ? ICON_CHEVRON_UP : ICON_CHEVRON_DOWN}
         </button>
       </div>
-      ${showTokens ? '' : meter}
+      ${expanded ? meter : collapsedMeters}
       ${body}
+      ${expandedTokenDetails}
     </div>`
 }
 
 function render() {
   if (!snap) return
   const t = snap.totals
-  $('cycle-pill').textContent = `${snap.cycle.label} · ${snap.cycle.daysLeft}d left`
-  const tokenTotals = t.tokens || { input: 0, cached: 0, output: 0, total: 0, providerCount: 0 }
-  const showTokens = viewMode === 'tokens'
-  applyReceiptCollapsed()
-  $('mode-usage').classList.toggle('active', !showTokens)
-  $('mode-tokens').classList.toggle('active', showTokens)
-  $('receipt-meter').hidden = showTokens || receiptCollapsed
-  $('t-captured').textContent = showTokens ? tokens(tokenTotals.total) : money(t.spent ?? t.captured)
-  $('t-burned').textContent = showTokens ? tokens(tokenTotals.input) : money(t.left ?? t.remaining ?? t.burned)
-  $('t-runway').textContent = showTokens ? tokens(tokenTotals.output) : receiptCollapsed ? `${Math.round(t.capturedPct || 0)}%` : summaryResetText()
-  $('t-captured-label').textContent = showTokens ? 'total tokens' : 'spent value'
-  $('t-burned-label').textContent = showTokens ? 'input tokens' : 'left to maxx'
-  $('t-runway-label').textContent = showTokens ? 'output tokens' : receiptCollapsed ? 'used' : 'target reset'
-  $('t-meter').style.width = (t.capturedPct || 0) + '%'
-  $('t-meter').className = usageTone(t.capturedPct || 0)
-  $('t-stars').innerHTML = starRow(snap.rating.stars)
-  $('t-verdict').textContent = snap.rating.verdict
-  renderMaxxTarget(showTokens)
-  renderTrendStrip(showTokens)
-  renderHistoryStrip(showTokens)
-  renderResetQueue(showTokens)
-  renderOutputSignal(showTokens)
+  $('t-captured').textContent = money(t.spent ?? t.captured)
+  $('t-burned').textContent = money(t.left ?? t.remaining ?? t.burned)
   const footEl = $('foot-left')
   if (!footEl) {
     $('list').innerHTML = snap.providers.map(providerCard).join('')
     return
   }
-  if (showTokens) {
-    if (tokenTotals.providerCount) {
-      const cost = Number(tokenTotals.costUSD)
-      footEl.innerHTML = `
-        <span class="foot-chip"><span class="fc-l">Tokens</span><span class="fc-v mono">${tokens(tokenTotals.total)}</span></span>
-        <span class="foot-chip"><span class="fc-l">Sources</span><span class="fc-v mono">${tokenTotals.providerCount}</span></span>
-        <span class="foot-chip"><span class="fc-l">${Number.isFinite(cost) ? 'Est. Cost' : 'Window'}</span><span class="fc-v mono">${Number.isFinite(cost) ? moneyMaybeExact(cost) : `${tokenTotals.historyDays || 30}D`}</span></span>`
-    } else {
-      footEl.textContent = 'No token sources yet'
-    }
-  } else {
-    const planVal = t.estimatedPlanCount ? `${t.planCount}<i>·${t.estimatedPlanCount}e</i>` : `${t.planCount}`
-    footEl.innerHTML = `
-      <span class="foot-chip"><span class="fc-l">Left</span><span class="fc-v mono">${money(t.left ?? t.remaining)}</span></span>
-      <span class="foot-chip"><span class="fc-l">Spent</span><span class="fc-v mono">${money(t.spent ?? t.captured)}</span></span>
-      <span class="foot-chip"><span class="fc-l">Plans</span><span class="fc-v mono">${planVal}</span></span>`
-  }
+  const planVal = t.estimatedPlanCount ? `${t.planCount}<i>·${t.estimatedPlanCount}e</i>` : `${t.planCount}`
+  footEl.innerHTML = `
+    <span class="foot-chip"><span class="fc-l">Left</span><span class="fc-v mono">${money(t.left ?? t.remaining)}</span></span>
+    <span class="foot-chip"><span class="fc-l">Spent</span><span class="fc-v mono">${money(t.spent ?? t.captured)}</span></span>
+    <span class="foot-chip"><span class="fc-l">Plans</span><span class="fc-v mono">${planVal}</span></span>`
   $('list').innerHTML = snap.providers.map(providerCard).join('')
-}
-
-function renderOutputSignal() {
-  const el = $('output-signal')
-  if (!el || !snap) return
-  const mainVisible = !$('view-main')?.hidden
-  el.hidden = !mainVisible
-  if (!mainVisible) return
-  const target = snap.maxxTarget
-  const left = Number(target?.valueLeft)
-  const resetAt = Number(target?.resetAt)
-  const reset = Number.isFinite(resetAt) && resetAt > Date.now() ? fmtRunway(Math.max(0, resetAt - Date.now())) : null
-  const details = target
-    ? [
-        Number.isFinite(left) ? h(`${money(left)} left`) : null,
-        reset ? `resets in <span class="signal-reset mono" data-signal-reset="${resetAt}">${h(reset)}</span>` : null,
-      ].filter(Boolean).join(' · ')
-    : h('Find the best model to spend before reset.')
-  el.innerHTML = `
-    <div class="signal-copy">
-      <span class="signal-kicker">Next maxx</span>
-      <b>${target ? `Use ${h(target.name)} before reset` : 'Start a Goal Burn'}</b>
-      <span>${details}</span>
-    </div>
-    <button class="signal-action build-action" id="output-signal-action" data-open-goal-burn style="--build-progress:${target ? Math.max(24, Math.min(100, Math.round(Number(target.reservePct) || 42))) : 42}%">
-      <span>${ICON_SHARE} Start Goal Burn</span>
-    </button>`
-}
-
-function applyReceiptCollapsed() {
-  const receipt = $('receipt')
-  const toggle = $('receipt-toggle')
-  if (!receipt || !toggle) return
-  receipt.classList.toggle('compact', receiptCollapsed)
-  toggle.setAttribute('aria-expanded', String(!receiptCollapsed))
-  toggle.setAttribute('aria-label', receiptCollapsed ? 'Expand summary' : 'Collapse summary')
-  toggle.title = receiptCollapsed ? 'Expand summary' : 'Collapse summary'
-}
-
-function renderHistoryStrip(showTokens) {
-  const el = $('history-strip')
-  const history = snap?.totals?.history
-  const worst = history?.worst
-  if (!el) return
-  if (showTokens || !worst || !history.sampleCount) {
-    el.hidden = true
-    el.innerHTML = ''
-    return
-  }
-  const tracked = `${history.sampleCount} reset${history.sampleCount === 1 ? '' : 's'} tracked`
-  const miss = worst.missRiskPct != null ? ` · ${Math.round(worst.missRiskPct)}% miss risk` : ''
-  const provider = worst.providerName || worst.providerId || 'Provider'
-  const windowLabel = worst.windowLabel ? ` ${worst.windowLabel}` : ''
-  el.hidden = false
-  el.innerHTML = `
-    <span class="history-kicker">History</span>
-    <b>${h(provider)}${h(windowLabel)}</b>
-    <span>usually leaves ${Math.round(worst.averageUnusedPct || 0)}% unused${miss} · ${h(tracked)}</span>`
-}
-
-function renderTrendStrip(showTokens) {
-  const el = $('trend-strip')
-  const trend = snap?.totals?.trend
-  if (!el) return
-  if (showTokens) {
-    renderTokenMixStrip(el)
-    return
-  }
-  if (showTokens || !trend || trend.sampleCount < 2) {
-    el.hidden = true
-    el.innerHTML = ''
-    return
-  }
-  const delta = Math.round(trend.deltaPct || 0)
-  const direction = delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat'
-  const sign = delta > 0 ? '+' : ''
-  const spent = Math.abs(Number(trend.deltaSpent) || 0)
-  const windowLabel = trend.hours >= 48 ? `${Math.round(trend.hours / 24)}d` : `${trend.hours}h`
-  const copy =
-    direction === 'up'
-      ? `${sign}${delta} pts captured · ${moneyMaybeExact(spent)} more used`
-      : direction === 'down'
-        ? `${delta} pts captured · reset or plan mix changed`
-        : `flat at ${Math.round(trend.currentPct || 0)}% captured`
-  el.hidden = false
-  const chart = trendChart(trend.points || [], (point) => point.capturedPct)
-  el.innerHTML = `
-    <div class="trend-copy">
-      <span class="trend-kicker">Trend</span>
-      <span class="trend-arrow ${direction}">${direction === 'up' ? '↗' : direction === 'down' ? '↘' : '→'}</span>
-      <b>${h(copy)}</b>
-      <span>${h(windowLabel)} · ${trend.sampleCount} samples</span>
-    </div>
-    ${chart}`
-}
-
-function trendChart(points, valueForPoint) {
-  const values = (points || [])
-    .map(valueForPoint)
-    .map((value) => Math.max(0, Math.min(100, Math.round(Number(value) || 0))))
-  if (values.length < 2) return ''
-  return `
-    <div class="trend-chart" aria-hidden="true">
-      ${values.map((value) => `<span style="height:${Math.max(8, value)}%"></span>`).join('')}
-    </div>`
-}
-
-function renderTokenMixStrip(el) {
-  const tokenTotals = snap?.totals?.tokens || {}
-  const trend = snap?.totals?.tokenTrend || null
-  const total = Number(tokenTotals.total) || 0
-  if (!total || !tokenTotals.providerCount) {
-    el.hidden = true
-    el.innerHTML = ''
-    return
-  }
-  const parts = [
-    ['input', tokenTotals.input || 0],
-    ['cached', tokenTotals.cached || 0],
-    ['output', tokenTotals.output || 0],
-  ].filter(([, value]) => Number(value) > 0)
-  el.hidden = false
-  const trendCopy = tokenTrendCopy(trend)
-  const costCopy = tokenCostCopy(tokenTotals, trend)
-  const maxPoint = Math.max(...(trend?.points || []).map((point) => Number(point.total) || 0), 0)
-  const chart = trend?.points?.length >= 2 && maxPoint > 0 ? trendChart(trend.points, (point) => (Number(point.total) / maxPoint) * 100) : ''
-  el.innerHTML = `
-    <div class="trend-copy">
-      <span class="trend-kicker">${trendCopy ? 'Token trend' : 'Token mix'}</span>
-      ${trendCopy ? `<span class="trend-arrow ${h(trend.direction || 'flat')}">${trend.direction === 'up' ? '↗' : trend.direction === 'down' ? '↘' : '→'}</span>` : ''}
-      <b>${tokens(total)}</b>
-      <span>${trendCopy || `${tokenTotals.providerCount} sources · ${tokenTotals.historyDays || 30}d window`}${costCopy}</span>
-    </div>
-    <div class="token-side">
-      ${chart}
-      <div class="token-mix" aria-hidden="true">
-        ${parts
-          .map(([name, value]) => {
-            const width = Math.max(3, Math.round((Number(value) / total) * 100))
-            return `<span class="${name}" style="width:${width}%"></span>`
-          })
-          .join('')}
-      </div>
-    </div>`
-}
-
-function tokenTrendCopy(trend) {
-  if (!trend || trend.sampleCount < 2) return ''
-  const delta = Math.round(Number(trend.deltaTotal) || 0)
-  const windowLabel = trend.hours >= 48 ? `${Math.round(trend.hours / 24)}d` : `${trend.hours}h`
-  const sources = trend.providerCount ? `${trend.providerCount} sources` : 'tracked sources'
-  if (delta > 0) return `+${tokens(delta)} over ${windowLabel} · ${sources}`
-  if (delta < 0) return `${tokens(Math.abs(delta))} rolled out over ${windowLabel} · ${sources}`
-  return `flat over ${windowLabel} · ${sources}`
-}
-
-function tokenCostCopy(tokenTotals, trend) {
-  const totalCost = Number(tokenTotals?.costUSD)
-  const daily = tokenTotals?.dailyCost
-  const latestCost = Number(daily?.latest?.costUSD)
-  if (Number.isFinite(latestCost)) {
-    const deltaCost = Number(daily?.deltaCostUSD)
-    const day = dayLabel(daily.latest.dayKey)
-    if (Number.isFinite(deltaCost) && deltaCost !== 0) {
-      const sign = deltaCost > 0 ? '+' : '-'
-      return ` · ${moneyMaybeExact(latestCost)} ${day} · ${sign}${moneyMaybeExact(Math.abs(deltaCost))} vs prev`
-    }
-    return ` · ${moneyMaybeExact(latestCost)} ${day} est.`
-  }
-  if (!Number.isFinite(totalCost)) return ''
-  const deltaCost = Number(trend?.deltaCostUSD)
-  if (Number.isFinite(deltaCost) && deltaCost !== 0) {
-    const sign = deltaCost > 0 ? '+' : '-'
-    return ` · ${sign}${moneyMaybeExact(Math.abs(deltaCost))} est. cost`
-  }
-  return ` · ${moneyMaybeExact(totalCost)} est. cost`
-}
-
-function renderResetQueue(showTokens) {
-  const el = $('reset-queue')
-  const queue = snap?.totals?.resetQueue || []
-  if (!el) return
-  if (showTokens || !queue.length) {
-    el.hidden = true
-    el.innerHTML = ''
-    return
-  }
-  const rows = queue
-    .map((item) => {
-      const risk = item.historyRiskPct ? ` · ${Math.round(item.historyRiskPct)}% miss` : ''
-      const label = `${item.providerName} ${item.windowLabel || ''}`.trim()
-      return `
-        <div class="reset-item ${item.urgent ? 'urgent' : ''}">
-          <span class="reset-item-name">${h(label)}</span>
-          <span class="reset-item-meta">${Math.round(item.reservePct || 0)}% left${risk}</span>
-          <span class="reset-item-time mono" data-reset="${item.resetAt || ''}">${countdown(item.resetAt)}</span>
-        </div>`
-    })
-    .join('')
-  el.hidden = false
-  el.innerHTML = `
-    <div class="reset-queue-head">
-      <span>Next resets</span>
-      <b>${queue.length}</b>
-    </div>
-    ${rows}`
-}
-
-function fmtRunway(ms) {
-  if (ms <= 0) return '0h'
-  let s = Math.floor(ms / 1000)
-  const d = Math.floor(s / 86400)
-  s -= d * 86400
-  const h = Math.floor(s / 3600)
-  s -= h * 3600
-  const m = Math.floor(s / 60)
-  if (d > 0) return `${d}d ${h}h`
-  if (h > 0) return `${h}h ${m}m`
-  return `${m}m`
-}
-
-function summaryResetAt() {
-  const targetReset = Number(snap?.maxxTarget?.resetAt)
-  if (Number.isFinite(targetReset) && targetReset > Date.now()) return targetReset
-  const queueReset = Number(snap?.totals?.resetQueue?.[0]?.resetAt)
-  if (Number.isFinite(queueReset) && queueReset > Date.now()) return queueReset
-  return null
-}
-
-function summaryResetText() {
-  const resetAt = summaryResetAt()
-  return resetAt ? fmtRunway(Math.max(0, resetAt - Date.now())) : '—'
-}
-
-function renderSummaryReset() {
-  if (viewMode === 'tokens') return
-  if (receiptCollapsed) return
-  const el = document.getElementById('t-runway')
-  if (el) el.textContent = summaryResetText()
-}
-
-function renderMaxxTarget(showTokens) {
-  const el = $('maxx-target')
-  const target = snap?.maxxTarget
-  if (!el) return
-  if (showTokens || !target) {
-    el.hidden = true
-    el.innerHTML = ''
-    return
-  }
-  const reset = target.resetAt ? ` · reset ${fmtRunway(Math.max(0, target.resetAt - Date.now()))}` : ''
-  const history = target.historyRiskNote
-    ? ` · ${h(target.historyRiskNote.toLowerCase())}`
-    : target.historyNote
-      ? ` · ${h(target.historyNote.toLowerCase())}`
-      : ''
-  el.hidden = false
-  el.innerHTML = `
-    <span class="target-kicker">Next maxx</span>
-    <b>${h(target.name)}</b>
-    <span>${h(target.reason)}${history}${reset}</span>
-    <button class="maxx-target-action" id="maxx-target-action" title="Open Idea Stream" aria-label="Open Idea Stream">${ICON_DIAMOND_FILLED}</button>`
 }
 
 function tickCountdowns() {
@@ -1006,11 +844,6 @@ function tickCountdowns() {
     const r = Number(el.dataset.reset)
     if (r) el.textContent = countdown(r)
   })
-  document.querySelectorAll('[data-signal-reset]').forEach((el) => {
-    const r = Number(el.dataset.signalReset)
-    if (r) el.textContent = fmtRunway(Math.max(0, r - Date.now()))
-  })
-  renderSummaryReset()
 }
 
 /* ---------- icons ---------- */
@@ -1023,8 +856,8 @@ const ICON_ATTRS = 'viewBox="0 0 14 14" width="14" height="14" fill="none" strok
 const ICON_CHEVRON_DOWN = `<svg ${ICON_ATTRS}><polyline points="3.5,5.5 7,9 10.5,5.5"/></svg>`
 const ICON_CHEVRON_UP = `<svg ${ICON_ATTRS}><polyline points="3.5,8.5 7,5 10.5,8.5"/></svg>`
 const ICON_CHEVRON_LEFT = `<svg ${ICON_ATTRS}><polyline points="8.5,3.5 5,7 8.5,10.5"/></svg>`
-const ICON_REFRESH = `<svg ${ICON_ATTRS}><path d="M11.5 6.5 A4.5 4.5 0 1 0 11 9.5"/><polyline points="11.5,3.5 11.5,6.5 8.5,6.5"/></svg>`
-const ICON_SETTINGS = `<svg ${ICON_ATTRS}><circle cx="7" cy="7" r="2"/><line x1="7" y1="0.5" x2="7" y2="2.5"/><line x1="7" y1="11.5" x2="7" y2="13.5"/><line x1="0.5" y1="7" x2="2.5" y2="7"/><line x1="11.5" y1="7" x2="13.5" y2="7"/><line x1="2.4" y1="2.4" x2="3.8" y2="3.8"/><line x1="10.2" y1="10.2" x2="11.6" y2="11.6"/><line x1="11.6" y1="2.4" x2="10.2" y2="3.8"/><line x1="3.8" y1="10.2" x2="2.4" y2="11.6"/></svg>`
+const ICON_REFRESH = `<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.2 7.2A5.8 5.8 0 0 1 14.4 6"/><path d="M14.4 3.2V6h-2.8"/><path d="M14.8 12.8A5.8 5.8 0 0 1 5.6 14"/><path d="M5.6 16.8V14h2.8"/></svg>`
+const ICON_SETTINGS = `<svg viewBox="0 0 18 18" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.6 2h2.8l.4 2c.45.15.88.4 1.25.72l1.95-.65 1.4 2.43-1.55 1.35c.08.48.08.82 0 1.3l1.55 1.35-1.4 2.43-1.95-.65c-.37.32-.8.57-1.25.72l-.4 2H7.6l-.4-2c-.45-.15-.88-.4-1.25-.72L4 12.93 2.6 10.5l1.55-1.35a4.2 4.2 0 0 1 0-1.3L2.6 6.5 4 4.07l1.95.65c.37-.32.8-.57 1.25-.72L7.6 2Z"/><circle cx="9" cy="9" r="2.15"/></svg>`
 const ICON_DIAMOND = `<svg ${ICON_ATTRS}><polygon points="7,1.5 12.5,7 7,12.5 1.5,7"/></svg>`
 const ICON_DIAMOND_FILLED = `<svg viewBox="0 0 14 14" width="14" height="14" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><polygon points="7,1.5 12.5,7 7,12.5 1.5,7"/></svg>`
 const ICON_PULSE = `<svg ${ICON_ATTRS}><polyline points="0.5,7 3,7 4.5,3 7,11 8.5,7 13.5,7"/></svg>`
@@ -1149,8 +982,9 @@ function updatePrefMetas() {
   const trayLabel = {
     left: 'value left', spent: 'spent', percent: 'used %', target: 'next maxx', reset: 'next reset', tokens: 'tokens',
   }[($('tray-metric') && $('tray-metric').value) || 'left'] || 'value left'
+  const themeLabel = currentTheme() === 'light' ? 'light' : 'dark'
   const app = $('pref-meta-app')
-  if (app) app.textContent = `tray · ${trayLabel}`
+  if (app) app.textContent = `${themeLabel} · ${trayLabel}`
   const upd = $('pref-meta-updates')
   if (upd && updateState && updateState.version) upd.textContent = `v${updateState.version}`
 }
@@ -1209,6 +1043,7 @@ function renderSettings() {
   $('maxx-alerts-toggle').classList.toggle('on', config.maxxAlertsEnabled !== false)
   $('session-quota-toggle').classList.toggle('on', config.sessionQuotaNotificationsEnabled !== false)
   $('quota-warning-toggle').classList.toggle('on', config.quotaWarningNotificationsEnabled === true)
+  $('theme-toggle').classList.toggle('on', currentTheme() === 'light')
   $('maxx-alert-hours').value = String(config.maxxAlertHours || 48)
   $('maxx-alert-reserve').value = String(config.maxxAlertReservePct || 25)
   $('quota-warning-session').value = thresholdValue(config.quotaWarningSessionThresholds || config.quotaWarningThresholds)
@@ -1219,6 +1054,12 @@ function renderSettings() {
   $('maxx-alerts-toggle').onclick = () => { $('maxx-alerts-toggle').classList.toggle('on'); updatePrefMetas() }
   $('session-quota-toggle').onclick = () => { $('session-quota-toggle').classList.toggle('on'); updatePrefMetas() }
   $('quota-warning-toggle').onclick = () => { $('quota-warning-toggle').classList.toggle('on'); updatePrefMetas() }
+  $('theme-toggle').onclick = () => {
+    const next = currentTheme() === 'light' ? 'dark' : 'light'
+    applyTheme(next)
+    $('theme-toggle').classList.toggle('on', next === 'light')
+    updatePrefMetas()
+  }
   document.querySelectorAll('.settings-billing select').forEach((el) => el.addEventListener('change', updatePrefMetas))
   updatePrefMetas()
   $('settings-body')
@@ -1355,7 +1196,6 @@ function showView(id) {
   for (const v of ['view-main', 'view-onboarding', 'view-forge', 'view-missions', 'view-settings']) {
     $(v).hidden = v !== id
   }
-  if ($('output-signal')) $('output-signal').hidden = id !== 'view-main'
 }
 function setPopoverMode(mode) {
   if (window.maxx?.setPopoverMode) window.maxx.setPopoverMode(mode).catch(() => {})
@@ -1903,32 +1743,7 @@ $('list').addEventListener('click', (event) => {
   render()
 })
 
-$('maxx-target').addEventListener('click', async (event) => {
-  const button = event.target.closest('[data-open-forge], .maxx-target-action')
-  if (!button) return
-  await openForge()
-})
-
-$('output-signal').addEventListener('click', async (event) => {
-  const button = event.target.closest('[data-open-goal-burn]')
-  if (!button) return
-  await openGoalBurn()
-})
-
 if ($('close-btn')) $('close-btn').addEventListener('click', () => window.maxx.close())
-$('mode-usage').addEventListener('click', () => {
-  viewMode = 'usage'
-  render()
-})
-$('mode-tokens').addEventListener('click', () => {
-  viewMode = 'tokens'
-  render()
-})
-$('receipt-toggle').addEventListener('click', () => {
-  receiptCollapsed = !receiptCollapsed
-  localStorage.setItem('maxxtoken-receipt-collapsed', String(receiptCollapsed))
-  render()
-})
 $('onboarding-skip').addEventListener('click', async () => {
   const btn = $('onboarding-skip')
   btn.disabled = true
@@ -2049,7 +1864,6 @@ async function init() {
     }
     renderOnboarding()
     showView('view-onboarding')
-    $('cycle-pill').textContent = 'first launch'
     if ($('foot-left')) $('foot-left').textContent = 'Choose providers, then scan.'
     return
   }
