@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('maxx', {
   getSnapshot: () => ipcRenderer.invoke('get-snapshot'),
+  syncNow: () => ipcRenderer.invoke('sync-now'),
   refreshProvider: (id) => ipcRenderer.invoke('refresh-provider', id),
   getConfig: () => ipcRenderer.invoke('get-config'),
   detectProviders: () => ipcRenderer.invoke('detect-providers'),

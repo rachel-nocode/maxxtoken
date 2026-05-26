@@ -197,6 +197,7 @@ const KEY_PROVIDERS = new Set([
 const $ = (id) => document.getElementById(id)
 let snap = null
 let snapshotLoading = false
+let syncingNow = false
 const expandedProviders = new Set()
 let refreshingProvider = null
 const THEME_KEY = 'maxxtoken-theme'
@@ -316,6 +317,45 @@ function meterWithMarkers(pct, tone, kind, className = 'prov-meter') {
   return `<div class="usage-bar-slot"><div class="${className}"><span class="${tone}" style="width:${pct}%"></span>${quotaWarningMarkers(kind)}</div></div>`
 }
 
+function compactWindowLabel(w) {
+  const kind = quotaWarningKind(w)
+  if (kind === 'session') return '5H'
+  if (kind === 'weekly') return '7D'
+  if (w?.kind === 'cycle') return '30D'
+  return String(w?.label || w?.kind || 'usage').slice(0, 4).toUpperCase()
+}
+
+function compactMeterFill(pct, kind) {
+  const usedPct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)))
+  const tone = usageTone(usedPct)
+  return `<div class="prov-meter prov-meter-compact"><span class="${tone}" style="width:${usedPct}%"></span>${quotaWarningMarkers(kind)}</div>`
+}
+
+function compactPaceRail(w, usedPct) {
+  const expectedPct =
+    w.pace && Number.isFinite(Number(w.pace.expectedUsedPercent))
+      ? Math.max(0, Math.min(100, Math.round(Number(w.pace.expectedUsedPercent))))
+      : usedPct
+  const projectedPct =
+    w.pace && Number.isFinite(Number(w.pace.projectedAtResetPercent))
+      ? Number(w.pace.projectedAtResetPercent)
+      : null
+  return paceRailSvg(usedPct, expectedPct, projectedPct)
+}
+
+function collapsedFallbackLine(pct, kind) {
+  const usedPct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)))
+  const label = kind === 'weekly' ? '7D' : '5H'
+  return `
+    <div class="prov-window-bars">
+      <div class="prov-window-line" title="Usage · ${usedPct}% used">
+        <span class="prov-window-label mono">${label}</span>
+        ${compactMeterFill(usedPct, kind)}
+        <span class="prov-window-pct mono">${usedPct}%</span>
+      </div>
+    </div>`
+}
+
 function pickCollapsedWindows(windows = []) {
   const has = (w) => w && Number.isFinite(Number(w.usedPct))
   const lower = (w) => String(`${w?.label || ''} ${w?.kind || ''}`).toLowerCase()
@@ -350,8 +390,21 @@ function fallbackUsageRow(pct, kind) {
 
 function collapsedWindowBars(p, fallbackPct, fallbackKind) {
   const windows = pickCollapsedWindows(p.windows || [])
-  if (!windows.length) return `<div class="win-list">${fallbackUsageRow(fallbackPct, fallbackKind)}</div>`
-  return `<div class="win-list">${windows.map(windowRow).join('')}</div>`
+  if (!windows.length) return collapsedFallbackLine(fallbackPct, fallbackKind)
+  return `
+    <div class="prov-window-bars">
+      ${windows
+        .map((w) => {
+          const pct = Math.max(0, Math.min(100, Math.round(Number(w.usedPct) || 0)))
+          return `
+            <div class="prov-window-line" title="${h(w.label || 'Usage')} · ${pct}% used">
+              <span class="prov-window-label mono">${h(compactWindowLabel(w))}</span>
+              ${compactPaceRail(w, pct)}
+              <span class="prov-window-pct mono">${pct}%</span>
+            </div>`
+        })
+        .join('')}
+    </div>`
 }
 
 function paceRailSvg(usedPct, expectedPct, projectedPct = null) {
@@ -615,11 +668,12 @@ function tokenCostRows(tokenUsage) {
     hasCost: hasTotalCost,
   }
   const historyDays = Number(tokenUsage?.historyDays) || 30
+  const costLabel = tokenUsage?.costAccuracy === 'hypothetical' ? 'hypothetical' : 'estimated'
   return `
     <div class="token-costs">
       <div class="token-models-head">
         <span>Cost</span>
-        <b>estimated</b>
+        <b>${h(costLabel)}</b>
       </div>
       ${tokenCostLine('Today', todayUsage)}
       ${tokenCostLine('Yesterday', yesterdayUsage)}
@@ -776,25 +830,40 @@ function providerCard(p) {
     </div>`
 }
 
-function formatSyncChip(generatedAt, loading = false) {
-  if (loading) return { label: 'Sync', value: '…', className: 'syncing' }
-  if (!generatedAt) return { label: 'Sync', value: 'Pending', className: 'stale' }
+const SYNC_INTERVAL_MINUTES = 15
+const SYNC_INTERVAL_MS = SYNC_INTERVAL_MINUTES * 60 * 1000
+
+function syncAge(generatedAt) {
+  if (!generatedAt) return 'never'
   const ageSec = Math.max(0, Math.floor((Date.now() - generatedAt) / 1000))
-  if (ageSec < 12) return { label: 'Sync', value: 'Now', className: '' }
-  if (ageSec < 60) return { label: 'Sync', value: `${ageSec}s`, className: '' }
-  if (ageSec < 3600) {
-    const mins = Math.floor(ageSec / 60)
-    return { label: 'Sync', value: `${mins}m`, className: mins >= 10 ? 'stale' : '' }
+  if (ageSec < 12) return 'just now'
+  if (ageSec < 60) return `${ageSec}s ago`
+  if (ageSec < 3600) return `${Math.floor(ageSec / 60)}m ago`
+  if (ageSec < 86400) return `${Math.floor(ageSec / 3600)}h ago`
+  return '1d+ ago'
+}
+
+function formatSyncChip(generatedAt, loading = false) {
+  if (loading) return { label: 'Sync', value: 'Syncing', className: 'syncing', title: 'Syncing usage now.' }
+  const ageMs = generatedAt ? Date.now() - generatedAt : Number.POSITIVE_INFINITY
+  return {
+    label: 'Sync',
+    value: `Every ${SYNC_INTERVAL_MINUTES}m`,
+    className: ageMs > SYNC_INTERVAL_MS ? 'stale' : '',
+    title: `Auto-sync every ${SYNC_INTERVAL_MINUTES} minutes. Last sync: ${syncAge(generatedAt)}.`,
   }
-  if (ageSec < 86400) {
-    const hrs = Math.floor(ageSec / 3600)
-    return { label: 'Sync', value: `${hrs}h`, className: 'stale' }
-  }
-  return { label: 'Sync', value: '1d+', className: 'stale' }
 }
 
 function footerChip(label, valueHtml, extraClass = '') {
   return `<span class="foot-chip ${extraClass}"><span class="fc-l">${label}</span><span class="fc-v num-display">${valueHtml}</span></span>`
+}
+
+function syncFooterChip(sync) {
+  return `
+    <button type="button" class="foot-chip sync-chip ${sync.className || ''}" id="sync-now" title="${h(sync.title)}" aria-label="${h(sync.title)}">
+      <span class="fc-l">${h(sync.label)}</span>
+      <span class="fc-v num-display">${h(sync.value)}</span>
+    </button>`
 }
 
 function skeletonProviderCards(count = 4) {
@@ -866,13 +935,12 @@ function renderFooterTotals() {
   }
   const t = snap.totals || {}
   const planVal = t.estimatedPlanCount ? `${t.planCount}<i>·${t.estimatedPlanCount}e</i>` : `${t.planCount ?? 0}`
-  const sync = formatSyncChip(snap.generatedAt, snapshotLoading)
-  const syncClass = `sync-chip${sync.className ? ` ${sync.className}` : ''}`
+  const sync = formatSyncChip(snap.generatedAt, syncingNow)
   footEl.innerHTML =
     footerChip('Spent', money(t.spent ?? t.captured), 'spent-chip') +
     footerChip('Left', money(t.left ?? t.remaining), 'left-chip') +
     footerChip('Plans', planVal) +
-    footerChip(sync.label, sync.value, syncClass)
+    syncFooterChip(sync)
 }
 
 function renderMainList() {
@@ -1772,6 +1840,25 @@ $('forge-start').addEventListener('click', async () => {
 })
 
 /* ---------- wire up ---------- */
+$('foot-left').addEventListener('click', (event) => {
+  const sync = event.target.closest('#sync-now')
+  if (!sync || syncingNow) return
+  syncingNow = true
+  renderFooterTotals()
+  window.maxx
+    .syncNow()
+    .then((next) => {
+      snap = next
+    })
+    .catch(() => {
+      /* the next scheduled sync can recover */
+    })
+    .finally(() => {
+      syncingNow = false
+      render()
+    })
+})
+
 $('list').addEventListener('click', (event) => {
   const providerLink = event.target.closest('[data-provider-link]')
   if (providerLink) {

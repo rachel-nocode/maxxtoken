@@ -544,6 +544,55 @@ body {
   background: linear-gradient(90deg, var(--orange), var(--red));
 }
 
+.prov-window-bars {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.prov-window-line {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 6px;
+  min-height: 16px;
+}
+
+.prov-window-label {
+  color: var(--muted-2);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.prov-window-pct {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 500;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.prov-window-line .prov-rail,
+.prov-window-line .prov-meter-compact {
+  margin: 0;
+  min-height: 0;
+}
+
+.prov-window-line .prov-rail {
+  min-height: 14px;
+}
+
+.prov-window-line .prov-rail-svg {
+  height: 14px;
+}
+
+.prov-window-line .prov-meter-compact {
+  height: 6px;
+}
+
 .win-list {
   display: flex;
   flex-direction: column;
@@ -1634,6 +1683,17 @@ body {
   padding: 6px 9px;
   white-space: nowrap;
   overflow: hidden;
+}
+
+button.foot-chip {
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.foot-chip:hover {
+  border-color: #3a4f24;
+  background: #12160d;
 }
 
 .foot-chip.sync-chip.syncing .fc-v {

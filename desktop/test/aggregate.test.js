@@ -691,6 +691,34 @@ test('token cost estimates Codex model breakdowns with cache pricing', () => {
   assert.equal(withCost.dailyBreakdown[0].costUSD, 0.00026875)
 })
 
+test('token cost estimates Grok Build with hypothetical xAI API pricing', () => {
+  const usage = {
+    modelBreakdowns: [
+      {
+        model: 'grok-build',
+        input: 1000,
+        cached: 200,
+        output: 50,
+        total: 1250,
+      },
+    ],
+  }
+
+  const estimate = tokenCost._private.estimateGrokTokenCost(usage)
+  assert.ok(Math.abs(estimate.costUSD - 0.00094) < 0.0000001)
+  assert.equal(estimate.costAccuracy, 'hypothetical')
+  assert.equal(estimate.modelBreakdowns[0].pricingSource, 'xAI pricing')
+  assert.equal(estimate.modelBreakdowns[0].pricingModel, 'grok-build-0.1')
+
+  const withCost = tokenCost.withTokenCost('grok', {
+    ...usage,
+    dailyBreakdown: [{ date: '2026-05-21', ...usage.modelBreakdowns[0], modelBreakdowns: usage.modelBreakdowns }],
+  })
+  assert.ok(Math.abs(withCost.costUSD - 0.00094) < 0.0000001)
+  assert.equal(withCost.costAccuracy, 'hypothetical')
+  assert.ok(Math.abs(withCost.dailyBreakdown[0].costUSD - 0.00094) < 0.0000001)
+})
+
 test('token cost leaves Codex unpriced when the model is unknown', () => {
   const usage = {
     modelBreakdowns: [

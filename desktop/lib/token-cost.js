@@ -79,6 +79,11 @@ const CODEX_PRICES = new Map([
   ['gpt-5.5-pro', { input: 3e-5, output: 1.8e-4 }],
 ])
 
+const GROK_PRICES = new Map([
+  ['grok-build', { input: 1e-6, output: 2e-6, cacheRead: 2e-7, pricingModel: 'grok-build-0.1' }],
+  ['grok-build-0.1', { input: 1e-6, output: 2e-6, cacheRead: 2e-7, pricingModel: 'grok-build-0.1' }],
+])
+
 function number(value) {
   const n = Number(value)
   return Number.isFinite(n) ? Math.max(0, n) : 0
@@ -91,6 +96,16 @@ function normalizeCodexModel(raw) {
   if (CODEX_PRICES.has(model)) return model
   const withoutDate = model.replace(/-\d{4}-\d{2}-\d{2}$/, '')
   if (CODEX_PRICES.has(withoutDate)) return withoutDate
+  return model
+}
+
+function normalizeGrokModel(raw) {
+  let model = String(raw || '').trim()
+  if (!model) return null
+  model = model.replace(/^xai\//i, '')
+  if (GROK_PRICES.has(model)) return model
+  const withoutDate = model.replace(/-\d{4}-\d{2}-\d{2}$/, '')
+  if (GROK_PRICES.has(withoutDate)) return withoutDate
   return model
 }
 
@@ -177,6 +192,27 @@ function codexCostBreakdown(row) {
   }
 }
 
+function grokCostBreakdown(row) {
+  const model = normalizeGrokModel(row?.model)
+  const price = model ? GROK_PRICES.get(model) : null
+  if (!price) return null
+  const total = number(row.total)
+  const input = number(row.input) || Math.max(0, total - number(row.cached) - number(row.output))
+  const cached = Math.min(number(row.cached), input)
+  const uncached = Math.max(0, input - cached)
+  const output = number(row.output)
+  const costUSD = (
+    uncached * price.input +
+    cached * (price.cacheRead ?? price.input) +
+    output * price.output
+  )
+  return {
+    costUSD,
+    pricingSource: 'xAI pricing',
+    pricingModel: price.pricingModel || model,
+  }
+}
+
 function estimateCodexTokenCost(tokenUsage) {
   const rows = Array.isArray(tokenUsage?.modelBreakdowns) && tokenUsage.modelBreakdowns.length
     ? tokenUsage.modelBreakdowns
@@ -228,6 +264,58 @@ function estimateCodexTokenCost(tokenUsage) {
   }
 }
 
+function estimateGrokTokenCost(tokenUsage) {
+  const rows = Array.isArray(tokenUsage?.modelBreakdowns) && tokenUsage.modelBreakdowns.length
+    ? tokenUsage.modelBreakdowns
+    : tokenUsage?.model
+      ? [{
+          model: tokenUsage.model,
+          input: tokenUsage.input,
+          cached: tokenUsage.cached,
+          output: tokenUsage.output,
+          total: tokenUsage.total,
+        }]
+      : []
+  let costUSD = 0
+  let pricedTokens = 0
+  const modelBreakdowns = []
+  const pricedModels = []
+  const unpricedModels = []
+  const pricingSources = new Set()
+  for (const row of rows) {
+    const pricing = grokCostBreakdown(row)
+    const cost = pricing?.costUSD
+    const model = row.model || row.modelName || 'unknown'
+    if (cost == null) {
+      unpricedModels.push(model)
+      modelBreakdowns.push({ ...row, costUSD: null, costAccuracy: null })
+      continue
+    }
+    costUSD += cost
+    pricedTokens += number(row.total)
+    pricedModels.push(model)
+    pricingSources.add(pricing.pricingSource)
+    modelBreakdowns.push({
+      ...row,
+      costUSD: cost,
+      costAccuracy: 'hypothetical',
+      pricingSource: pricing.pricingSource,
+      pricingModel: pricing.pricingModel,
+    })
+  }
+  if (!pricedModels.length) return null
+  return {
+    costUSD,
+    costAccuracy: 'hypothetical',
+    pricedTokens,
+    modelBreakdowns,
+    pricedModels,
+    unpricedModels,
+    pricingSources: [...pricingSources],
+    label: 'hypothetical API-equivalent cost',
+  }
+}
+
 function estimateClaudeTokenCost(tokenUsage) {
   const rows = Array.isArray(tokenUsage?.modelBreakdowns) ? tokenUsage.modelBreakdowns : []
   let costUSD = 0
@@ -272,6 +360,7 @@ function estimateClaudeTokenCost(tokenUsage) {
 function estimateTokenCost(providerId, tokenUsage) {
   if (providerId === 'claude' || providerId === 'vertexai') return estimateClaudeTokenCost(tokenUsage)
   if (providerId === 'codex') return estimateCodexTokenCost(tokenUsage)
+  if (providerId === 'grok') return estimateGrokTokenCost(tokenUsage)
   return null
 }
 
@@ -293,7 +382,7 @@ function withTokenCost(providerId, tokenUsage) {
         return {
           ...day,
           costUSD: dayEstimate.costUSD,
-          costAccuracy: 'estimate',
+          costAccuracy: dayEstimate.costAccuracy || 'estimate',
           pricingSources: dayEstimate.pricingSources,
           pricingSource: dayEstimate.pricingSources.length === 1 ? dayEstimate.pricingSources[0] : 'mixed',
           modelBreakdowns: dayEstimate.modelBreakdowns,
@@ -304,7 +393,7 @@ function withTokenCost(providerId, tokenUsage) {
     ...tokenUsage,
     costUSD: estimate.costUSD,
     costLabel: estimate.label,
-    costAccuracy: 'estimate',
+    costAccuracy: estimate.costAccuracy || 'estimate',
     pricingSources: estimate.pricingSources,
     pricingSource: estimate.pricingSources.length === 1 ? estimate.pricingSources[0] : 'mixed',
     pricedTokens: estimate.pricedTokens,
@@ -321,13 +410,17 @@ module.exports = {
   _private: {
     CLAUDE_PRICES,
     CODEX_PRICES,
+    GROK_PRICES,
     normalizeCodexModel,
+    normalizeGrokModel,
     normalizeClaudeModel,
     codexCostBreakdown,
     codexCostUSD,
+    grokCostBreakdown,
     claudeCostBreakdown,
     claudeCostUSD,
     estimateCodexTokenCost,
+    estimateGrokTokenCost,
     estimateClaudeTokenCost,
     modelsDev,
     overridePrice,

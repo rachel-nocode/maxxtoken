@@ -119,7 +119,7 @@ const copilotLoginSessions = new Map()
 const POPOVER_WIDTH = 420
 const POPOVER_HEIGHT = 720
 const POPOVER_COMPACT_HEIGHT = 610
-const REFRESH_INTERVAL_MS = 30 * 60 * 1000
+const REFRESH_INTERVAL_MS = 15 * 60 * 1000
 const SNAPSHOT_WORKER_TIMEOUT_MS = 90 * 1000
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 
@@ -418,6 +418,19 @@ async function readSnapshot({ staleOk = false, force = false } = {}) {
   return snapshotInFlight
 }
 
+function sendSnapshotToPopover(snap) {
+  if (snap && popover && !popover.isDestroyed() && popover.isVisible()) {
+    popover.webContents.send('snapshot', snap)
+  }
+}
+
+async function syncSnapshot({ force = true } = {}) {
+  const snap = await readSnapshot({ force })
+  updateTray()
+  sendSnapshotToPopover(snap)
+  return snap
+}
+
 function applyLoginItemSettings(config = loadConfig()) {
   const openAtLogin = config.openAtLogin !== false
   if (!app.isPackaged) return
@@ -457,7 +470,7 @@ function createTray() {
     tray.popUpContextMenu(
       Menu.buildFromTemplate([
         { label: 'Open MaxxToken', click: togglePopover },
-        { label: 'Refresh now', click: async () => { const snap = await readSnapshot({ force: true }); updateTray(); if (popover && popover.isVisible()) popover.webContents.send('snapshot', snap) } },
+        { label: 'Sync now', click: () => syncSnapshot({ force: true }).catch(() => {}) },
         { type: 'separator' },
         { label: 'Quit', click: () => app.quit() },
       ]),
@@ -478,14 +491,12 @@ ipcMain.handle('get-snapshot', () => {
   }
   return readSnapshot()
 })
+ipcMain.handle('sync-now', () => syncSnapshot({ force: true }))
 ipcMain.handle('refresh-provider', async (_e, id) => {
   id = canonicalProviderId(id)
   const config = loadConfig()
   if (!config.providers[id]) throw new Error('Unknown provider')
-  const snap = await readSnapshot({ force: true })
-  updateTray()
-  if (popover && popover.isVisible()) popover.webContents.send('snapshot', snap)
-  return snap
+  return syncSnapshot({ force: true })
 })
 ipcMain.handle('get-config', () => loadConfig())
 ipcMain.handle('detect-providers', () => {
@@ -1032,7 +1043,7 @@ if (!gotSingleInstanceLock) {
     if (lastSnapshot) logger.info('snapshot-cache', 'loaded', { generatedAt: lastSnapshot.generatedAt })
     createPopover()
     createTray()
-    refreshTimer = setInterval(() => readSnapshot({ force: true }).then(updateTray).catch(() => {}), REFRESH_INTERVAL_MS)
+    refreshTimer = setInterval(() => syncSnapshot({ force: true }).catch(() => {}), REFRESH_INTERVAL_MS)
     setupAutoUpdate()
   })
 }
