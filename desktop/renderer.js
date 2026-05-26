@@ -489,9 +489,10 @@ function ageLabel(ts) {
 }
 
 function staleBadge(p) {
-  if (p.activity !== 'stale') return ''
   const label = ageLabel(p.lastUpdatedAt)
   if (!label) return ''
+  const ageMs = Date.now() - Number(p.lastUpdatedAt)
+  if (p.activity !== 'stale' && ageMs < 10 * 60000) return ''
   return `<span class="stale-chip mono" title="Last good usage: ${h(new Date(Number(p.lastUpdatedAt)).toLocaleString())}">${h(label)}</span>`
 }
 
