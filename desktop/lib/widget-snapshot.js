@@ -17,6 +17,7 @@ function compactProvider(provider) {
     connected: provider.connected === true,
     needsKey: provider.needsKey === true,
     activity: provider.activity || 'none',
+    lastUpdatedAt: provider.lastUpdatedAt || null,
     capturedPct: provider.capturedPct ?? null,
     remainingPct: provider.remainingPct ?? null,
     spentValue: provider.spentValue ?? null,

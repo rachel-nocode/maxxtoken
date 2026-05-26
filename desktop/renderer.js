@@ -477,6 +477,24 @@ function providerDotState(p) {
   return { cls: 'none', label: statusLabel || 'Not active' }
 }
 
+function ageLabel(ts) {
+  const then = Number(ts)
+  if (!Number.isFinite(then) || then <= 0) return ''
+  const mins = Math.max(0, Math.floor((Date.now() - then) / 60000))
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m old`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h old`
+  return `${Math.floor(hours / 24)}d old`
+}
+
+function staleBadge(p) {
+  if (p.activity !== 'stale') return ''
+  const label = ageLabel(p.lastUpdatedAt)
+  if (!label) return ''
+  return `<span class="stale-chip mono" title="Last good usage: ${h(new Date(Number(p.lastUpdatedAt)).toLocaleString())}">${h(label)}</span>`
+}
+
 function providerActions(p) {
   const links = p.links || {}
   const actions = [
@@ -687,6 +705,7 @@ function providerCard(p) {
   const expandLabel = expanded ? 'Collapse details' : 'Show details'
   const expandedTokenDetails = expanded && showTokens && hasTokenSource ? tokenDetails(tokenUsage) : ''
   const dot = providerDotState(p)
+  const stale = staleBadge(p)
 
   return `
     <div class="prov ${expanded ? 'open' : ''} ${p.urgent ? 'urgent' : ''}" style="--accent:${accent}">
@@ -697,6 +716,7 @@ function providerCard(p) {
           <span class="prov-sub">
             <span class="activity-dot ${h(dot.cls)}" title="${h(dot.label)}" aria-label="${h(dot.label)}" role="img"></span>
             <span class="prov-plan">${h(p.plan)}</span>
+            ${stale}
           </span>
         </span>
         <span class="prov-pct">

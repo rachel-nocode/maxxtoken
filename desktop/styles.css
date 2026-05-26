@@ -687,6 +687,18 @@ body {
   white-space: nowrap;
 }
 
+.stale-chip {
+  flex: 0 0 auto;
+  padding: 1px 5px 1px;
+  border: 1px solid rgba(244, 245, 242, 0.08);
+  border-radius: 999px;
+  color: var(--muted-2);
+  background: rgba(244, 245, 242, 0.035);
+  font-size: 8.5px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 .activity-dot {
   width: 6px;
   height: 6px;

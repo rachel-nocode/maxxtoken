@@ -894,6 +894,7 @@ test('cached provider fallback keeps last good usage when a transient poll fails
   assert.equal(fallback.leftValue, 14.7)
   assert.equal(fallback.windows[0].label, 'Weekly')
   assert.equal(fallback.sourceLabel, 'cached live quota')
+  assert.equal(fallback.lastUpdatedAt, now - 60000)
 })
 
 test('usage snapshot CLI renders overview and token burn from the last widget snapshot', () => {
