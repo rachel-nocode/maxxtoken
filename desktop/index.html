@@ -28,59 +28,64 @@
 
       <!-- MAIN VIEW -->
       <div id="view-main">
-        <section class="receipt compact" id="receipt">
-          <div class="receipt-head">
-            <div class="mode-switch" role="group" aria-label="Usage view">
-              <button class="mode-btn active" id="mode-usage" aria-label="Show usage" title="Usage">
-                <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">
-                  <line x1="2.5" y1="11.5" x2="2.5" y2="7" />
-                  <line x1="7" y1="11.5" x2="7" y2="2.5" />
-                  <line x1="11.5" y1="11.5" x2="11.5" y2="5" />
-                </svg>
-              </button>
-              <button class="mode-btn" id="mode-tokens" aria-label="Show tokens" title="Tokens">
-                <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">
-                  <line x1="4.5" y1="2" x2="3" y2="12" />
-                  <line x1="10" y1="2" x2="8.5" y2="12" />
-                  <line x1="2" y1="5.5" x2="12" y2="5.5" />
-                  <line x1="2" y1="8.5" x2="12" y2="8.5" />
-                </svg>
-              </button>
-            </div>
-            <button class="receipt-toggle" id="receipt-toggle" aria-label="Expand summary" aria-expanded="false" title="Expand summary">
-              <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">
-                <polyline points="3.5,5.5 7,9 10.5,5.5" />
-              </svg>
-            </button>
-          </div>
-          <div class="receipt-rows">
-            <div class="receipt-stat">
-              <span class="rs-num green" id="t-captured">$0</span>
-              <span class="rs-label" id="t-captured-label">spent value</span>
-            </div>
-            <div class="receipt-divider-v"></div>
-            <div class="receipt-stat">
-              <span class="rs-num red" id="t-burned">$0</span>
-              <span class="rs-label" id="t-burned-label">left to maxx</span>
-            </div>
-            <div class="receipt-divider-v"></div>
-            <div class="receipt-stat">
-              <span class="rs-num mono" id="t-runway">—</span>
-              <span class="rs-label" id="t-runway-label">time left to maxx</span>
-            </div>
-          </div>
-          <div class="receipt-meter" id="receipt-meter"><span id="t-meter"></span></div>
-          <div class="receipt-foot">
-            <span class="stars" id="t-stars"></span>
-            <span class="verdict" id="t-verdict"></span>
-          </div>
-          <div class="maxx-target" id="maxx-target" hidden></div>
-          <div class="trend-strip" id="trend-strip" hidden></div>
-          <div class="history-strip" id="history-strip" hidden></div>
-          <div class="reset-queue" id="reset-queue" hidden></div>
-        </section>
+        <div class="usage-shell">
+          <aside class="provider-sidebar" id="provider-sidebar" aria-label="Provider views"></aside>
+          <div class="usage-content">
+            <section class="receipt compact" id="receipt">
+              <div class="receipt-head">
+                <div class="mode-switch" role="group" aria-label="Usage view">
+                  <button class="mode-btn active" id="mode-usage" aria-label="Show usage" title="Usage">
+                    <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">
+                      <line x1="2.5" y1="11.5" x2="2.5" y2="7" />
+                      <line x1="7" y1="11.5" x2="7" y2="2.5" />
+                      <line x1="11.5" y1="11.5" x2="11.5" y2="5" />
+                    </svg>
+                  </button>
+                  <button class="mode-btn" id="mode-tokens" aria-label="Show tokens" title="Tokens">
+                    <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">
+                      <line x1="4.5" y1="2" x2="3" y2="12" />
+                      <line x1="10" y1="2" x2="8.5" y2="12" />
+                      <line x1="2" y1="5.5" x2="12" y2="5.5" />
+                      <line x1="2" y1="8.5" x2="12" y2="8.5" />
+                    </svg>
+                  </button>
+                </div>
+                <button class="receipt-toggle" id="receipt-toggle" aria-label="Expand summary" aria-expanded="false" title="Expand summary">
+                  <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">
+                    <polyline points="3.5,5.5 7,9 10.5,5.5" />
+                  </svg>
+                </button>
+              </div>
+              <div class="receipt-rows">
+                <div class="receipt-stat">
+                  <span class="rs-num green" id="t-captured">$0</span>
+                  <span class="rs-label" id="t-captured-label">spent value</span>
+                </div>
+                <div class="receipt-divider-v"></div>
+                <div class="receipt-stat">
+                  <span class="rs-num red" id="t-burned">$0</span>
+                  <span class="rs-label" id="t-burned-label">left to maxx</span>
+                </div>
+                <div class="receipt-divider-v"></div>
+                <div class="receipt-stat">
+                  <span class="rs-num mono" id="t-runway">—</span>
+                  <span class="rs-label" id="t-runway-label">time left to maxx</span>
+                </div>
+              </div>
+              <div class="receipt-meter" id="receipt-meter"><span id="t-meter"></span></div>
+              <div class="receipt-foot">
+                <span class="stars" id="t-stars"></span>
+                <span class="verdict" id="t-verdict"></span>
+              </div>
+              <div class="maxx-target" id="maxx-target" hidden></div>
+              <div class="trend-strip" id="trend-strip" hidden></div>
+              <div class="history-strip" id="history-strip" hidden></div>
+              <div class="reset-queue" id="reset-queue" hidden></div>
+            </section>
 
-        <main class="list" id="list"></main>
+            <main class="list" id="list"></main>
+          </div>
+        </div>
       </div>
 
       <!-- ONBOARDING VIEW -->
@@ -316,8 +321,6 @@
           <button class="primary-btn" id="save-config">Save</button>
         </div>
       </div>
-
-      <footer class="output-signal" id="output-signal" hidden></footer>
     </div>
     <script src="renderer.js"></script>
   </body>

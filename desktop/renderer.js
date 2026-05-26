@@ -197,6 +197,7 @@ const KEY_PROVIDERS = new Set([
 const $ = (id) => document.getElementById(id)
 let snap = null
 const expandedProviders = new Set()
+let selectedProviderId = null
 let refreshingProvider = null
 let viewMode = 'usage'
 let receiptCollapsed = localStorage.getItem('maxxtoken-receipt-collapsed') !== 'false'
@@ -415,6 +416,27 @@ function windowRow(w) {
       </div>
       ${paceBarSvg(usedPct, expectedPct, winLabel, projectedPct)}
       ${paceDetail(w)}
+    </div>`
+}
+
+function homeWindowRow(w) {
+  const usedPct = Math.max(0, Math.min(100, Math.round(w?.usedPct || 0)))
+  const expectedPct =
+    w?.pace && Number.isFinite(Number(w.pace.expectedUsedPercent))
+      ? Math.max(0, Math.min(100, Math.round(Number(w.pace.expectedUsedPercent))))
+      : usedPct
+  const resetText = w?.resetAt ? `Resets in ${countdown(w.resetAt).replace(/00h\s*/, '')}` : 'Reset unknown'
+  return `
+    <div class="home-win">
+      <div class="home-win-head">
+        <b>${h(w?.label || 'Window')}</b>
+        <span class="activity-dot live" aria-hidden="true"></span>
+      </div>
+      ${paceBarSvg(usedPct, expectedPct, '', w?.pace?.projectedAtResetPercent)}
+      <div class="home-win-foot">
+        <span class="mono">${usedPct}%</span>
+        <span data-reset="${w?.resetAt || ''}">${h(resetText)}</span>
+      </div>
     </div>`
 }
 
@@ -646,6 +668,102 @@ function tokenDetails(tokenUsage) {
       </div>` : ''}`
 }
 
+function providerWindows(p) {
+  if (Array.isArray(p?.windows) && p.windows.length) return p.windows
+  return [p?.primaryWindow, p?.secondaryWindow].filter(Boolean)
+}
+
+function overviewWindows(p) {
+  const windows = providerWindows(p)
+  const session = windows.find((w) => w.label === 'Session') || windows.find((w) => w.kind === '5h')
+  const weekly = windows.find((w) => w.label === 'Weekly') || windows.find((w) => w.kind === '7d')
+  return [session, weekly].filter(Boolean).length ? [session, weekly].filter(Boolean) : windows.slice(0, 2)
+}
+
+function renderProviderSidebar() {
+  const el = $('provider-sidebar')
+  if (!el || !snap) return
+  const providers = snap.providers || []
+  const homeActive = selectedProviderId == null
+  el.innerHTML = `
+    <button class="side-btn side-home ${homeActive ? 'active' : ''}" data-side-home aria-label="Show overview" title="Overview">
+      <svg viewBox="0 0 18 18" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">
+        <line x1="4" y1="14" x2="4" y2="9" />
+        <line x1="9" y1="14" x2="9" y2="4" />
+        <line x1="14" y1="14" x2="14" y2="7" />
+      </svg>
+    </button>
+    ${providers.map((p) => {
+      const accent = ACCENT[p.id] || '#8b8f84'
+      const glyph = GLYPH[p.id] || p.name[0]
+      const dot = providerDotState(p)
+      const active = selectedProviderId === p.id
+      return `
+        <button class="side-btn ${active ? 'active' : ''}" data-side-provider="${h(p.id)}" style="--accent:${accent}" aria-label="Show ${h(p.name)} details" title="${h(p.name)}">
+          ${providerIcon(p.id, glyph)}
+          <span class="side-dot ${h(dot.cls)}" title="${h(dot.label)}"></span>
+        </button>`
+    }).join('')}`
+}
+
+function providerDetail(p) {
+  const accent = ACCENT[p.id] || '#8b8f84'
+  const glyph = GLYPH[p.id] || p.name[0]
+  const refreshing = refreshingProvider === p.id
+  const windows = providerWindows(p)
+  const usedPct = p.capturedPct == null ? null : Math.max(0, Math.min(100, Math.round(p.capturedPct)))
+  const tokenUsage = p.tokenUsage || null
+  const hasTokenSource = tokenUsage && Number.isFinite(Number(tokenUsage.total))
+  const cost = Number(tokenUsage?.costUSD)
+  const dot = providerDotState(p)
+  const stale = staleBadge(p)
+  const extras = (p.extra || [])
+    .filter((d) => d.label !== 'Source')
+    .map((d) => `<span>${h(d.label)} <b>${h(d.value)}</b></span>`)
+    .join('')
+
+  return `
+    <div class="prov provider-detail open ${p.urgent ? 'urgent' : ''}" style="--accent:${accent}">
+      <div class="provider-detail-head">
+        <div class="provider-detail-title">
+          ${providerIcon(p.id, glyph)}
+          <span>
+            <b>${h(p.name)}</b>
+            <span>
+              <span class="activity-dot ${h(dot.cls)}" title="${h(dot.label)}" aria-label="${h(dot.label)}" role="img"></span>
+              ${h(p.plan)}
+              ${stale}
+            </span>
+          </span>
+        </div>
+        <div class="provider-detail-actions">
+          ${providerActions(p)}
+          <button class="prov-refresh ${refreshing ? 'checking' : ''}" data-provider-refresh="${h(p.id)}" aria-label="Refresh ${h(p.name)} usage" ${refreshing ? 'disabled' : ''}>
+            ${ICON_REFRESH}
+          </button>
+        </div>
+      </div>
+      ${usedPct == null ? '' : meterWithMarkers(usedPct, usageTone(usedPct), windows.some((w) => quotaWarningKind(w) === 'weekly') ? 'weekly' : 'session')}
+      ${windows.length ? `<div class="win-list detail-windows">${windows.map(windowRow).join('')}</div>` : `<div class="prov-reset"><span>No usage buckets yet</span></div>`}
+      ${extras ? `<div class="detail-extra">${extras}</div>` : ''}
+      <div class="detail-token-card">
+        <div class="token-models-head">
+          <span>Tokens</span>
+          <b>${hasTokenSource ? h(tokenUsage.source || 'local logs') : 'No token source yet'}</b>
+        </div>
+        ${hasTokenSource ? `
+          <div class="detail-token-grid">
+            <span><i>Total</i><b class="mono">${tokens(tokenUsage.total)}</b></span>
+            <span><i>Input</i><b class="mono">${tokens(tokenUsage.input)}</b></span>
+            <span><i>Output</i><b class="mono">${tokens(tokenUsage.output)}</b></span>
+            <span><i>${Number.isFinite(cost) ? 'Est. cost' : 'Cached'}</i><b class="mono">${Number.isFinite(cost) ? moneyMaybeExact(cost) : tokens(tokenUsage.cached)}</b></span>
+          </div>
+          ${tokenDetails(tokenUsage)}
+        ` : `<div class="empty-token-source">No real token source is available for this provider yet.</div>`}
+      </div>
+    </div>`
+}
+
 function providerCard(p) {
   const accent = ACCENT[p.id] || '#8b8f84'
   const glyph = GLYPH[p.id] || p.name[0]
@@ -675,14 +793,15 @@ function providerCard(p) {
 
   const usedPct = p.capturedPct == null ? null : Math.max(0, Math.min(100, Math.round(p.capturedPct)))
   const pct = usedPct == null ? '—' : `${usedPct}%`
-  const hasWindows = p.windows && p.windows.length
+  const windows = overviewWindows(p)
+  const hasWindows = windows.length
   const expanded = expandedProviders.has(p.id)
 
   let body = ''
   if (p.error) {
     body = `<div class="prov-error">⚠ ${h(p.error)}</div>`
   } else if (expanded && hasWindows) {
-    body = `<div class="win-list">${p.windows.map(windowRow).join('')}</div>`
+    body = `<div class="win-list">${windows.map(windowRow).join('')}</div>`
   } else if (expanded) {
     body = `
       <div class="prov-reset">
@@ -693,11 +812,6 @@ function providerCard(p) {
       </div>`
   }
 
-  const extra = (p.extra || [])
-    .map((d) => `<span>${h(d.label)} <b>${h(d.value)}</b></span>`)
-    .join('')
-  const meterKind = p.windows?.some((w) => quotaWarningKind(w) === 'weekly') ? 'weekly' : 'session'
-  const meter = meterWithMarkers(usedPct || 0, usageTone(usedPct || 0), meterKind)
   const tokenUsage = p.tokenUsage || null
   const showTokens = viewMode === 'tokens'
   const hasTokenSource = tokenUsage && Number.isFinite(Number(tokenUsage.total))
@@ -711,7 +825,6 @@ function providerCard(p) {
   return `
     <div class="prov ${expanded ? 'open' : ''} ${p.urgent ? 'urgent' : ''}" style="--accent:${accent}">
       <div class="prov-top">
-        ${providerIcon(p.id, glyph)}
         <span class="prov-id">
           <span class="prov-name">${h(p.name)}</span>
           <span class="prov-sub">
@@ -729,18 +842,21 @@ function providerCard(p) {
           ${expanded ? ICON_CHEVRON_UP : ICON_CHEVRON_DOWN}
         </button>
       </div>
-      ${showTokens ? '' : meter}
-      ${body}
+      ${showTokens ? expandedTokenDetails : hasWindows ? `<div class="home-win-list">${windows.map(homeWindowRow).join('')}</div>` : body}
     </div>`
 }
 
 function render() {
   if (!snap) return
+  if (selectedProviderId && !(snap.providers || []).some((p) => p.id === selectedProviderId)) selectedProviderId = null
   const t = snap.totals
   $('cycle-pill').textContent = `${snap.cycle.label} · ${snap.cycle.daysLeft}d left`
   const tokenTotals = t.tokens || { input: 0, cached: 0, output: 0, total: 0, providerCount: 0 }
   const showTokens = viewMode === 'tokens'
+  renderProviderSidebar()
   applyReceiptCollapsed()
+  $('receipt').hidden = selectedProviderId != null
+  $('list').classList.toggle('detail-list', selectedProviderId != null)
   $('mode-usage').classList.toggle('active', !showTokens)
   $('mode-tokens').classList.toggle('active', showTokens)
   $('receipt-meter').hidden = showTokens || receiptCollapsed
@@ -759,6 +875,11 @@ function render() {
   renderHistoryStrip(showTokens)
   renderResetQueue(showTokens)
   renderOutputSignal(showTokens)
+  if (selectedProviderId) {
+    const selected = (snap.providers || []).find((p) => p.id === selectedProviderId)
+    $('list').innerHTML = selected ? providerDetail(selected) : ''
+    return
+  }
   const footEl = $('foot-left')
   if (!footEl) {
     $('list').innerHTML = snap.providers.map(providerCard).join('')
@@ -787,28 +908,8 @@ function render() {
 function renderOutputSignal() {
   const el = $('output-signal')
   if (!el || !snap) return
-  const mainVisible = !$('view-main')?.hidden
-  el.hidden = !mainVisible
-  if (!mainVisible) return
-  const target = snap.maxxTarget
-  const left = Number(target?.valueLeft)
-  const resetAt = Number(target?.resetAt)
-  const reset = Number.isFinite(resetAt) && resetAt > Date.now() ? fmtRunway(Math.max(0, resetAt - Date.now())) : null
-  const details = target
-    ? [
-        Number.isFinite(left) ? h(`${money(left)} left`) : null,
-        reset ? `resets in <span class="signal-reset mono" data-signal-reset="${resetAt}">${h(reset)}</span>` : null,
-      ].filter(Boolean).join(' · ')
-    : h('Find the best model to spend before reset.')
-  el.innerHTML = `
-    <div class="signal-copy">
-      <span class="signal-kicker">Next maxx</span>
-      <b>${target ? `Use ${h(target.name)} before reset` : 'Start a Goal Burn'}</b>
-      <span>${details}</span>
-    </div>
-    <button class="signal-action build-action" id="output-signal-action" data-open-goal-burn style="--build-progress:${target ? Math.max(24, Math.min(100, Math.round(Number(target.reservePct) || 42))) : 42}%">
-      <span>${ICON_SHARE} Start Goal Burn</span>
-    </button>`
+  el.hidden = true
+  el.innerHTML = ''
 }
 
 function applyReceiptCollapsed() {
@@ -1909,6 +2010,19 @@ $('forge-start').addEventListener('click', async () => {
 })
 
 /* ---------- wire up ---------- */
+$('provider-sidebar').addEventListener('click', (event) => {
+  const home = event.target.closest('[data-side-home]')
+  if (home) {
+    selectedProviderId = null
+    render()
+    return
+  }
+  const provider = event.target.closest('[data-side-provider]')
+  if (!provider) return
+  selectedProviderId = provider.dataset.sideProvider || null
+  render()
+})
+
 $('list').addEventListener('click', (event) => {
   const providerLink = event.target.closest('[data-provider-link]')
   if (providerLink) {
@@ -1954,11 +2068,13 @@ $('maxx-target').addEventListener('click', async (event) => {
   await openForge()
 })
 
-$('output-signal').addEventListener('click', async (event) => {
-  const button = event.target.closest('[data-open-goal-burn]')
-  if (!button) return
-  await openGoalBurn()
-})
+if ($('output-signal')) {
+  $('output-signal').addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-open-goal-burn]')
+    if (!button) return
+    await openGoalBurn()
+  })
+}
 
 if ($('close-btn')) $('close-btn').addEventListener('click', () => window.maxx.close())
 $('mode-usage').addEventListener('click', () => {

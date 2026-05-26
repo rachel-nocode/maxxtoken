@@ -155,7 +155,7 @@ function planLabel(raw) {
 }
 
 function numberHeader(headers, key) {
-  const raw = headers.get(key)
+  const raw = headers?.get ? headers.get(key) : null
   if (raw == null || raw === '') return null
   const n = Number(raw)
   return Number.isFinite(n) ? n : null
@@ -163,22 +163,215 @@ function numberHeader(headers, key) {
 
 function resetAt(window) {
   if (!window) return null
-  if (typeof window.reset_at === 'number') return window.reset_at * 1000
-  if (typeof window.reset_after_seconds === 'number') {
-    return Date.now() + window.reset_after_seconds * 1000
+  const raw = window.reset_at ?? window.resets_at ?? window.resetAt
+  if (typeof raw === 'number') return raw < 1e12 ? raw * 1000 : raw
+  if (typeof raw === 'string') {
+    const parsed = Date.parse(raw)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  const after = window.reset_after_seconds ?? window.reset_after
+  if (typeof after === 'number') {
+    return Date.now() + after * 1000
   }
   return null
 }
 
+function numberValue(value) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function usedPercentFromWindow(window) {
+  if (!window || typeof window !== 'object') return null
+  const direct = numberValue(
+    window.used_percent ??
+    window.usedPercent ??
+    window.percent_used ??
+    window.usage_percent ??
+    window.used_pct,
+  )
+  if (direct != null) return direct
+
+  const remaining = numberValue(window.remaining_percent ?? window.remainingPercent)
+  if (remaining != null) return 100 - remaining
+
+  const utilization = numberValue(window.utilization)
+  if (utilization != null) return utilization <= 1 ? utilization * 100 : utilization
+
+  const used = numberValue(window.used ?? window.consumed)
+  const limit = numberValue(window.limit ?? window.total)
+  if (used != null && limit > 0) return (used / limit) * 100
+
+  const available = numberValue(window.remaining ?? window.available)
+  if (available != null && limit > 0) return ((limit - available) / limit) * 100
+
+  return null
+}
+
+function periodMsFromWindow(window, fallbackPeriodMs) {
+  const seconds = numberValue(window?.limit_window_seconds ?? window?.window_seconds)
+  if (seconds != null) return seconds * 1000
+  const minutes = numberValue(window?.window_minutes ?? window?.limit_window_minutes)
+  if (minutes != null) return minutes * 60000
+  return fallbackPeriodMs
+}
+
+function kindFromPeriod(periodMs, fallback = 'quota') {
+  if (Math.abs(periodMs - PERIOD_SESSION_MS) < 60000) return '5h'
+  if (Math.abs(periodMs - PERIOD_WEEKLY_MS) < 60000) return '7d'
+  return fallback
+}
+
+function cleanWindowKey(key) {
+  return String(key || '')
+    .replace(/[_-]?window$/i, '')
+    .replace(/[_-]?rate[_-]?limit$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+}
+
+function titleCase(text) {
+  return String(text || '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+}
+
+function labelForCodexWindow(key, window) {
+  const raw = cleanWindowKey(key)
+  const lower = raw.toLowerCase()
+  const model = String(window?.model || window?.model_slug || window?.name || '').toLowerCase()
+  const isSpark = lower.includes('spark') || model.includes('spark')
+  const isWeekly =
+    lower.includes('secondary') ||
+    lower.includes('weekly') ||
+    lower.includes('seven') ||
+    periodMsFromWindow(window, 0) === PERIOD_WEEKLY_MS
+
+  if (lower === 'primary' || lower === 'primary window') return 'Session'
+  if (lower === 'secondary' || lower === 'secondary window') return 'Weekly'
+  if (isSpark) return isWeekly ? 'Spark Weekly' : 'Spark'
+  return titleCase(raw.replace(/\b(primary|secondary|usage|limit)\b/gi, '').trim()) || 'Quota'
+}
+
+function labelForAdditionalLimit(limit, key, window) {
+  const raw = String(limit?.limit_name || limit?.name || limit?.metered_feature || key || '').trim()
+  const lower = raw.toLowerCase()
+  const isWeekly =
+    String(key || '').toLowerCase().includes('secondary') ||
+    periodMsFromWindow(window, 0) === PERIOD_WEEKLY_MS
+  if (lower.includes('spark')) return isWeekly ? 'Spark Weekly' : 'Spark'
+  const clean = raw
+    .replace(/^gpt[-.\d]+[-_\s]*/i, '')
+    .replace(/^codex[-_\s]*/i, '')
+    .replace(/[-_]+/g, ' ')
+    .trim()
+  const label = titleCase(clean) || 'Extra'
+  return isWeekly ? `${label} Weekly` : label
+}
+
 function windowFrom(label, kind, usedPct, window, fallbackPeriodMs) {
+  const periodMs = periodMsFromWindow(window, fallbackPeriodMs)
   return {
     label,
-    kind,
+    kind: kind || kindFromPeriod(periodMs),
     usedPct: Math.round(Math.max(0, Math.min(100, usedPct || 0))),
     resetAt: resetAt(window),
-    periodMs: typeof window?.limit_window_seconds === 'number'
-      ? window.limit_window_seconds * 1000
-      : fallbackPeriodMs,
+    periodMs,
+  }
+}
+
+function windowFromRateLimit(key, window, fallback = {}) {
+  const usedPct = usedPercentFromWindow(window)
+  if (usedPct == null) return null
+  const label = fallback.label || labelForCodexWindow(key, window)
+  const periodMs = periodMsFromWindow(window, fallback.periodMs || null)
+  return windowFrom(label, fallback.kind || kindFromPeriod(periodMs, 'quota'), usedPct, window, periodMs)
+}
+
+function formatCreditAmount(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return String(value || '').trim()
+  return n.toLocaleString('en-US', { maximumFractionDigits: 2 })
+}
+
+function creditsExtra(data) {
+  const credits = data?.credits || data?.rate_limit?.credits
+  if (!credits || typeof credits !== 'object') return []
+  if (credits.unlimited) return [{ label: 'Credits left', value: 'unlimited' }]
+  const balance = credits.balance ?? credits.credits_remaining ?? credits.remaining
+  if (balance == null || balance === '') return []
+  return [{ label: 'Credits left', value: formatCreditAmount(balance) }]
+}
+
+function codexWindowsFromRateLimit(rateLimit, headers = null) {
+  const primaryWindow = rateLimit.primary_window || rateLimit.primary || null
+  const secondaryWindow = rateLimit.secondary_window || rateLimit.secondary || null
+  const primaryUsed =
+    numberHeader(headers, 'x-codex-primary-used-percent') ?? usedPercentFromWindow(primaryWindow)
+  const secondaryUsed =
+    numberHeader(headers, 'x-codex-secondary-used-percent') ?? usedPercentFromWindow(secondaryWindow)
+  const windows = []
+
+  if (primaryUsed != null) {
+    windows.push(windowFrom('Session', '5h', primaryUsed, primaryWindow, PERIOD_SESSION_MS))
+  }
+  if (secondaryUsed != null) {
+    windows.push(windowFrom('Weekly', '7d', secondaryUsed, secondaryWindow, PERIOD_WEEKLY_MS))
+  }
+
+  const known = new Set(['primary_window', 'secondary_window', 'primary', 'secondary', 'credits'])
+  for (const [key, value] of Object.entries(rateLimit || {})) {
+    if (known.has(key) || !value || typeof value !== 'object') continue
+    const window = windowFromRateLimit(key, value)
+    if (window) windows.push(window)
+  }
+  return windows
+}
+
+function additionalCodexWindows(limits) {
+  const windows = []
+  for (const limit of Array.isArray(limits) ? limits : []) {
+    const rateLimit = limit?.rate_limit || limit?.rateLimit || limit
+    if (!rateLimit || typeof rateLimit !== 'object') continue
+    const primary = windowFromRateLimit('primary_window', rateLimit.primary_window || rateLimit.primary, {
+      label: labelForAdditionalLimit(limit, 'primary_window', rateLimit.primary_window || rateLimit.primary),
+      kind: '5h',
+      periodMs: PERIOD_SESSION_MS,
+    })
+    const secondary = windowFromRateLimit('secondary_window', rateLimit.secondary_window || rateLimit.secondary, {
+      label: labelForAdditionalLimit(limit, 'secondary_window', rateLimit.secondary_window || rateLimit.secondary),
+      kind: '7d',
+      periodMs: PERIOD_WEEKLY_MS,
+    })
+    if (primary) windows.push(primary)
+    if (secondary) windows.push(secondary)
+
+    const known = new Set(['primary_window', 'secondary_window', 'primary', 'secondary'])
+    for (const [key, value] of Object.entries(rateLimit)) {
+      if (known.has(key) || !value || typeof value !== 'object') continue
+      const window = windowFromRateLimit(key, value, {
+        label: labelForAdditionalLimit(limit, key, value),
+      })
+      if (window) windows.push(window)
+    }
+  }
+  return windows
+}
+
+function parseLiveUsage(data, headers = null) {
+  const rateLimit = data?.rate_limit || {}
+  const windows = [
+    ...codexWindowsFromRateLimit(rateLimit, headers),
+    ...additionalCodexWindows(data?.additional_rate_limits),
+  ]
+  return {
+    connected: true,
+    planType: planLabel(data?.plan_type) || data?.plan_type || null,
+    lastActive: Date.now(),
+    windows,
+    extra: [{ label: 'Source', value: 'live Codex usage' }, ...creditsExtra(data)],
   }
 }
 
@@ -211,32 +404,7 @@ async function readLiveWithAuth(state) {
   }
   if (!resp.ok) throw new Error(`Codex usage request failed (${resp.status}).`)
 
-  const data = await resp.json()
-  const rateLimit = data.rate_limit || {}
-  const primaryWindow = rateLimit.primary_window || null
-  const secondaryWindow = rateLimit.secondary_window || null
-  const primaryUsed =
-    numberHeader(resp.headers, 'x-codex-primary-used-percent') ??
-    (typeof primaryWindow?.used_percent === 'number' ? primaryWindow.used_percent : null)
-  const secondaryUsed =
-    numberHeader(resp.headers, 'x-codex-secondary-used-percent') ??
-    (typeof secondaryWindow?.used_percent === 'number' ? secondaryWindow.used_percent : null)
-  const windows = []
-
-  if (primaryUsed != null) {
-    windows.push(windowFrom('Session', '5h', primaryUsed, primaryWindow, PERIOD_SESSION_MS))
-  }
-  if (secondaryUsed != null) {
-    windows.push(windowFrom('Weekly', '7d', secondaryUsed, secondaryWindow, PERIOD_WEEKLY_MS))
-  }
-
-  return {
-    connected: true,
-    planType: planLabel(data.plan_type) || data.plan_type || null,
-    lastActive: Date.now(),
-    windows,
-    extra: [{ label: 'Source', value: 'live Codex usage' }],
-  }
+  return parseLiveUsage(await resp.json(), resp.headers)
 }
 
 async function readLive() {
@@ -375,6 +543,13 @@ function readLocal(options = {}) {
       periodMs: (rl.secondary.window_minutes || 10080) * 60000,
     })
   }
+  const known = new Set(['primary', 'secondary', 'plan_type'])
+  for (const [key, value] of Object.entries(rl)) {
+    if (known.has(key) || !value || typeof value !== 'object') continue
+    const window = windowFromRateLimit(key, value)
+    if (window) result.windows.push(window)
+  }
+  result.extra = creditsExtra({ credits: rl.credits })
   return result
 }
 
@@ -1077,6 +1252,10 @@ module.exports = {
     parseCodexTokenSnapshots,
     priorityTraceMeta,
     makeInheritedTotalsResolver,
+    additionalCodexWindows,
+    codexWindowsFromRateLimit,
+    creditsExtra,
+    parseLiveUsage,
     readTokenUsage,
     resetTokenScanCacheForTesting,
     rolloutFiles,

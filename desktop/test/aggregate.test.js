@@ -702,6 +702,54 @@ test('token cost leaves Codex unpriced when the model is unknown', () => {
   assert.equal(tokenCost.withTokenCost('codex', usage), usage)
 })
 
+test('codex live usage parser keeps Spark and credit buckets', () => {
+  const usage = codex._private.parseLiveUsage({
+    plan_type: 'pro',
+    rate_limit: {
+      primary_window: { used_percent: 12, limit_window_seconds: 18000, reset_after_seconds: 60 },
+      secondary_window: { used_percent: 34, limit_window_seconds: 604800, reset_after_seconds: 120 },
+    },
+    additional_rate_limits: [{
+      limit_name: 'GPT-5.3-Codex-Spark',
+      metered_feature: 'codex_bengalfox',
+      rate_limit: {
+        primary_window: { used_percent: 0, limit_window_seconds: 18000 },
+        secondary_window: { remaining_percent: 97, limit_window_seconds: 604800 },
+      },
+    }],
+    credits: { has_credits: true, balance: '42.5' },
+  })
+
+  assert.equal(usage.planType, 'Pro 20x')
+  assert.deepEqual(usage.windows.map((w) => w.label), ['Session', 'Weekly', 'Spark', 'Spark Weekly'])
+  assert.equal(usage.windows.find((w) => w.label === 'Spark Weekly').usedPct, 3)
+  assert.deepEqual(usage.extra.find((e) => e.label === 'Credits left'), { label: 'Credits left', value: '42.5' })
+})
+
+test('claude usage parser exposes CodexBar-style specific buckets', () => {
+  const windows = claude._private.windowsFromUsage({
+    five_hour: { utilization: 2, resets_at: '2026-05-26T12:00:00Z' },
+    seven_day: { utilization: 13, resets_at: '2026-05-30T12:00:00Z' },
+    seven_day_oauth_apps: { utilization: 9, resets_at: '2026-05-30T12:00:00Z' },
+    seven_day_sonnet: null,
+    seven_day_opus: { utilization: 4, resets_at: '2026-05-30T12:00:00Z' },
+    seven_day_design: { utilization: 0, resets_at: null },
+    seven_day_cowork: null,
+  })
+
+  assert.deepEqual(windows.map((w) => w.label), [
+    'Session',
+    'Weekly',
+    'OAuth Apps',
+    'Sonnet',
+    'Opus',
+    'Claude Design',
+    'Daily Routines',
+  ])
+  assert.equal(windows.find((w) => w.label === 'Sonnet').usedPct, 0)
+  assert.equal(windows.find((w) => w.label === 'Daily Routines').usedPct, 0)
+})
+
 test('token cost uses cached models.dev prices for new OpenAI and Anthropic models', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'maxxtoken-models-dev-'))
   const old = process.env.MAXXTOKEN_MODELS_DEV_CACHE_ROOT
