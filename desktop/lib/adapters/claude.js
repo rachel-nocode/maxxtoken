@@ -86,25 +86,81 @@ function planLabel(oauth) {
   return tier ? `${base} ${tier[1]}x` : base
 }
 
+function firstUsageWindow(data, keys) {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(data || {}, key)) {
+      return { key, window: data[key], present: true }
+    }
+  }
+  return { key: null, window: null, present: false }
+}
+
+function usageWindowFromDef(data, def) {
+  const found = firstUsageWindow(data, def.keys)
+  const w = found.window
+  if (w && typeof w.utilization === 'number') {
+    return {
+      label: def.label,
+      kind: def.kind,
+      usedPct: Math.round(w.utilization),
+      resetAt: toMs(w.resets_at),
+      periodMs: def.periodMs,
+    }
+  }
+  if (def.keepWhenPresent && found.present) {
+    return {
+      label: def.label,
+      kind: def.kind,
+      usedPct: 0,
+      resetAt: null,
+      periodMs: def.periodMs,
+    }
+  }
+  return null
+}
+
 function windowsFromUsage(data) {
   const defs = [
-    { key: 'five_hour', label: 'Session', kind: '5h', periodMs: 5 * 3600e3 },
-    { key: 'seven_day', label: 'Weekly', kind: '7d', periodMs: 7 * 86400e3 },
-    { key: 'seven_day_sonnet', label: 'Sonnet', kind: '7d', periodMs: 7 * 86400e3 },
-    { key: 'seven_day_omelette', label: 'Claude Design', kind: '7d', periodMs: 7 * 86400e3 },
+    { keys: ['five_hour'], label: 'Session', kind: '5h', periodMs: 5 * 3600e3 },
+    { keys: ['seven_day'], label: 'Weekly', kind: '7d', periodMs: 7 * 86400e3 },
+    { keys: ['seven_day_oauth_apps'], label: 'OAuth Apps', kind: '7d', periodMs: 7 * 86400e3 },
+    { keys: ['seven_day_sonnet'], label: 'Sonnet', kind: '7d', periodMs: 7 * 86400e3, keepWhenPresent: true },
+    { keys: ['seven_day_opus'], label: 'Opus', kind: '7d', periodMs: 7 * 86400e3, keepWhenPresent: true },
+    {
+      keys: [
+        'seven_day_design',
+        'seven_day_claude_design',
+        'claude_design',
+        'design',
+        'seven_day_omelette',
+        'omelette',
+        'omelette_promotional',
+      ],
+      label: 'Claude Design',
+      kind: '7d',
+      periodMs: 7 * 86400e3,
+      keepWhenPresent: true,
+    },
+    {
+      keys: [
+        'seven_day_routines',
+        'seven_day_claude_routines',
+        'claude_routines',
+        'routines',
+        'routine',
+        'seven_day_cowork',
+        'cowork',
+      ],
+      label: 'Daily Routines',
+      kind: '7d',
+      periodMs: 7 * 86400e3,
+      keepWhenPresent: true,
+    },
   ]
   const windows = []
   for (const d of defs) {
-    const w = data[d.key]
-    if (w && typeof w.utilization === 'number') {
-      windows.push({
-        label: d.label,
-        kind: d.kind,
-        usedPct: Math.round(w.utilization),
-        resetAt: toMs(w.resets_at),
-        periodMs: d.periodMs,
-      })
-    }
+    const window = usageWindowFromDef(data, d)
+    if (window) windows.push(window)
   }
   return windows
 }
@@ -489,5 +545,6 @@ module.exports = {
     scanClaudeTokenUsage,
     tokenHistoryDays,
     tokenHistoryLabel,
+    windowsFromUsage,
   },
 }

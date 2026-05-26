@@ -105,6 +105,11 @@ function activityState(lastActive) {
   return Date.now() - lastActive < 2 * DAY ? 'live' : 'stale'
 }
 
+function activityLastUpdatedAt(lastActive) {
+  const ts = Number(lastActive)
+  return Number.isFinite(ts) && ts > 0 ? ts : null
+}
+
 // A window is "leaking" when it resets soon but is barely used —
 // that unused capacity is about to be burned.
 function windowUrgent(w) {
@@ -670,6 +675,7 @@ function providerHasUsefulUsage(provider) {
 }
 
 function providerFromCachedSnapshot(current, cached, generatedAt) {
+  const lastUpdatedAt = Date.parse(cached.lastUpdatedAt || '') || generatedAt
   const windows = [cached.primaryWindow, cached.secondaryWindow].filter(Boolean)
   const spent = cached.spentValue == null ? null : moneyNumber(cached.spentValue)
   const left = cached.leftValue == null ? null : moneyNumber(cached.leftValue)
@@ -683,6 +689,7 @@ function providerFromCachedSnapshot(current, cached, generatedAt) {
     connected: true,
     needsKey: false,
     activity: 'stale',
+    lastUpdatedAt,
     ...valueFields(total, spent, left, cached.capturedPct, {
       label: source,
       accuracy: 'live',
@@ -691,7 +698,7 @@ function providerFromCachedSnapshot(current, cached, generatedAt) {
     tokenUsage: compactTokenUsageToProvider(cached.tokenUsage),
     extra: [
       ...((current.extra || []).filter(Boolean)),
-      { label: 'Status', value: `last good ${new Date(generatedAt).toLocaleTimeString()}` },
+      { label: 'Status', value: `last good ${new Date(lastUpdatedAt).toLocaleTimeString()}` },
     ],
     resetAt: cached.resetAt || windows[0]?.resetAt || current.resetAt,
     urgent: cached.urgent === true,
@@ -814,6 +821,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig()) {
       resetKind: 'weekly',
       urgent,
       activity: activityState(d.lastActive),
+      lastUpdatedAt: activityLastUpdatedAt(d.lastActive),
       error: d.error || null,
       nudge: nudgeFor(id, capturedPct, urgent),
     }
@@ -1141,6 +1149,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig()) {
       resetKind: 'cycle',
       urgent,
       activity: activityState(d.lastActive),
+      lastUpdatedAt: activityLastUpdatedAt(d.lastActive),
       error: null,
       nudge: nudgeFor(id, capturedPct, urgent),
     }
@@ -1511,6 +1520,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig()) {
       resetKind: 'cycle',
       urgent,
       activity: activityState(d.lastActive),
+      lastUpdatedAt: activityLastUpdatedAt(d.lastActive),
       error: null,
       nudge: nudgeFor(id, capturedPct, urgent),
     }
@@ -1733,6 +1743,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig()) {
       resetKind: 'cycle',
       urgent,
       activity: activityState(d.lastActive),
+      lastUpdatedAt: activityLastUpdatedAt(d.lastActive),
       error: null,
       nudge: nudgeFor(id, capturedPct, urgent),
     }
@@ -1861,6 +1872,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig()) {
       resetKind: d.billing?.resetsAt ? 'monthly' : 'cycle',
       urgent,
       activity: d.billing ? 'live' : activityState(d.lastActive),
+      lastUpdatedAt: d.billing ? Date.now() : activityLastUpdatedAt(d.lastActive),
       error: null,
       nudge: nudgeFor(id, capturedPct, urgent),
     }
@@ -3131,6 +3143,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig()) {
       resetKind: d.quota ? 'quota' : 'usage',
       urgent,
       activity: activityState(d.lastActive),
+      lastUpdatedAt: activityLastUpdatedAt(d.lastActive),
       error: d.error || null,
       nudge: nudgeFor(id, capturedPct, urgent),
     }
@@ -3409,6 +3422,9 @@ async function snapshot() {
   const history = usageHistory.recordSnapshot(providers, { totals, tokenTotals })
   providers = usageHistory.applyInsights(providers, history)
   providers = addProviderSourceLabels(providers)
+  providers = providers.map((provider) => (
+    provider?.connected && !provider.lastUpdatedAt ? { ...provider, lastUpdatedAt: snapStart } : provider
+  ))
   // Honor user-defined ordering. Unknown ids drop to end in original order.
   const orderIndex = new Map((config.providerOrder || []).map((id, i) => [id, i]))
   providers = providers.slice().sort((a, b) => {

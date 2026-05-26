@@ -17,6 +17,7 @@ function compactProvider(provider) {
     connected: provider.connected === true,
     needsKey: provider.needsKey === true,
     activity: provider.activity || 'none',
+    lastUpdatedAt: provider.lastUpdatedAt || null,
     capturedPct: provider.capturedPct ?? null,
     remainingPct: provider.remainingPct ?? null,
     spentValue: provider.spentValue ?? null,
@@ -25,6 +26,10 @@ function compactProvider(provider) {
     urgent: provider.urgent === true,
     error: provider.error || null,
     sourceLabel: provider.sourceLabel || provider.tokenUsage?.source || null,
+    windows: (provider.windows || []).map(compactWindow),
+    extra: Array.isArray(provider.extra)
+      ? provider.extra.map((item) => ({ label: item.label || '', value: item.value ?? '' }))
+      : [],
     primaryWindow: compactWindow(primary),
     secondaryWindow: compactWindow(secondary),
     tokenUsage,
