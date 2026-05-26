@@ -196,6 +196,7 @@ const KEY_PROVIDERS = new Set([
 
 const $ = (id) => document.getElementById(id)
 let snap = null
+let snapshotLoading = false
 const expandedProviders = new Set()
 let refreshingProvider = null
 const THEME_KEY = 'maxxtoken-theme'
@@ -312,15 +313,7 @@ function quotaWarningMarkers(kind) {
 }
 
 function meterWithMarkers(pct, tone, kind, className = 'prov-meter') {
-  return `<div class="${className}"><span class="${tone}" style="width:${pct}%"></span>${quotaWarningMarkers(kind)}</div>`
-}
-
-function compactWindowLabel(w) {
-  const kind = quotaWarningKind(w)
-  if (kind === 'session') return '5H'
-  if (kind === 'weekly') return '7D'
-  if (w?.kind === 'cycle') return '30D'
-  return String(w?.label || w?.kind || 'usage').slice(0, 4).toUpperCase()
+  return `<div class="usage-bar-slot"><div class="${className}"><span class="${tone}" style="width:${pct}%"></span>${quotaWarningMarkers(kind)}</div></div>`
 }
 
 function pickCollapsedWindows(windows = []) {
@@ -338,39 +331,35 @@ function pickCollapsedWindows(windows = []) {
   return picked.slice(0, 2)
 }
 
-function collapsedWindowBars(p, fallbackPct, fallbackKind) {
-  const windows = pickCollapsedWindows(p.windows || [])
-  if (!windows.length) return meterWithMarkers(fallbackPct, usageTone(fallbackPct), fallbackKind)
+function fallbackUsageRow(pct, kind) {
+  const usedPct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)))
+  const tierLabel = kind === 'weekly' ? 'WEEKLY · 7D' : 'SESSION · 5H'
   return `
-    <div class="prov-window-bars">
-      ${windows
-        .map((w) => {
-          const pct = Math.max(0, Math.min(100, Math.round(Number(w.usedPct) || 0)))
-          return `
-            <div class="prov-window-line" title="${h(w.label || 'Usage')} · ${pct}% used">
-              <span class="prov-window-label mono">${h(compactWindowLabel(w))}</span>
-              ${compactPaceRail(w, pct)}
-              <span class="prov-window-pct mono">${pct}%</span>
-            </div>`
-        })
-        .join('')}
+    <div class="usage-window onpace">
+      <div class="usage-window-head">
+        <span class="usage-window-name">Usage</span>
+        <span class="usage-window-tier mono">${tierLabel}</span>
+      </div>
+      ${meterWithMarkers(usedPct, usageTone(usedPct), kind)}
+      <div class="usage-window-foot">
+        <span class="usage-window-pct mono">${usedPct}<i>%</i></span>
+        <span class="usage-window-reset mono">—</span>
+      </div>
     </div>`
 }
 
-function compactPaceRail(w, usedPct) {
-  const expectedPct =
-    w.pace && Number.isFinite(Number(w.pace.expectedUsedPercent))
-      ? Math.max(0, Math.min(100, Math.round(Number(w.pace.expectedUsedPercent))))
-      : usedPct
-  const projectedPct =
-    w.pace && Number.isFinite(Number(w.pace.projectedAtResetPercent))
-      ? Number(w.pace.projectedAtResetPercent)
-      : null
+function collapsedWindowBars(p, fallbackPct, fallbackKind) {
+  const windows = pickCollapsedWindows(p.windows || [])
+  if (!windows.length) return `<div class="win-list">${fallbackUsageRow(fallbackPct, fallbackKind)}</div>`
+  return `<div class="win-list">${windows.map(windowRow).join('')}</div>`
+}
+
+function paceRailSvg(usedPct, expectedPct, projectedPct = null) {
   const a = Math.max(0, Math.min(100, usedPct))
   const e = Math.max(0, Math.min(100, expectedPct))
   const ahead = a < e - 2
   const behind = a > e + 2
-  const uid = `cpb${Math.random().toString(36).slice(2, 9)}`
+  const uid = `pr${Math.random().toString(36).slice(2, 9)}`
   const tickX = Math.max(0, Math.min(99.6, e - 0.2))
   const burnout = Number.isFinite(projectedPct) && projectedPct >= 100 && a < 100
   return `
@@ -410,42 +399,6 @@ function windowHistoryMini(w) {
     </div>`
 }
 
-function paceBarSvg(usedPct, expectedPct, projectedPct) {
-  const a = Math.max(0, Math.min(100, usedPct))
-  const e = Math.max(0, Math.min(100, expectedPct))
-  const ahead = a < e - 2
-  const behind = a > e + 2
-  const onPace = !ahead && !behind
-  const uid = `pb${Math.random().toString(36).slice(2, 9)}`
-
-  // viewBox 100x16. Bar y=5..12 (h=7). Tick y=3..14 (overhang ±2).
-  // Reserve = hairline rule below bar (fill-end → tick).
-  // Deficit = diagonal lime stripes on bar (tick → fill-end).
-  // Burnout flag = red tick at right edge when projected ≥ 100%.
-  const tickX = Math.max(0, Math.min(99.7, e - 0.15))
-  const projRaw = Number(projectedPct)
-  const burnout = Number.isFinite(projRaw) && projRaw >= 100 && a < 100
-
-  // SVG <pattern> does NOT inherit CSS `color` from the element using it.
-  // Hardcode lime literal so stripes render lime, not black.
-  return `
-    <div class="pacebar">
-      <svg class="pacebar-svg" viewBox="0 0 100 16" preserveAspectRatio="none" aria-hidden="true">
-        <defs>
-          <pattern id="${uid}" patternUnits="userSpaceOnUse" width="3" height="7" patternTransform="rotate(45)">
-            <rect width="1.5" height="7" fill="#b6f24a"/>
-          </pattern>
-        </defs>
-        <rect class="pb-track" x="0" y="5" width="100" height="7"/>
-        <rect class="pb-fill" x="0" y="5" width="${behind ? e : a}" height="7"/>
-        ${behind ? `<rect x="${e}" y="5" width="${Math.max(0, a - e)}" height="7" fill="url(#${uid})"/>` : ''}
-        ${burnout ? `<rect class="pb-burnout" x="99.4" y="3" width="0.6" height="11"/>` : ''}
-        ${ahead ? `<rect class="pb-reserve" x="${a}" y="13.2" width="${e - a}" height="1.1"/>` : ''}
-        <rect class="pb-tick ${onPace ? 'on' : 'off'}" x="${tickX}" y="3" width="0.6" height="11"/>
-      </svg>
-    </div>`
-}
-
 function windowRow(w) {
   const usedPct = Math.max(0, Math.min(100, Math.round(w.usedPct || 0)))
   const expectedPct =
@@ -465,14 +418,16 @@ function windowRow(w) {
     ? Number(w.pace.projectedAtResetPercent)
     : null
   return `
-    <div class="win ${paceClass}">
-      <div class="win-row">
-        <span class="win-name">${h(w.label)}</span>
-        <span class="win-tier mono">${h(tierLabel)}</span>
-        <span class="win-pct mono">${usedPct}<i>%</i></span>
-        <span class="win-reset mono ${urgent ? 'urgent' : ''}" data-reset="${w.resetAt || ''}">${countdown(w.resetAt)}</span>
+    <div class="usage-window ${paceClass}">
+      <div class="usage-window-head">
+        <span class="usage-window-name">${h(w.label)}</span>
+        <span class="usage-window-tier mono">${h(tierLabel)}</span>
       </div>
-      ${paceBarSvg(usedPct, expectedPct, projectedPct)}
+      ${paceRailSvg(usedPct, expectedPct, projectedPct)}
+      <div class="usage-window-foot">
+        <span class="usage-window-pct mono">${usedPct}<i>%</i></span>
+        <span class="usage-window-reset mono ${urgent ? 'urgent' : ''}" data-reset="${w.resetAt || ''}">${countdown(w.resetAt)}</span>
+      </div>
     </div>`
 }
 
@@ -782,8 +737,8 @@ function providerCard(p) {
   }
 
   const meterKind = p.windows?.some((w) => quotaWarningKind(w) === 'weekly') ? 'weekly' : 'session'
-  const meter = meterWithMarkers(usedPct || 0, usageTone(usedPct || 0), meterKind)
   const collapsedMeters = collapsedWindowBars(p, usedPct || 0, meterKind)
+  const summaryMeter = fallbackUsageRow(usedPct || 0, meterKind)
   const tokenUsage = p.tokenUsage || null
   const hasTokenSource = tokenUsage && Number.isFinite(Number(tokenUsage.total))
   const expandLabel = expanded ? 'Collapse details' : 'Show details'
@@ -815,28 +770,130 @@ function providerCard(p) {
           ${expanded ? ICON_CHEVRON_UP : ICON_CHEVRON_DOWN}
         </button>
       </div>
-      ${expanded ? meter : collapsedMeters}
+      ${expanded ? (hasWindows ? '' : summaryMeter) : collapsedMeters}
       ${body}
       ${expandedTokenDetails}
     </div>`
 }
 
-function render() {
-  if (!snap) return
-  const t = snap.totals
-  $('t-captured').textContent = money(t.spent ?? t.captured)
-  $('t-burned').textContent = money(t.left ?? t.remaining ?? t.burned)
+function formatSyncChip(generatedAt, loading = false) {
+  if (loading) return { label: 'Sync', value: '…', className: 'syncing' }
+  if (!generatedAt) return { label: 'Sync', value: 'Pending', className: 'stale' }
+  const ageSec = Math.max(0, Math.floor((Date.now() - generatedAt) / 1000))
+  if (ageSec < 12) return { label: 'Sync', value: 'Now', className: '' }
+  if (ageSec < 60) return { label: 'Sync', value: `${ageSec}s`, className: '' }
+  if (ageSec < 3600) {
+    const mins = Math.floor(ageSec / 60)
+    return { label: 'Sync', value: `${mins}m`, className: mins >= 10 ? 'stale' : '' }
+  }
+  if (ageSec < 86400) {
+    const hrs = Math.floor(ageSec / 3600)
+    return { label: 'Sync', value: `${hrs}h`, className: 'stale' }
+  }
+  return { label: 'Sync', value: '1d+', className: 'stale' }
+}
+
+function footerChip(label, valueHtml, extraClass = '') {
+  return `<span class="foot-chip ${extraClass}"><span class="fc-l">${label}</span><span class="fc-v num-display">${valueHtml}</span></span>`
+}
+
+function skeletonProviderCards(count = 4) {
+  return Array.from({ length: count }, () => `
+    <div class="prov prov-skeleton" aria-hidden="true">
+      <div class="prov-top">
+        <span class="prov-icon sk-shimmer"></span>
+        <span class="prov-id">
+          <span class="sk-line wide"></span>
+          <span class="sk-line narrow"></span>
+        </span>
+        <span class="sk-pct sk-shimmer"></span>
+      </div>
+      <div class="prov-meter sk-shimmer" aria-hidden="true"></div>
+    </div>`).join('')
+}
+
+function skeletonFooterChips() {
+  const chip = (label) => `
+    <span class="foot-chip foot-chip-skeleton">
+      <span class="fc-l">${label}</span>
+      <span class="fc-v num-display">—</span>
+    </span>`
+  return chip('Spent') + chip('Left') + chip('Plans') + chip('Sync')
+}
+
+function forgeStageSkeleton(count = 3) {
+  return `<div class="forge-stage-skeleton">${skeletonProviderCards(count)}</div>`
+}
+
+function mainEmptyPanel() {
+  return `
+    <div class="state-panel" role="status">
+      <div class="state-mark" aria-hidden="true">✦</div>
+      <h2>No plans connected yet</h2>
+      <p>Run a provider CLI once on this Mac, or paste a key in Settings. Claude is the fastest first win.</p>
+      <div class="state-actions">
+        <button type="button" class="primary-btn" id="empty-open-settings">Open Settings</button>
+        <button type="button" class="ghost-btn" id="empty-rescan">Scan again</button>
+      </div>
+    </div>`
+}
+
+function bindMainListActions() {
+  const openSettings = $('empty-open-settings')
+  if (openSettings) openSettings.onclick = () => showSettings()
+  const rescan = $('empty-rescan')
+  if (rescan) {
+    rescan.onclick = async () => {
+      snapshotLoading = true
+      render()
+      try {
+        snap = await window.maxx.getSnapshot()
+      } catch {
+        /* next snapshot push can recover */
+      }
+      snapshotLoading = false
+      render()
+    }
+  }
+}
+
+function renderFooterTotals() {
   const footEl = $('foot-left')
-  if (!footEl) {
-    $('list').innerHTML = snap.providers.map(providerCard).join('')
+  if (!footEl) return
+  if (!snap || snapshotLoading) {
+    footEl.innerHTML = skeletonFooterChips()
     return
   }
-  const planVal = t.estimatedPlanCount ? `${t.planCount}<i>·${t.estimatedPlanCount}e</i>` : `${t.planCount}`
-  footEl.innerHTML = `
-    <span class="foot-chip"><span class="fc-l">Left</span><span class="fc-v mono">${money(t.left ?? t.remaining)}</span></span>
-    <span class="foot-chip"><span class="fc-l">Spent</span><span class="fc-v mono">${money(t.spent ?? t.captured)}</span></span>
-    <span class="foot-chip"><span class="fc-l">Plans</span><span class="fc-v mono">${planVal}</span></span>`
-  $('list').innerHTML = snap.providers.map(providerCard).join('')
+  const t = snap.totals || {}
+  const planVal = t.estimatedPlanCount ? `${t.planCount}<i>·${t.estimatedPlanCount}e</i>` : `${t.planCount ?? 0}`
+  const sync = formatSyncChip(snap.generatedAt, snapshotLoading)
+  const syncClass = `sync-chip${sync.className ? ` ${sync.className}` : ''}`
+  footEl.innerHTML =
+    footerChip('Spent', money(t.spent ?? t.captured), 'spent-chip') +
+    footerChip('Left', money(t.left ?? t.remaining), 'left-chip') +
+    footerChip('Plans', planVal) +
+    footerChip(sync.label, sync.value, syncClass)
+}
+
+function renderMainList() {
+  const list = $('list')
+  if (!list) return
+  if (snapshotLoading || !snap) {
+    list.innerHTML = skeletonProviderCards()
+    return
+  }
+  const connected = (snap.providers || []).filter((p) => p.connected)
+  if (!connected.length) {
+    list.innerHTML = mainEmptyPanel()
+    bindMainListActions()
+    return
+  }
+  list.innerHTML = snap.providers.map(providerCard).join('')
+}
+
+function render() {
+  renderFooterTotals()
+  renderMainList()
 }
 
 function tickCountdowns() {
@@ -845,6 +902,7 @@ function tickCountdowns() {
     if (r) el.textContent = countdown(r)
   })
 }
+
 
 /* ---------- icons ---------- */
 // ============================================================
@@ -1342,7 +1400,7 @@ async function nextIdea(note = '') {
 
 async function loadForge() {
   $('forge-target').textContent = 'Pulling moonshots…'
-  $('forge-stage').innerHTML = `<div class="forge-empty">Asking your fullest model for strange app ideas…</div>`
+  $('forge-stage').innerHTML = forgeStageSkeleton(3)
   $('forge-note').textContent = ''
   const { target, ideas } = await window.maxx.forgeIdeas()
   forgeIdeas = ideas
@@ -1360,6 +1418,8 @@ async function startForge() {
 
 function renderMissionModels() {
   const models = Array.isArray(missionContext.models) ? missionContext.models : []
+  const openBtn = $('mission-open-settings')
+  if (openBtn) openBtn.onclick = () => showSettings()
   $('mission-model-list').innerHTML = models.length
     ? models
         .map((m, i) => {
@@ -1375,7 +1435,15 @@ function renderMissionModels() {
             </label>`
         })
         .join('')
-    : `<div class="forge-empty">Connect a CLI-backed provider first.</div>`
+    : `
+      <div class="state-panel" role="status">
+        <div class="state-mark" aria-hidden="true">◇</div>
+        <h2>Connect a CLI first</h2>
+        <p>Enable a provider with a local CLI, then come back to route missions.</p>
+        <div class="state-actions">
+          <button type="button" class="primary-btn" id="mission-open-settings">Open Settings</button>
+        </div>
+      </div>`
 }
 
 function renderMissionHistory() {
@@ -1450,7 +1518,7 @@ async function loadBurnChallenges() {
   burnIdeas = []
   burnTarget = null
   $('burn-note').textContent = 'Checking Google Trends, Hacker News, and GitHub…'
-  $('burn-list').innerHTML = `<div class="mission-loading"><span></span><b>Loading goal burn ideas…</b></div>`
+  $('burn-list').innerHTML = forgeStageSkeleton(2)
   renderBurnIdeas()
   const res = await window.maxx.burnIdeas()
   burnIdeas = Array.isArray(res.ideas) ? res.ideas : []
@@ -1789,6 +1857,7 @@ $('save-config').addEventListener('click', async () => {
 
 window.maxx.onSnapshot((s) => {
   snap = s
+  snapshotLoading = false
   render()
 })
 
@@ -1864,10 +1933,19 @@ async function init() {
     }
     renderOnboarding()
     showView('view-onboarding')
-    if ($('foot-left')) $('foot-left').textContent = 'Choose providers, then scan.'
+    const footLeft = $('foot-left')
+    if (footLeft) footLeft.innerHTML = skeletonFooterChips()
     return
   }
-  snap = await window.maxx.getSnapshot()
+  showMain()
+  snapshotLoading = true
+  render()
+  try {
+    snap = await window.maxx.getSnapshot()
+  } catch {
+    snap = null
+  }
+  snapshotLoading = false
   render()
   try {
     updateState = await window.maxx.getUpdateStatus()
@@ -1876,5 +1954,6 @@ async function init() {
     /* update status is best-effort */
   }
 }
+
 init()
 setInterval(tickCountdowns, 1000)
