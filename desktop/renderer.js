@@ -368,6 +368,24 @@ function paceBarSvg(usedPct, expectedPct, windowLabel, projectedPct) {
     </div>`
 }
 
+function paceDetail(w) {
+  if (!w?.pace?.leftLabel) return ''
+  const tone = w.pace.tone === 'deficit' ? 'deficit' : w.pace.tone === 'reserve' ? 'reserve' : 'neutral'
+  let right = ''
+  if (w.pace.willLastToReset) {
+    right = 'Lasts until reset'
+  } else if (w.pace.exhaustsAt) {
+    right = `Runs out in <span class="mono" data-reset="${w.pace.exhaustsAt}">${countdown(w.pace.exhaustsAt)}</span>`
+  } else if (Number.isFinite(Number(w.pace.projectedAtResetPercent)) && Number(w.pace.projectedAtResetPercent) > 100) {
+    right = `${Math.round(Number(w.pace.projectedAtResetPercent) - 100)}% run-out risk`
+  }
+  return `
+    <div class="win-pace ${tone}">
+      <span>${h(w.pace.leftLabel)}</span>
+      ${right ? `<span>${right}</span>` : ''}
+    </div>`
+}
+
 function windowRow(w) {
   const usedPct = Math.max(0, Math.min(100, Math.round(w.usedPct || 0)))
   const expectedPct =
@@ -396,6 +414,7 @@ function windowRow(w) {
         <span class="win-reset mono ${urgent ? 'urgent' : ''}" data-reset="${w.resetAt || ''}">${countdown(w.resetAt)}</span>
       </div>
       ${paceBarSvg(usedPct, expectedPct, winLabel, projectedPct)}
+      ${paceDetail(w)}
     </div>`
 }
 
