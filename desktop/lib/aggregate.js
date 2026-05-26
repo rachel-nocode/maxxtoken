@@ -105,6 +105,11 @@ function activityState(lastActive) {
   return Date.now() - lastActive < 2 * DAY ? 'live' : 'stale'
 }
 
+function activityLastUpdatedAt(lastActive) {
+  const ts = Number(lastActive)
+  return Number.isFinite(ts) && ts > 0 ? ts : null
+}
+
 // A window is "leaking" when it resets soon but is barely used —
 // that unused capacity is about to be burned.
 function windowUrgent(w) {
@@ -816,6 +821,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig()) {
       resetKind: 'weekly',
       urgent,
       activity: activityState(d.lastActive),
+      lastUpdatedAt: activityLastUpdatedAt(d.lastActive),
       error: d.error || null,
       nudge: nudgeFor(id, capturedPct, urgent),
     }
@@ -1143,6 +1149,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig()) {
       resetKind: 'cycle',
       urgent,
       activity: activityState(d.lastActive),
+      lastUpdatedAt: activityLastUpdatedAt(d.lastActive),
       error: null,
       nudge: nudgeFor(id, capturedPct, urgent),
     }
@@ -1513,6 +1520,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig()) {
       resetKind: 'cycle',
       urgent,
       activity: activityState(d.lastActive),
+      lastUpdatedAt: activityLastUpdatedAt(d.lastActive),
       error: null,
       nudge: nudgeFor(id, capturedPct, urgent),
     }
@@ -1735,6 +1743,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig()) {
       resetKind: 'cycle',
       urgent,
       activity: activityState(d.lastActive),
+      lastUpdatedAt: activityLastUpdatedAt(d.lastActive),
       error: null,
       nudge: nudgeFor(id, capturedPct, urgent),
     }
@@ -1863,6 +1872,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig()) {
       resetKind: d.billing?.resetsAt ? 'monthly' : 'cycle',
       urgent,
       activity: d.billing ? 'live' : activityState(d.lastActive),
+      lastUpdatedAt: d.billing ? Date.now() : activityLastUpdatedAt(d.lastActive),
       error: null,
       nudge: nudgeFor(id, capturedPct, urgent),
     }
@@ -3133,6 +3143,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig()) {
       resetKind: d.quota ? 'quota' : 'usage',
       urgent,
       activity: activityState(d.lastActive),
+      lastUpdatedAt: activityLastUpdatedAt(d.lastActive),
       error: d.error || null,
       nudge: nudgeFor(id, capturedPct, urgent),
     }
