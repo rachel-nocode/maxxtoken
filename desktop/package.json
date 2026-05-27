@@ -1,7 +1,7 @@
 {
   "name": "maxxtoken-menubar",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3-beta.1",
   "description": "MaxxToken menu bar app - reverse AI usage tracker that nudges you to use what you pay for",
   "main": "main.js",
   "bin": {
@@ -44,6 +44,26 @@
       "extendInfo": {
         "LSUIElement": true
       }
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "artifactName": "${productName}-${version}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MaxxToken"
     },
     "afterPack": "build/after-pack.js",
     "publish": {

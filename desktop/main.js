@@ -197,7 +197,7 @@ function setTraySnapshot(snap) {
   } catch {
     /* widget/automation snapshot is best-effort */
   }
-  if (tray) tray.setTitle(trayTitleFromSnapshot(snap, loadConfig().trayMetric))
+  setTrayStatus(trayTitleFromSnapshot(snap, loadConfig().trayMetric))
   maybePostMaxxAlert(snap)
   maybePostQuotaNotifications(snap)
 }
@@ -290,9 +290,20 @@ function maybePostQuotaNotifications(snap) {
 }
 
 function trayIcon() {
-  const image = nativeImage.createFromPath(path.join(__dirname, 'assets', 'tray', 'iconTemplate.png'))
-  image.setTemplateImage(true)
+  const iconPath =
+    process.platform === 'darwin'
+      ? path.join(__dirname, 'assets', 'tray', 'iconTemplate.png')
+      : path.join(__dirname, 'assets', 'icon.png')
+  const image = nativeImage.createFromPath(iconPath)
+  if (process.platform === 'darwin') image.setTemplateImage(true)
   return image
+}
+
+function setTrayStatus(title) {
+  if (!tray) return
+  const status = String(title || '').trim()
+  tray.setToolTip(status ? `MaxxToken - ${status}` : 'MaxxToken - use what you pay for')
+  if (process.platform === 'darwin') tray.setTitle(title || ' Maxx')
 }
 
 function createPopover() {
@@ -346,8 +357,11 @@ function positionPopover() {
   const maxY = Math.max(minY, area.y + area.height - popoverHeight - margin)
   const centerX = sameDisplay ? anchor.x : cursor.x
   const x = Math.min(maxX, Math.max(minX, Math.round(centerX - POPOVER_WIDTH / 2)))
-  let y = sameDisplay ? Math.round(anchor.y + 4) : area.y + margin
-  if (y > maxY) y = area.y + margin
+  let y = sameDisplay ? Math.round(anchor.y + 4) : Math.round(cursor.y + 4)
+  if (y > maxY) {
+    const topAnchor = sameDisplay && trayBounds.height ? trayBounds.y : cursor.y
+    y = Math.round(topAnchor - popoverHeight - 4)
+  }
   y = Math.min(maxY, Math.max(minY, y))
   popover.setPosition(x, y, false)
 }
@@ -435,10 +449,8 @@ function applyLoginItemSettings(config = loadConfig()) {
   const openAtLogin = config.openAtLogin !== false
   if (!app.isPackaged) return
   try {
-    app.setLoginItemSettings({
-      openAtLogin,
-      openAsHidden: true,
-    })
+    const settings = process.platform === 'darwin' ? { openAtLogin, openAsHidden: true } : { openAtLogin }
+    app.setLoginItemSettings(settings)
   } catch {
     /* login item support is best-effort */
   }
@@ -448,7 +460,7 @@ async function updateTray() {
   let title = ' Maxx'
   const config = loadConfig()
   if (!config.onboardingComplete) {
-    if (tray) tray.setTitle(' Setup')
+    setTrayStatus(' Setup')
     return
   }
   try {
@@ -457,13 +469,12 @@ async function updateTray() {
   } catch {
     /* keep default */
   }
-  if (tray) tray.setTitle(title)
+  setTrayStatus(title)
 }
 
 function createTray() {
   tray = new Tray(trayIcon())
-  tray.setToolTip('MaxxToken - use what you pay for')
-  tray.setTitle(' Maxx')
+  setTrayStatus(' Maxx')
   updateTray()
   tray.on('click', togglePopover)
   tray.on('right-click', () => {

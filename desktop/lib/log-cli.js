@@ -3,7 +3,18 @@ const os = require('os')
 const path = require('path')
 const { spawn } = require('child_process')
 
-const DEFAULT_LOG = path.join(os.homedir(), 'Library', 'Application Support', 'maxxtoken-menubar', 'debug.log')
+function defaultLogPath(platform = process.platform, env = process.env, home = os.homedir()) {
+  if (env.MAXXTOKEN_LOG) return env.MAXXTOKEN_LOG
+  if (platform === 'win32') {
+    return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'maxxtoken-menubar', 'debug.log')
+  }
+  if (platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'maxxtoken-menubar', 'debug.log')
+  }
+  return path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'maxxtoken-menubar', 'debug.log')
+}
+
+const DEFAULT_LOG = defaultLogPath()
 
 function usage() {
   return [
@@ -44,11 +55,34 @@ function tail(file, lines, stdout) {
   }
 }
 
+function follow(file, stdout, stderr) {
+  let offset = 0
+  try {
+    offset = fs.statSync(file).size
+  } catch {
+    offset = 0
+  }
+  fs.watchFile(file, { interval: 1000 }, (current, previous) => {
+    if (!current.size || current.size < offset || current.mtimeMs === previous.mtimeMs) {
+      offset = current.size || 0
+      return
+    }
+    try {
+      const stream = fs.createReadStream(file, { start: offset, end: current.size - 1 })
+      stream.on('data', (chunk) => stdout.write(chunk))
+      stream.on('error', (err) => stderr.write(`Could not read log update: ${err.message}\n`))
+      offset = current.size
+    } catch (err) {
+      stderr.write(`Could not follow log: ${err.message}\n`)
+    }
+  })
+}
+
 function run(argv = process.argv.slice(2), io = process) {
   const options = parseArgs(argv)
   const stdout = io.stdout || process.stdout
   const stderr = io.stderr || process.stderr
-  const file = DEFAULT_LOG
+  const file = defaultLogPath()
 
   if (options.help) {
     stdout.write(usage() + '\n')
@@ -75,6 +109,10 @@ function run(argv = process.argv.slice(2), io = process) {
   }
 
   tail(file, options.lines, stdout)
+  if (process.platform === 'win32') {
+    follow(file, stdout, stderr)
+    return 0
+  }
   const child = spawn('/usr/bin/tail', ['-n', '0', '-F', file], { stdio: ['ignore', 'pipe', 'pipe'] })
   child.stdout.pipe(stdout)
   child.stderr.pipe(stderr)
@@ -82,4 +120,4 @@ function run(argv = process.argv.slice(2), io = process) {
   return 0
 }
 
-module.exports = { run, DEFAULT_LOG, _private: { parseArgs, tail } }
+module.exports = { run, DEFAULT_LOG, defaultLogPath, _private: { parseArgs, tail, follow } }

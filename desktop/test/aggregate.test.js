@@ -61,6 +61,8 @@ const usageSnapshotCli = require('../lib/usage-snapshot-cli')
 const providerDetection = require('../lib/provider-detection')
 const tokenCost = require('../lib/token-cost')
 const quotaNotifications = require('../lib/quota-notifications')
+const launch = require('../lib/launch')
+const logCli = require('../lib/log-cli')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -440,6 +442,59 @@ test('tray title formats configured menu bar metric', () => {
   assert.equal(trayTitle.trayTitleFromSnapshot(snap, 'reset', now), ' 3h 0m')
   assert.equal(trayTitle.trayTitleFromSnapshot(snap, 'tokens', now), ' 1.2M')
   assert.equal(trayTitle.trayTitleFromSnapshot({ totals: { left: 12 } }, 'tokens', now), ' $12')
+})
+
+test('Windows launcher script opens prompt-capable CLIs through PowerShell', () => {
+  const home = String.raw`C:\Users\Rachel`
+  const script = launch._private.buildWindowsScript({
+    cliBin: 'claude',
+    cliPath: String.raw`C:\Users\Rachel\AppData\Roaming\npm\claude.cmd`,
+    dir: String.raw`C:\work\maxxtoken-test`,
+    promptFile: String.raw`C:\Users\Rachel\.maxxtoken\forge-prompt.txt`,
+    env: {
+      APPDATA: String.raw`C:\Users\Rachel\AppData\Roaming`,
+      LOCALAPPDATA: String.raw`C:\Users\Rachel\AppData\Local`,
+    },
+    home,
+  })
+
+  assert.ok(script.includes(String.raw`Set-Location -LiteralPath 'C:\work\maxxtoken-test'`))
+  assert.ok(script.includes(String.raw`& 'C:\Users\Rachel\AppData\Roaming\npm\claude.cmd' (Get-Content -Raw -LiteralPath 'C:\Users\Rachel\.maxxtoken\forge-prompt.txt')`))
+  assert.ok(script.includes('Press Enter to close'))
+})
+
+test('Windows CLI resolution checks PATHEXT shims before shell lookup', () => {
+  const seen = []
+  const found = launch._private.resolveCli('codex', {
+    platform: 'win32',
+    home: '/Users/Rachel',
+    env: {
+      APPDATA: '/Users/Rachel/AppData/Roaming',
+      LOCALAPPDATA: '/Users/Rachel/AppData/Local',
+      PATH: '/tools;/bin',
+      PATHEXT: '.EXE;.CMD',
+    },
+    fs: {
+      accessSync: (file) => {
+        seen.push(file)
+        if (!file.endsWith('codex.cmd')) throw new Error('missing')
+      },
+      constants: fs.constants,
+    },
+    execFileSync: () => {
+      throw new Error('where should not run')
+    },
+  })
+
+  assert.ok(found.endsWith('codex.cmd'))
+  assert.ok(seen.some((file) => file.endsWith('codex.exe')))
+})
+
+test('log CLI defaults to Windows roaming app data on win32', () => {
+  assert.equal(
+    logCli.defaultLogPath('win32', { APPDATA: String.raw`C:\Users\Rachel\AppData\Roaming` }, String.raw`C:\Users\Rachel`),
+    path.join(String.raw`C:\Users\Rachel\AppData\Roaming`, 'maxxtoken-menubar', 'debug.log'),
+  )
 })
 
 test('t3 chat JSONL parser maps CodexBar customer usage windows', () => {

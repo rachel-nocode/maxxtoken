@@ -1,8 +1,8 @@
 // Encrypted store for user-provided API keys.
 //
-// Backed by Electron `safeStorage`, which uses the macOS Keychain under the
-// hood. Keys are sealed to the current user account on this Mac. If decryption
-// is ever unavailable we treat the store as empty rather than throwing.
+// Backed by Electron `safeStorage`, which seals keys to the current OS user
+// through the platform credential store. If decryption is unavailable we treat
+// the store as empty rather than throwing.
 const fs = require('fs')
 const path = require('path')
 const { aliasesForProvider, canonicalProviderId } = require('./provider-ids')
