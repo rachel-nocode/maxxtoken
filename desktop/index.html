@@ -8,8 +8,10 @@
       document.documentElement.dataset.theme = localStorage.getItem('maxxtoken-theme') || 'dark'
     </script>
     <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="burn/burn.css" />
   </head>
   <body>
+    <div id="burn-root" class="burn-root"></div>
     <div class="popover">
       <div class="dot-grid" aria-hidden="true"></div>
 
@@ -240,6 +242,9 @@
                   <option value="365">365 days</option>
                 </select>
               </label>
+              <label>Save Mode suggestions
+                <span class="toggle" id="save-mode-toggle" data-settings-toggle></span>
+              </label>
               <label>Light mode
                 <span class="toggle" id="theme-toggle" data-settings-toggle></span>
               </label>
@@ -273,6 +278,15 @@
         </div>
       </div>
     </div>
+    <script src="burn/burn-tokens.js"></script>
+    <script src="burn/burn-icons.js"></script>
+    <script src="burn/burn-primitives.js"></script>
+    <script src="burn/burn-adapt.js"></script>
+    <script src="burn/burn-home.js"></script>
+    <script src="burn/burn-missions.js"></script>
+    <script src="burn/burn-mission-setup.js"></script>
+    <script src="burn/burn-settings.js"></script>
+    <script src="burn/burn-app.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

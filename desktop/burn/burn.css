@@ -1,0 +1,61 @@
+/* BURN design system — styles that inline can't express.
+   Component layout/color lives inline in burn/*.js (mirrors the reference);
+   this file holds resets, the live dot, and scrollbar chrome. */
+
+.burn-root,
+.burn-root * {
+  box-sizing: border-box;
+}
+
+.burn-root button {
+  font: inherit;
+}
+
+.burn-root button:focus-visible {
+  outline: 1px solid rgba(182, 255, 60, 0.5);
+  outline-offset: 1px;
+}
+
+/* Scroll body: allow it to shrink/scroll inside the flex column. */
+.burn-body {
+  min-height: 0;
+}
+
+/* Row expand/collapse — 120ms ease, both directions. */
+.burn-detail {
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height 120ms ease;
+}
+.burn-prov.open .burn-detail {
+  max-height: 2000px;
+}
+.burn-chev-up {
+  display: none;
+}
+.burn-prov.open .burn-chev-down {
+  display: none;
+}
+.burn-prov.open .burn-chev-up {
+  display: inline-flex;
+}
+
+.burn-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 6px;
+  background: #b6ff3c;
+  box-shadow: 0 0 6px #b6ff3c;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.burn-root ::-webkit-scrollbar {
+  width: 8px;
+}
+.burn-root ::-webkit-scrollbar-thumb {
+  background: #1a1a1a;
+}
+.burn-root ::-webkit-scrollbar-thumb:hover {
+  background: #252525;
+}

@@ -574,6 +574,17 @@ ipcMain.handle('save-config', (_e, config) => {
 })
 ipcMain.on('close-popover', () => popover && popover.hide())
 ipcMain.handle('set-popover-mode', (_e, mode) => setPopoverMode(mode))
+
+ipcMain.handle('set-popover-height', (_e, height) => {
+  if (!popover || popover.isDestroyed()) return { ok: false }
+  const target = Math.max(220, Math.min(POPOVER_HEIGHT, Math.round(Number(height) || POPOVER_HEIGHT)))
+  const bounds = popover.getBounds()
+  if (bounds.height !== target || bounds.width !== POPOVER_WIDTH) {
+    popover.setSize(POPOVER_WIDTH, target, false)
+    if (tray) positionPopover()
+  }
+  return { ok: true, height: target }
+})
 ipcMain.on('open-config-file', () => shell.showItemInFolder(FILE))
 ipcMain.on('open-debug-log', () => {
   const p = logger.getLogPath()
@@ -916,6 +927,101 @@ ipcMain.handle('burn-start', async (_e, idea) => {
     promptLaunched: supportsPrompt,
     cli: idea.cli,
     error: result.error,
+  }
+})
+
+ipcMain.handle('copy-text', (_e, text) => {
+  clipboard.writeText(String(text || ''))
+  return { ok: true }
+})
+
+function scanProjectBloat(dir) {
+  const noisyNames = new Set([
+    'node_modules',
+    'dist',
+    'build',
+    'coverage',
+    '.next',
+    '.nuxt',
+    '.turbo',
+    '.cache',
+    '.parcel-cache',
+    '.vercel',
+    '.expo',
+    'screenshots',
+    'screenshot',
+    'debug',
+    'logs',
+    'tmp',
+    'temp',
+  ])
+  const noisyExts = new Set(['.log', '.mp4', '.mov', '.webm', '.zip', '.gz', '.tar', '.png', '.jpg', '.jpeg', '.gif', '.sqlite', '.db'])
+  const findings = []
+  const maxFiles = 2500
+  let scanned = 0
+
+  function add(label, detail, itemPath, bytes = 0) {
+    findings.push({ label, detail, path: itemPath, bytes })
+  }
+
+  function walk(current, depth = 0) {
+    if (scanned >= maxFiles || depth > 5) return
+    let stat
+    try {
+      stat = fs.lstatSync(current)
+    } catch {
+      return
+    }
+    if (stat.isSymbolicLink()) return
+    const name = path.basename(current)
+    const rel = path.relative(dir, current) || name
+    if (stat.isDirectory()) {
+      if (noisyNames.has(name)) {
+        add('Ignore folder', rel, current, 0)
+        return
+      }
+      let entries = []
+      try {
+        entries = fs.readdirSync(current)
+      } catch {
+        return
+      }
+      for (const entry of entries) walk(path.join(current, entry), depth + 1)
+      return
+    }
+    if (!stat.isFile()) return
+    scanned++
+    const ext = path.extname(name).toLowerCase()
+    const bytes = Number(stat.size) || 0
+    if (noisyExts.has(ext)) add('Ignore generated/media', rel, current, bytes)
+    else if (bytes >= 750000) add('Large file', rel, current, bytes)
+  }
+
+  walk(dir)
+  return findings
+    .sort((a, b) => b.bytes - a.bytes || a.detail.localeCompare(b.detail))
+    .slice(0, 12)
+}
+
+ipcMain.handle('scan-context-bloat', async (_e, providerId) => {
+  const picked = await dialog.showOpenDialog(popover, {
+    title: 'Scan a project folder for context bloat',
+    properties: ['openDirectory'],
+    buttonLabel: 'Scan folder',
+  })
+  if (picked.canceled || !picked.filePaths.length) return { ok: false, canceled: true, providerId }
+  const dir = picked.filePaths[0]
+  const findings = scanProjectBloat(dir).map((item) => ({
+    label: item.label,
+    detail: item.detail,
+    bytes: item.bytes,
+  }))
+  return {
+    ok: true,
+    providerId,
+    folderName: path.basename(dir) || dir,
+    dir,
+    findings,
   }
 })
 

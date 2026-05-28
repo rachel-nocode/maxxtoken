@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>BURN primitives — preview</title>
+    <link rel="stylesheet" href="burn.css" />
+    <style>
+      body {
+        margin: 0;
+        background: #161616;
+        color: #f5f5f5;
+        font-family: "Geist", system-ui, sans-serif;
+        padding: 32px;
+      }
+      h2 {
+        font-family: "Geist Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        color: #9a9a9a;
+        margin: 28px 0 10px;
+      }
+      .panel {
+        width: 400px;
+        background: #000;
+        border: 1px solid #252525;
+        border-radius: 6px;
+        overflow: hidden;
+      }
+      .swatch {
+        padding: 14px;
+        background: #000;
+        border: 1px solid #252525;
+        border-radius: 6px;
+        width: 400px;
+      }
+    </style>
+  </head>
+  <body class="burn-root">
+    <div id="root"></div>
+
+    <script src="burn-tokens.js"></script>
+    <script src="burn-icons.js"></script>
+    <script src="burn-primitives.js"></script>
+    <script>
+      const root = document.getElementById("root");
+      const block = (title, html, wrap = "swatch") =>
+        `<h2>${title}</h2><div class="${wrap}">${html}</div>`;
+
+      root.innerHTML = [
+        block(
+          "BurnHeader · home mode",
+          burnHeader({ title: "BURN" }),
+          "panel",
+        ),
+        block(
+          "BurnHeader · subpage (diamond active)",
+          burnHeader({ backLabel: "MISSIONS", diamondActive: true }),
+          "panel",
+        ),
+        block(
+          "BurnHeader · subpage (gear active)",
+          burnHeader({ backLabel: "DETECTED PROVIDERS", settingsActive: true }),
+          "panel",
+        ),
+        block(
+          "BurnLiveStrip · home",
+          burnLiveStrip({ streams: 5, burning: 1 }),
+          "panel",
+        ),
+        block(
+          "BurnLiveStrip · missions label",
+          burnLiveStrip({ label: "UNUSED TOKENS · BURN THEM ON IDEAS" }),
+          "panel",
+        ),
+        block(
+          "BurnSegBar · 28×5 @ 23% (ok)",
+          burnSegBar({ pct: 23 }),
+        ),
+        block(
+          "BurnSegBar · 28×5 @ 31% (burning)",
+          burnSegBar({ pct: 31, burning: true }),
+        ),
+        block(
+          "BurnSegBar · 20×3 sub-bar @ 78%",
+          burnSegBar({ pct: 78, cells: 20, height: 3 }),
+        ),
+        block(
+          "BurnSparkline · lime",
+          burnSparkline({ data: [12, 15, 18, 20, 21, 22, 23, 23, 23], color: BURN.lime }),
+        ),
+        block(
+          "BurnSparkline · warn",
+          burnSparkline({ data: [8, 14, 19, 22, 25, 27, 29, 30, 31], color: BURN.warn }),
+        ),
+        block("BurnFooter · default", burnFooter({}), "panel"),
+      ].join("");
+    </script>
+  </body>
+</html>
