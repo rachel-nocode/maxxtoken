@@ -2368,6 +2368,21 @@ $('settings-btn').addEventListener('click', async () => {
 $('back-btn').addEventListener('click', showMain)
 $('open-config').addEventListener('click', () => window.maxx.openConfigFile())
 $('open-debug-log').addEventListener('click', () => window.maxx.openDebugLog())
+$('export-usage').addEventListener('click', async () => {
+  const btn = $('export-usage')
+  const label = btn.textContent
+  btn.disabled = true
+  btn.textContent = 'Exporting…'
+  try {
+    const res = await window.maxx.exportUsage()
+    btn.textContent = res && res.ok ? 'Exported ✓' : label
+  } catch (err) {
+    btn.textContent = 'Export failed'
+    console.error(err)
+  } finally {
+    setTimeout(() => { btn.textContent = label; btn.disabled = false }, 1800)
+  }
+})
 $('save-config').addEventListener('click', async () => {
   const btn = $('save-config')
   btn.disabled = true

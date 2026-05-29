@@ -15,6 +15,7 @@ const providerLinks = require('./lib/provider-links')
 const { canonicalProviderId } = require('./lib/provider-ids')
 const widgetSnapshot = require('./lib/widget-snapshot')
 const { trayTitleFromSnapshot } = require('./lib/tray-title')
+const { buildUsageExport } = require('./lib/usage-export')
 const localApi = require('./lib/local-api')
 const logger = require('./lib/logger')
 logger.init(app.getPath('userData'))
@@ -506,6 +507,21 @@ ipcMain.handle('get-snapshot', () => {
     return lastSnapshot
   }
   return readSnapshot()
+})
+ipcMain.handle('export-usage', async () => {
+  const snap = lastSnapshot || (await readSnapshot({ staleOk: true }))
+  if (!snap) throw new Error('No usage data to export yet — sync first.')
+  const payload = buildUsageExport(snap, { appVersion: app.getVersion() })
+  const stamp = new Date().toISOString().slice(0, 10)
+  const picked = await dialog.showSaveDialog(popover, {
+    title: 'Export usage + cost history',
+    defaultPath: `maxxtoken-usage-${stamp}.json`,
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  })
+  if (picked.canceled || !picked.filePath) return { ok: false, canceled: true }
+  fs.writeFileSync(picked.filePath, JSON.stringify(payload, null, 2), 'utf8')
+  logger.info('export-usage', 'wrote', { filePath: picked.filePath, providers: payload.providers.length })
+  return { ok: true, filePath: picked.filePath, providers: payload.providers.length }
 })
 ipcMain.handle('sync-now', () => syncSnapshot({ force: true }))
 ipcMain.handle('refresh-provider', async (_e, id) => {
