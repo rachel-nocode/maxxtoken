@@ -2,15 +2,22 @@
    money-saving Signals. Pure CommonJS: no electron, no I/O. Same input as the
    Burn adapter (snapshot.providers[]) so it stays in lockstep with burn-adapt.js.
 
-   Step 1 ships the three ZERO-NEW-DATA detectors that the current snapshot
-   fully supports:
-     - cache  : cache-read vs fresh input  (tokenUsage.input / .cached)
-     - ratio  : generation vs context in   (tokenUsage.output / input+cached)
-     - reset  : paid weekly cap left to expire (windows[].usedPct + resetAt)
+   Detectors that ride only on the snapshot we already collect:
+     - cache   : cache-read vs fresh input  (tokenUsage.input / .cached)
+     - ratio   : generation vs context in   (tokenUsage.output / input+cached)
+     - reset   : paid weekly cap left to expire (windows[].usedPct + resetAt)
+     - dormant : flat plan you pay for but haven't used (provider.lastUpdatedAt)
 
-   Plan right-sizing and Dormant are intentionally NOT here yet — they need a
-   tier-ladder map + weekly-peak aggregation, and lastActive propagated into the
-   snapshot (today it's dropped in aggregate). See optimize-handoff/DATA.md.
+   Dormant is the first detector that yields HARD recoverable $ — a flat
+   subscription sitting idle is the whole monthly bill, cancellable today. It
+   rides on provider.lastUpdatedAt, which already carries the adapter's raw
+   lastActive ms (aggregate.js: activityLastUpdatedAt). Adapters that can't
+   report a real last-use time backfill it to "now" (aggregate.js:3425), so the
+   worst case is a missed dormant flag — never a false "cancel this" on a plan
+   that's actually in use.
+
+   Plan right-sizing is still NOT here — it needs a tier-ladder map +
+   weekly-peak aggregation. See optimize-handoff/DATA.md.
 
    Output shape === optimize-handoff/reference/optimize-data.jsx `Signal`. */
 
@@ -41,6 +48,11 @@ const CONFIG = {
     withinMs: 48 * 3600 * 1000, // and reset is < 48h away
     weeksPerMonth: 4.345,
     minSaving: 5,
+  },
+  dormant: {
+    idleDays: 21, // no activity for 21+ days => dormant candidate (nudge)
+    alertDays: 30, // 30+ days idle => a whole unused billing cycle (alert)
+    minMonthly: 5, // ignore sub-$5 plans — not worth a cancel prompt
   },
   // Coding-agent providers are input-heavy BY DESIGN (read codebase, write small
   // edit) — a 30d ratio always looks "wasteful" and would cry wolf. So ratio
@@ -131,6 +143,16 @@ function pct(v) {
 
 function clampNum(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v))
+}
+
+const DAY_MS = 86400000
+
+// whole days between a past ms timestamp and `now` (null if missing/future)
+function daysSince(ts, now) {
+  const t = Number(ts)
+  if (!Number.isFinite(t) || t <= 0) return null
+  const d = (now - t) / DAY_MS
+  return d >= 0 ? d : null
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +248,7 @@ function detectCache(provider) {
 
   const hitPct = pct(hit * 100)
   const bars = cacheBarsByModel(usage)
-  const valueLabel = flat ? 'Headroom value' : 'Cache discount missed'
+  const valueLabel = flat ? 'Room reclaimed' : 'Wasted on repeats'
   return {
     id: `${provider.id}:cache`,
     kind: 'cache',
@@ -234,33 +256,33 @@ function detectCache(provider) {
     providerName: providerName(provider),
     plan: planLabel(provider),
     severity,
-    title: 'CACHE EFFICIENCY',
+    title: 'PAYING TWICE FOR SAME TEXT',
     metric: `${hitPct}%`,
     metricValue: hitPct, // raw number for re-trigger comparison
-    metricUnit: 'CACHE HIT',
+    metricUnit: 'REUSED',
     signal: flat
-      ? 'Quota burned re-sending context that could be cached.'
-      : 'Most repeated context is re-sent at full price.',
+      ? 'Plan allowance spent re-sending text that could be free.'
+      : 'You keep re-sending the same text and paying each time.',
     saving,
-    savingNote: flat ? 'HEADROOM' : '/MO',
+    savingNote: flat ? 'ROOM LEFT' : '/MO',
     softSaving: flat, // flat-plan caching buys quota, not a smaller bill
-    fix: 'Pin a stable system-prompt prefix so the cache can hold it.',
-    source: 'cached tokens · input tokens',
+    fix: 'Keep the start of your prompts identical so it gets reused free.',
+    source: 'reused text · new text',
     action: { type: 'external', url: cacheDocFor(provider.id) },
     meter: { type: 'split', good: hitPct },
     detail: {
       rows: [
-        { l: 'Input · 30d', v: `${fmtTokRaw(totalIn)} tok` },
-        { l: 'Served from cache', v: `${fmtTokRaw(cached)} · ${hitPct}%`, tone: 'lime' },
-        { l: 'Re-sent uncached', v: `${fmtTokRaw(input)} · ${100 - hitPct}%`, tone: 'warn' },
+        { l: 'Text sent · 30d', v: `${fmtTokRaw(totalIn)} tok` },
+        { l: 'Reused free', v: `${fmtTokRaw(cached)} · ${hitPct}%`, tone: 'lime' },
+        { l: 'Paid again', v: `${fmtTokRaw(input)} · ${100 - hitPct}%`, tone: 'warn' },
         { l: valueLabel, v: `${fmtUSD(saving)} / mo`, tone: flat ? 'lime' : 'warn', strong: true },
       ],
-      barsTitle: bars ? 'CACHE HIT BY MODEL' : null,
+      barsTitle: bars ? 'REUSED BY MODEL' : null,
       bars,
       note: flat
-        ? 'On a flat-rate plan this is quota you could reclaim, not a smaller bill — better caching lets you do more before hitting the cap.'
+        ? 'On a flat plan this is room you get back, not a smaller bill — reusing text lets you do more before hitting your limit.'
         : null,
-      primary: 'How to pin a prefix →',
+      primary: 'How to reuse text →',
     },
   }
 }
@@ -296,7 +318,7 @@ function detectRatio(provider) {
   const severity = !flat && wayOut && saving >= 20 ? 'alert' : 'nudge'
   const inputHeavy = ratio < CONFIG.ratio.lo
   const mult = inputHeavy && ratio > 0 ? Math.round(1 / ratio) : null
-  const valueLabel = flat ? 'Headroom value' : 'Trimmable spend'
+  const valueLabel = flat ? 'Room reclaimed' : 'Worth cutting'
 
   return {
     id: `${provider.id}:ratio`,
@@ -305,35 +327,35 @@ function detectRatio(provider) {
     providerName: providerName(provider),
     plan: planLabel(provider),
     severity,
-    title: 'OUTPUT / INPUT RATIO',
+    title: 'SENDING MORE THAN YOU GET BACK',
     metric: ratio < 0.1 ? ratio.toFixed(3) : ratio.toFixed(2),
     metricValue: ratio,
-    metricUnit: 'OUT ÷ IN',
+    metricUnit: 'REPLY ÷ SENT',
     signal: inputHeavy
-      ? `You re-send ${mult ? mult + '×' : 'far'} more context than you generate.`
-      : 'Generation is running far ahead of input.',
+      ? `You send ${mult ? mult + '×' : 'far'} more text than the AI writes back.`
+      : 'The AI is writing far more than you send it.',
     saving,
-    savingNote: flat ? 'HEADROOM' : '/MO',
+    savingNote: flat ? 'ROOM LEFT' : '/MO',
     softSaving: flat, // flat-plan trimming buys quota, not a smaller bill
     fix: inputHeavy
-      ? 'Trim or summarise stale context between turns.'
-      : 'Cap max output / stop runaway generation loops.',
-    source: 'input tokens · output tokens',
+      ? 'Send a short summary instead of the whole history.'
+      : 'Set a reply length limit — something is over-generating.',
+    source: 'text sent · text received',
     action: { type: 'providerLink', kind: 'dashboard' },
     meter: { type: 'ratio', value: clampNum(ratio, 0.001, 999), lo: CONFIG.ratio.lo, hi: CONFIG.ratio.hi },
     detail: {
       rows: [
-        { l: 'Context in · 30d', v: `${fmtTokRaw(totalIn)} tok` },
-        { l: 'Output · 30d', v: `${fmtTokRaw(output)} tok` },
-        { l: 'Healthy range', v: `${CONFIG.ratio.lo} – ${CONFIG.ratio.hi}`, tone: 'lime' },
+        { l: 'Text sent · 30d', v: `${fmtTokRaw(totalIn)} tok` },
+        { l: 'AI replies · 30d', v: `${fmtTokRaw(output)} tok` },
+        { l: 'Good range', v: `${CONFIG.ratio.lo} – ${CONFIG.ratio.hi}`, tone: 'lime' },
         { l: valueLabel, v: `${fmtUSD(saving)} / mo`, tone: 'lime', strong: true },
       ],
       barsTitle: null,
       bars: null,
       note: inputHeavy
-        ? 'Input-heavy traffic means you pay to re-send context, not to generate. Carrying a summary instead of the full thread cuts the bill.'
-        : 'Output far exceeds input — check for runaway generation or missing stop conditions.',
-      primary: 'See heaviest prompts →',
+        ? 'You are paying to re-send text, not to get answers. Sending a short summary instead of the whole thread cuts the bill.'
+        : 'The AI is writing far more than you send — check for runaway replies or a missing length limit.',
+      primary: 'See biggest jobs →',
     },
   }
 }
@@ -405,29 +427,29 @@ function detectRatioDaily(provider, dayKey) {
     plan: planLabel(provider),
     severity: 'nudge', // drill-down is informational, never an auto-alert
     onDemand: true,
-    title: 'SESSION RATIO',
+    title: 'HEAVY-DAY CHECK',
     metric: row.ratio < 0.1 ? row.ratio.toFixed(3) : row.ratio.toFixed(2),
-    metricUnit: `OUT ÷ IN · ${dayKey}`,
+    metricUnit: `REPLY ÷ SENT · ${dayKey}`,
     signal: inputHeavy
-      ? `On ${dayKey} you sent ${mult ? mult + '×' : 'far'} more context than you generated.`
-      : `Output ran ahead of input on ${dayKey}.`,
+      ? `On ${dayKey} you sent ${mult ? mult + '×' : 'far'} more text than the AI wrote back.`
+      : `The AI wrote far more than you sent on ${dayKey}.`,
     saving,
     savingNote: '/DAY',
     softSaving: true, // never counted in the headline recoverable total
-    fix: 'Trim or summarise stale context to cut re-sent input on heavy days.',
-    source: `daily input/output · ${dayKey}`,
+    fix: 'Send a short summary to cut re-sent text on heavy days.',
+    source: `daily text in/out · ${dayKey}`,
     meter: { type: 'ratio', value: clampNum(row.ratio, 0.001, 999), lo: CONFIG.ratio.lo, hi: CONFIG.ratio.hi },
     detail: {
       rows: [
-        { l: 'Context in', v: `${fmtTokRaw(row.totalIn)} tok` },
-        { l: 'Output', v: `${fmtTokRaw(row.output)} tok` },
-        { l: 'Cache hit', v: `${row.cacheHitPct}%`, tone: row.cacheHitPct >= 50 ? 'lime' : 'warn' },
-        { l: 'Healthy range', v: `${CONFIG.ratio.lo} – ${CONFIG.ratio.hi}`, tone: 'lime' },
+        { l: 'Text sent', v: `${fmtTokRaw(row.totalIn)} tok` },
+        { l: 'AI replies', v: `${fmtTokRaw(row.output)} tok` },
+        { l: 'Reused', v: `${row.cacheHitPct}%`, tone: row.cacheHitPct >= 50 ? 'lime' : 'warn' },
+        { l: 'Good range', v: `${CONFIG.ratio.lo} – ${CONFIG.ratio.hi}`, tone: 'lime' },
       ],
       barsTitle: null,
       bars: null,
-      note: 'Agent sessions are input-heavy by nature — this view is for spotting an unusually wasteful day, not a standing alarm.',
-      primary: 'See heaviest prompts →',
+      note: 'Coding agents send a lot of text by nature — this is for spotting one unusually wasteful day, not a constant alarm.',
+      primary: 'See biggest jobs →',
     },
   }
 }
@@ -459,28 +481,85 @@ function detectReset(provider, now) {
     providerName: providerName(provider),
     plan: planLabel(provider),
     severity: 'nudge', // reset is opportunity, never alert
-    title: 'RESET-WINDOW TIMING',
+    title: 'PAID CREDIT ABOUT TO EXPIRE',
     metric: `${expiring}%`,
     metricValue: expiring,
-    metricUnit: 'CAP EXPIRING',
-    signal: "Most of this week's paid cap will reset unused.",
+    metricUnit: 'GOING UNUSED',
+    signal: "Most of what you paid for this week will vanish unused.",
     saving,
-    savingNote: 'CAP VALUE',
+    savingNote: 'WORTH',
     softSaving: true, // excluded from the headline recoverable total
-    fix: `Front-load heavy jobs before the ${resetLabel(resetAt, now)} reset.`,
-    source: 'reset window · weekly usage %',
+    fix: `Run big jobs before it resets in ${resetLabel(resetAt, now)}.`,
+    source: 'reset time · weekly use %',
     action: { type: 'providerLink', kind: 'dashboard' },
     meter: { type: 'reset', used },
     detail: {
       rows: [
-        { l: 'Weekly cap used', v: `${used}%` },
+        { l: 'Used this week', v: `${used}%` },
         { l: 'Resets in', v: resetLabel(resetAt, now), tone: 'lime' },
-        { l: 'Expiring unused', v: `${expiring}% · ≈${fmtUSD(saving)}`, tone: 'lime', strong: true },
+        { l: 'Vanishing unused', v: `${expiring}% · ≈${fmtUSD(saving)}`, tone: 'lime', strong: true },
       ],
       barsTitle: null,
       bars: null,
-      note: 'This capacity is already paid for. Running heavy jobs before the reset converts it from waste into work.',
-      primary: 'Set a pre-reset reminder →',
+      note: 'You already paid for this. Running big jobs before the reset turns it from waste into work.',
+      primary: 'Remind me before reset →',
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DETECTOR 4 — dormant subscription (first HARD recoverable $)
+// A flat plan (monthly > 0) with no activity for weeks is the whole bill going
+// to waste — cancel/pause recovers it in full. Rides on provider.lastUpdatedAt
+// (raw lastActive ms). Usage-based plans yield nothing here (no idle = no bill),
+// so we only fire on flat subscriptions. Never fires on a plan used recently,
+// and adapters that can't report a real last-use time look "active" → skipped.
+// ---------------------------------------------------------------------------
+function detectDormant(provider, now) {
+  if (!isFlatPlan(provider)) return null // usage-based: idle already costs $0
+  const monthly = Number(provider.monthly) || 0
+  if (monthly < CONFIG.dormant.minMonthly) return null
+  if (provider.activity === 'live') return null // used within ~2d — obviously active
+  const idle = daysSince(provider.lastUpdatedAt, now)
+  if (idle == null || idle < CONFIG.dormant.idleDays) return null
+
+  const idleDays = Math.floor(idle)
+  const saving = monthly // cancel/pause recovers the entire monthly bill
+  const severity = idleDays >= CONFIG.dormant.alertDays ? 'alert' : 'nudge'
+  const cycles = idleDays >= CONFIG.dormant.alertDays ? Math.floor(idleDays / 30) : 0
+
+  return {
+    id: `${provider.id}:dormant`,
+    kind: 'dormant',
+    provider: provider.id,
+    providerName: providerName(provider),
+    plan: planLabel(provider),
+    severity,
+    title: 'PAYING FOR SOMETHING UNUSED',
+    metric: `${idleDays}d`,
+    metricValue: idleDays,
+    metricUnit: 'UNUSED',
+    signal:
+      cycles >= 1
+        ? `Paid plan untouched ${idleDays} days — ${cycles} full month${cycles > 1 ? 's' : ''} wasted.`
+        : `Paid plan untouched for ${idleDays} days.`,
+    saving,
+    savingNote: '/MO',
+    softSaving: false, // real recoverable: cancelling cuts the bill in full
+    fix: 'Cancel or pause this plan if you no longer use it.',
+    source: 'last used · monthly cost',
+    action: { type: 'providerLink', kind: 'dashboard' },
+    meter: { type: 'dormant' },
+    detail: {
+      rows: [
+        { l: 'Last used', v: `${idleDays}d ago`, tone: 'warn' },
+        { l: 'Monthly cost', v: `${fmtUSD(monthly)} / mo` },
+        { l: 'Could save', v: `${fmtUSD(saving)} / mo`, tone: 'lime', strong: true },
+      ],
+      barsTitle: null,
+      bars: null,
+      note: 'This plan has sat unused for weeks. If you no longer need it, cancelling or pausing takes the full monthly cost straight off your bill.',
+      primary: 'Manage subscription →',
     },
   }
 }
@@ -488,7 +567,7 @@ function detectReset(provider, now) {
 // ---------------------------------------------------------------------------
 // public API
 // ---------------------------------------------------------------------------
-const DETECTORS = [detectCache, detectRatio, detectReset]
+const DETECTORS = [detectCache, detectRatio, detectReset, detectDormant]
 
 // detectSignals(snapshot, { now }) → Signal[] sorted by saving desc.
 function detectSignals(snapshot, opts = {}) {
@@ -601,7 +680,7 @@ const OPTIMIZE_API = {
   // exposed for tests / tuning
   CONFIG,
   FAMILY_RATES,
-  _detectors: { detectCache, detectRatio, detectReset },
+  _detectors: { detectCache, detectRatio, detectReset, detectDormant },
   _fmt: { fmtUSD, fmtTokRaw, pct },
 }
 

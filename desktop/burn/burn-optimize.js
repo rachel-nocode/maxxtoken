@@ -130,12 +130,12 @@ function optCardExpanded(s) {
   const blocks = []
 
   if (Array.isArray(d.rows) && d.rows.length) {
-    blocks.push(burnSectionHead('THE MATH', 'estimated') + d.rows.map(optDetailRow).join(''))
+    blocks.push(burnSectionHead('HOW WE GOT THIS', 'estimated') + d.rows.map(optDetailRow).join(''))
   }
   if (Array.isArray(d.bars) && d.bars.length) {
     const dim = d.barsTone === 'dim'
     blocks.push(
-      burnSectionHead(d.barsTitle || 'BREAKDOWN', '') +
+      burnSectionHead(d.barsTitle || 'BY MODEL', '') +
         `<div style="${bstyle({ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 })}">` +
         d.bars.map((b) => optBarRow(b, dim)).join('') +
         `</div>` +
@@ -184,7 +184,7 @@ function optCard(state, s) {
   const alert = s.severity === 'alert'
   const accent = alert ? BURN.warn : BURN.lime
   const accentText = alert ? BURN.warnText : BURN.limeText
-  const tagText = alert ? 'ALERT' : 'NUDGE'
+  const tagText = alert ? 'ALERT' : 'TIP'
   const wash = alert ? BURN.warnRowBg : BURN.accentWashBg
   const savingColor = alert ? BURN.warnText : BURN.limeText
   const savePrefix = s.softSaving ? '≈' : ''
@@ -240,10 +240,10 @@ function optSummaryStrip(model) {
   let right
   if (rec > 0) {
     right =
-      `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 11, fontWeight: 700, color: BURN.limeText, fontVariantNumeric: 'tabular-nums' })}">$${rec}/MO RECOVERABLE</span>` +
-      (head > 0 ? `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9, color: BURN.text3, letterSpacing: 0.4, marginLeft: 8 })}">+$${head} HEADROOM</span>` : '')
+      `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 11, fontWeight: 700, color: BURN.limeText, fontVariantNumeric: 'tabular-nums' })}">$${rec}/MO COULD SAVE</span>` +
+      (head > 0 ? `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9, color: BURN.text3, letterSpacing: 0.4, marginLeft: 8 })}">+$${head} ROOM LEFT</span>` : '')
   } else {
-    right = `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 11, fontWeight: 700, color: BURN.limeText, fontVariantNumeric: 'tabular-nums' })}">$${head}/MO HEADROOM</span>`
+    right = `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 11, fontWeight: 700, color: BURN.limeText, fontVariantNumeric: 'tabular-nums' })}">$${head}/MO ROOM LEFT</span>`
   }
   return (
     `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 14px', borderBottom: `1px solid ${BURN.border}`, background: BURN.surface })}">` +
@@ -289,8 +289,8 @@ function optHealthyState() {
   return (
     `<div style="${bstyle({ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '46px 24px', textAlign: 'center' })}">` +
     `<div style="${bstyle({ width: 46, height: 46, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: BURN.accentBtnBg, border: `1px solid ${BURN.accentBtnBorder}`, borderRadius: 3 })}">${burnIcon('check', 20, BURN.lime)}</div>` +
-    `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 13, fontWeight: 700, color: BURN.text, letterSpacing: 1 })}">ALL OPTIMIZED</div>` +
-    `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 12.5, color: BURN.text2, lineHeight: 1.55, maxWidth: 280 })}">Nothing wasteful right now. MaxxToken re-checks every snapshot and surfaces a signal the moment money's on the table.</div>` +
+    `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 13, fontWeight: 700, color: BURN.text, letterSpacing: 1 })}">NOTHING TO FIX</div>` +
+    `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 12.5, color: BURN.text2, lineHeight: 1.55, maxWidth: 280 })}">Nothing wasteful right now. MaxxToken re-checks every update and flags the moment there's money to save.</div>` +
     `</div>`
   )
 }
@@ -379,8 +379,8 @@ function optDrillSection(state, model) {
   if (!Array.isArray(model.drillable) || !model.drillable.length) return ''
   return (
     `<div style="${bstyle({ padding: '14px 14px 10px', borderTop: `1px solid ${BURN.border}` })}">` +
-    burnSectionHead('AGENTIC SESSIONS', 'opt-in') +
-    `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11.5, color: BURN.text2, lineHeight: 1.5, margin: '8px 0 12px' })}">Coding agents are input-heavy by design, so they're not auto-flagged. Open one to spot an unusually wasteful day.</div>` +
+    burnSectionHead('CODING AGENTS', 'opt-in') +
+    `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11.5, color: BURN.text2, lineHeight: 1.5, margin: '8px 0 12px' })}">Coding agents send a lot of text by design, so they're not auto-flagged. Open one to spot an unusually wasteful day.</div>` +
     model.drillable.map((p) => optDrillProvider(state, p)).join('') +
     `</div>`
   )
@@ -419,10 +419,10 @@ function burnRenderOptimize(state) {
   const mins = Math.max(0, Math.round((Date.now() - (model.scannedAt || Date.now())) / 60000))
   const footer = [
     recoverable > 0
-      ? { l: 'RECOVERABLE', v: `$${Math.round(recoverable)}/mo`, tone: 'lime' }
-      : { l: 'HEADROOM', v: `$${Math.round(headroom)}/mo`, tone: 'lime' },
-    { l: 'APPLIED', v: '$0', tone: 'text' },
-    { l: 'SCAN', v: `${mins}m`, tone: 'text', action: 'opt-rescan' },
+      ? { l: 'COULD SAVE', v: `$${Math.round(recoverable)}/mo`, tone: 'lime' }
+      : { l: 'ROOM LEFT', v: `$${Math.round(headroom)}/mo`, tone: 'lime' },
+    { l: 'SAVED', v: '$0', tone: 'text' },
+    { l: 'CHECKED', v: `${mins}m`, tone: 'text', action: 'opt-rescan' },
   ]
 
   return (
