@@ -21,7 +21,7 @@ function burnSegBar({ pct, burning = false, cells = 28, height = 5, gap = 2 }) {
 // 56×14 polyline of the last-9 sync ticks.
 function burnSparkline({ data, color, width = 56, height = 14, strokeWidth = 1.2 }) {
   const series = Array.isArray(data) && data.length ? data : [0]
-  const max = Math.max(...series, 1)
+  const max = Math.max(...series) * 1.1 || 1
   const step = width / Math.max(1, series.length - 1)
   const pts = series
     .map((v, i) => `${(i * step).toFixed(2)},${(height - (v / max) * height).toFixed(2)}`)
@@ -79,18 +79,7 @@ function burnHeader({ title = 'BURN', backLabel = '', diamondActive = false, set
       })}">· ${burnEsc(backLabel)}</span>`
     left = backBtn + label
   } else {
-    const tile =
-      `<div style="${bstyle({
-        width: 22,
-        height: 22,
-        borderRadius: 3,
-        background: BURN.surface,
-        border: `1px solid ${BURN.border}`,
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flex: '0 0 auto',
-      })}">${burnSparkGlyph(11)}</div>`
+    const tile = burnBrandMark(20)
     const wordmark =
       `<span style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 13, fontWeight: 700, letterSpacing: -0.2 })}">` +
       `Maxx<span style="${bstyle({ color: BURN.limeText })}">Token</span></span>`

@@ -119,10 +119,12 @@ function burnAdaptExpanded(raw) {
   const usage = raw?.tokenUsage || {}
   const events = Number(usage.events ?? usage.requests) || 0
 
+  // Raw token millions (unrounded); burn-home formats via burnFormatTokensM so
+  // sub-million precision survives and matches burnCostRow's formatting.
   const inOut = {
-    in: Math.round(burnToM(usage.input)),
-    cached: Math.round(burnToM(usage.cached)),
-    out: Math.round(burnToM(usage.output) * 10) / 10,
+    in: burnToM(usage.input),
+    cached: burnToM(usage.cached),
+    out: burnToM(usage.output),
     events,
   }
 
@@ -156,7 +158,6 @@ function burnAdaptExpanded(raw) {
       ? usage.topModels
       : []
   const totalTok = breakdowns.reduce((acc, r) => acc + (Number(r.total ?? r.totalTokens) || 0), 0) || 1
-  const burning = burnStatus(raw, raw?.windows) === 'warn'
   const models = breakdowns
     .map((r) => {
       const tokRaw = Number(r.total ?? r.totalTokens) || 0
@@ -165,7 +166,6 @@ function burnAdaptExpanded(raw) {
         burn: Math.round((tokRaw / totalTok) * 100),
         tok: burnToM(tokRaw),
         usd: Number(r.costUSD) || 0,
-        color: burning ? BURN.warn : BURN.lime,
       }
     })
     .sort((a, b) => b.burn - a.burn)

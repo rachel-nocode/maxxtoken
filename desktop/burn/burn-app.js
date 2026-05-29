@@ -8,12 +8,12 @@ const BURN_UI = true
 
 const burnState = {
   screen: 'home', // 'home' | 'missions' | 'mission-setup' | 'settings'
+  prevScreen: null, // one-deep nav memory so Back returns where we came from
   expandedId: null,
   providers: [],
   footer: null,
   syncing: false,
   // mission-setup form
-  missionRec: null,
   missionModels: {},
   missionFolder: null, // display basename
   missionFolderPath: null, // full path for IPC
@@ -60,24 +60,6 @@ function burnShell(inner) {
   )
 }
 
-// Screens not yet built render a labelled placeholder so navigation works.
-function burnRenderPlaceholder(backLabel, note) {
-  return (
-    burnHeader({ backLabel }) +
-    `<div style="${bstyle({
-      flex: 1,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontFamily: BURN_FONT.mono,
-      fontSize: 11,
-      letterSpacing: 0.6,
-      color: BURN.text3,
-      textTransform: 'uppercase',
-    })}">${burnEsc(note)}</div>`
-  )
-}
-
 function burnScreenHtml() {
   switch (burnState.screen) {
     case 'missions':
@@ -106,6 +88,7 @@ function burnRender() {
 }
 
 function burnGo(screen) {
+  if (screen !== burnState.screen) burnState.prevScreen = burnState.screen
   burnState.screen = screen
   if (screen !== 'home') burnState.expandedId = null
   burnRender()
@@ -141,14 +124,17 @@ async function burnSync() {
   if (burnState.syncing || !window.maxx?.syncNow) return
   burnState.syncing = true
   burnRender()
+  let snap = null
   try {
-    const snap = await window.maxx.syncNow()
+    snap = await window.maxx.syncNow()
     if (snap && snap.providers) burnApplySnapshot(snap)
   } catch (err) {
     console.error('[burn] sync failed', err)
   } finally {
     burnState.syncing = false
-    burnRender()
+    // applySnapshot already re-rendered when a usable snapshot came back;
+    // only render here otherwise, to avoid a double render flash.
+    if (!snap?.providers) burnRender()
   }
 }
 
@@ -156,7 +142,6 @@ function burnOpenMissionSetup(index) {
   const idea = burnState.ideas[Number(index)]
   // Preselect the target provider (the model the idea suggests spending).
   const rec = burnState.ideaTarget?.id || null
-  burnState.missionRec = rec
   burnState.missionModels = {}
   if (rec && burnState.providers.some((p) => p.id === rec)) {
     burnState.missionModels[rec] = true
@@ -194,7 +179,7 @@ function burnHandleClick(e) {
   const nav = e.target.closest('[data-burn-nav]')
   if (nav) {
     const dest = nav.getAttribute('data-burn-nav')
-    if (dest === 'back') burnGo(burnState.screen === 'mission-setup' ? 'missions' : 'home')
+    if (dest === 'back') burnGo(burnState.screen === 'mission-setup' ? 'missions' : (burnState.prevScreen || 'home'))
     else burnGo(dest)
     return
   }

@@ -23,8 +23,8 @@ function burnModelCheck(m, checked) {
       padding: '9px 10px',
       width: '100%',
       textAlign: 'left',
-      background: checked ? 'rgba(182,255,60,0.06)' : BURN.surface2,
-      border: `1px solid ${checked ? 'rgba(182,255,60,0.30)' : BURN.borderHi}`,
+      background: checked ? BURN.accentWashBg : BURN.surface2,
+      border: `1px solid ${checked ? BURN.accentBtnBorder : BURN.borderHi}`,
       borderRadius: 2,
       cursor: 'pointer',
     })}">` +

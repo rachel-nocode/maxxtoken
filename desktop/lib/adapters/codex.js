@@ -196,7 +196,7 @@ function usedPercentFromWindow(window) {
   if (remaining != null) return 100 - remaining
 
   const utilization = numberValue(window.utilization)
-  if (utilization != null) return utilization <= 1 ? utilization * 100 : utilization
+  if (utilization != null) return utilization < 1 ? utilization * 100 : utilization
 
   const used = numberValue(window.used ?? window.consumed)
   const limit = numberValue(window.limit ?? window.total)
@@ -543,7 +543,7 @@ function readLocal(options = {}) {
       periodMs: (rl.secondary.window_minutes || 10080) * 60000,
     })
   }
-  const known = new Set(['primary', 'secondary', 'plan_type'])
+  const known = new Set(['primary', 'secondary', 'plan_type', 'credits'])
   for (const [key, value] of Object.entries(rl)) {
     if (known.has(key) || !value || typeof value !== 'object') continue
     const window = windowFromRateLimit(key, value)

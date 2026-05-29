@@ -46,11 +46,19 @@ function burnIcon(name, size = 14, color = 'currentColor') {
   )
 }
 
-// Brand glyphs — filled lime, used in the header.
-function burnSparkGlyph(size = 11) {
+// Brand app-icon mark for the home header. Mirrors the menu-bar treatment:
+// the white receipt glyph in dark mode, the full-color app icon in light mode.
+function burnBrandMark(size = 20) {
+  const light = !!(typeof burnState !== 'undefined' && burnState.app && burnState.app.lightMode)
+  const src = light ? 'assets/icon.png' : 'assets/tray/receipt-menubar-white.png'
   return (
-    `<svg width="${size}" height="${size}" viewBox="0 0 14 14" aria-hidden="true">` +
-    `<polygon points="7,1.4 8.2,5.4 12.2,7 8.2,8.6 7,12.6 5.8,8.6 1.8,7 5.8,5.4" fill="${BURN.lime}" /></svg>`
+    `<img src="${src}" alt="MaxxToken" style="${bstyle({
+      width: size,
+      height: size,
+      objectFit: 'contain',
+      display: 'block',
+      flex: '0 0 auto',
+    })}" />`
   )
 }
 

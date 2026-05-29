@@ -131,7 +131,7 @@ function fullSnapshotFromWidgetCache(cache) {
     ...provider,
     links: provider.links || providerLinks.linksForProvider(provider.id),
     monthly: provider.monthly ?? config.providers?.[provider.id]?.monthly ?? 0,
-    windows: [provider.primaryWindow, provider.secondaryWindow].filter(Boolean),
+    windows: provider.windows?.length ? provider.windows : [provider.primaryWindow, provider.secondaryWindow].filter(Boolean),
     tokenUsage: provider.tokenUsage
       ? {
           ...provider.tokenUsage,
@@ -440,7 +440,7 @@ function sendSnapshotToPopover(snap) {
 
 async function syncSnapshot({ force = true } = {}) {
   const snap = await readSnapshot({ force })
-  updateTray()
+  updateTray().catch(() => {})
   sendSnapshotToPopover(snap)
   return snap
 }

@@ -50,7 +50,8 @@ function executableNames(cliBin, platform = process.platform, env = process.env)
 
 function canRun(file, platform = process.platform, fsImpl = fs) {
   try {
-    fsImpl.accessSync(file, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK)
+    const constants = fsImpl.constants || fs.constants
+    fsImpl.accessSync(file, platform === 'win32' ? constants.F_OK : constants.X_OK)
     return true
   } catch {
     return false
@@ -86,7 +87,8 @@ function resolveCli(cliBin, options = {}) {
           env,
         }).trim()
     if (found) {
-      fsImpl.accessSync(found, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK)
+      const constants = fsImpl.constants || fs.constants
+      fsImpl.accessSync(found, platform === 'win32' ? constants.F_OK : constants.X_OK)
       return found
     }
   } catch {

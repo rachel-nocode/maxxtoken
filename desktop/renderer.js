@@ -417,12 +417,15 @@ function paceRailSvg(usedPct, expectedPct, projectedPct = null) {
   const uid = `pr${Math.random().toString(36).slice(2, 9)}`
   const tickX = Math.max(0, Math.min(99.6, e - 0.2))
   const burnout = Number.isFinite(projectedPct) && projectedPct >= 100 && a < 100
+  // Theme-aware stripe green: the bright lime washes out on the light paper bg,
+  // so deepen it to match the rest of the light theme.
+  const stripe = currentTheme() === 'light' ? '#5faa12' : '#b6f24a'
   return `
     <div class="prov-rail ${ahead ? 'reserve' : behind ? 'deficit' : 'onpace'}">
       <svg class="prov-rail-svg" viewBox="0 0 100 18" preserveAspectRatio="none" aria-hidden="true">
         <defs>
           <pattern id="${uid}" patternUnits="userSpaceOnUse" width="3" height="10" patternTransform="rotate(45)">
-            <rect width="1.5" height="10" fill="#b6f24a"/>
+            <rect width="1.5" height="10" fill="${stripe}"/>
           </pattern>
         </defs>
         <rect class="pr-track" x="0" y="4" width="100" height="10"/>
@@ -1488,7 +1491,9 @@ function renderSettings() {
     $('theme-toggle').classList.toggle('on', next === 'light')
     updatePrefMetas()
   }
-  document.querySelectorAll('.settings-billing select').forEach((el) => el.addEventListener('change', updatePrefMetas))
+  // Assign rather than addEventListener: renderSettings runs on every open, so
+  // a listener would stack a fresh duplicate each time; onchange replaces.
+  document.querySelectorAll('.settings-billing select').forEach((el) => { el.onchange = updatePrefMetas })
   updatePrefMetas()
   $('settings-body')
     .querySelectorAll('[data-toggle]')
@@ -2151,7 +2156,7 @@ $('foot-left').addEventListener('click', (event) => {
   window.maxx
     .syncNow()
     .then((next) => {
-      snap = next
+      if (next && next.providers) snap = next
     })
     .catch(() => {
       /* the next scheduled sync can recover */
@@ -2266,22 +2271,29 @@ if ($('close-btn')) $('close-btn').addEventListener('click', () => window.maxx.c
 $('onboarding-skip').addEventListener('click', async () => {
   const btn = $('onboarding-skip')
   btn.disabled = true
-  config = { ...config, onboardingComplete: true }
-  snap = await window.maxx.saveConfig(config)
-  render()
-  showMain()
-  btn.disabled = false
+  try {
+    config = { ...config, onboardingComplete: true }
+    snap = await window.maxx.saveConfig(config)
+    render()
+    showMain()
+  } finally {
+    btn.disabled = false
+  }
 })
 $('onboarding-start').addEventListener('click', async () => {
   const btn = $('onboarding-start')
+  const originalText = btn.textContent
   btn.disabled = true
   btn.textContent = 'Scanning…'
-  config = collectOnboarding()
-  snap = await window.maxx.saveConfig(config)
-  render()
-  showMain()
-  btn.textContent = 'Scan usage'
-  btn.disabled = false
+  try {
+    config = collectOnboarding()
+    snap = await window.maxx.saveConfig(config)
+    render()
+    showMain()
+  } finally {
+    btn.textContent = originalText
+    btn.disabled = false
+  }
 })
 $('settings-btn').addEventListener('click', async () => {
   ;[config, apiKeyState] = await Promise.all([
@@ -2301,9 +2313,19 @@ $('back-btn').addEventListener('click', showMain)
 $('open-config').addEventListener('click', () => window.maxx.openConfigFile())
 $('open-debug-log').addEventListener('click', () => window.maxx.openDebugLog())
 $('save-config').addEventListener('click', async () => {
-  snap = await window.maxx.saveConfig(collectSettings())
-  render()
-  showMain()
+  const btn = $('save-config')
+  btn.disabled = true
+  try {
+    snap = await window.maxx.saveConfig(collectSettings())
+    render()
+    showMain()
+    btn.textContent = 'Save'
+  } catch (err) {
+    btn.textContent = 'Save failed — retry'
+    console.error(err)
+  } finally {
+    btn.disabled = false
+  }
 })
 
 window.maxx.onSnapshot((s) => {

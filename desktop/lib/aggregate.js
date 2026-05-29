@@ -675,7 +675,7 @@ function providerHasUsefulUsage(provider) {
 }
 
 function providerFromCachedSnapshot(current, cached, generatedAt) {
-  const lastUpdatedAt = Date.parse(cached.lastUpdatedAt || '') || generatedAt
+  const lastUpdatedAt = (Number.isFinite(Number(cached.lastUpdatedAt)) ? Number(cached.lastUpdatedAt) : null) || generatedAt
   const windows = [cached.primaryWindow, cached.secondaryWindow].filter(Boolean)
   const spent = cached.spentValue == null ? null : moneyNumber(cached.spentValue)
   const left = cached.leftValue == null ? null : moneyNumber(cached.leftValue)

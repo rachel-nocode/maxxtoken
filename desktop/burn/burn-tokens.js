@@ -5,8 +5,8 @@
 // Two palettes, identical shape. `lime`/`warn` are FILL colors (bar cells,
 // button bg, live dot, glyph fills). `limeText`/`warnText` are the TEXT
 // variants — in dark they equal the fill, in light they deepen so they stay
-// readable on paper. `onLime` is text/icon color on a lime fill. Overlay
-// tokens hold the low-opacity accent washes (CSS can't derive these).
+// readable on paper. Overlay tokens hold the low-opacity accent washes (CSS
+// can't derive these).
 const BURN_DARK = {
   bg: '#000000',
   surface: '#0B0B0B',
@@ -18,18 +18,14 @@ const BURN_DARK = {
   text3: '#5A5A5A',
   text4: '#2E2E2E',
   lime: '#B6FF3C',
-  limeDim: '#88BE2E',
   warn: '#FF6B5C',
-  warnDim: '#9A3E36',
   limeText: '#B6FF3C',
   warnText: '#FF6B5C',
-  onLime: '#000000',
   accentBtnBg: 'rgba(182,255,60,0.10)',
   accentBtnBorder: 'rgba(182,255,60,0.40)',
   accentWashBg: 'rgba(182,255,60,0.05)',
   accentWashBorder: 'rgba(182,255,60,0.20)',
   warnRowBg: 'rgba(255,107,92,0.05)',
-  radius: 6,
 }
 
 const BURN_LIGHT = {
@@ -46,18 +42,14 @@ const BURN_LIGHT = {
   // element matches. #557F0F clears ~4.5:1 on the paper bg (AA-readable) yet
   // reads calm, not the bright lime that washes out on light.
   lime: '#557F0F',
-  limeDim: '#6E9D14',
   warn: '#E84A30',
-  warnDim: '#9A3E36',
   limeText: '#557F0F',
   warnText: '#B5301B',
-  onLime: '#FAFAF5',
   accentBtnBg: 'rgba(85,127,15,0.12)',
   accentBtnBorder: 'rgba(85,127,15,0.45)',
   accentWashBg: 'rgba(85,127,15,0.07)',
   accentWashBorder: 'rgba(85,127,15,0.25)',
   warnRowBg: 'rgba(220,60,34,0.06)',
-  radius: 6,
 }
 
 // Live palette read by-name across burn/*.js. Mutated in place by

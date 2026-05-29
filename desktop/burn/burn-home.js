@@ -136,9 +136,9 @@ function burnProviderExpanded(p) {
   const tokens =
     burnSectionHead('TOKENS', `${x.inOut.events.toLocaleString()} EVENTS`) +
     `<div style="${bstyle({ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 })}">` +
-    burnStat('IN', `${x.inOut.in}M`) +
-    burnStat('CACHED', `${x.inOut.cached}M`) +
-    burnStat('OUT', `${x.inOut.out}M`) +
+    burnStat('IN', burnFormatTokensM(x.inOut.in)) +
+    burnStat('CACHED', burnFormatTokensM(x.inOut.cached)) +
+    burnStat('OUT', burnFormatTokensM(x.inOut.out)) +
     `</div>`
 
   const modelsBody = x.models.length

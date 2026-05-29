@@ -115,7 +115,7 @@ function burnRenderMissions(state) {
         fontSize: 11,
         color: BURN.lime,
         letterSpacing: 0.3,
-        background: 'rgba(182,255,60,0.04)',
+        background: BURN.accentWashBg,
       })}">USE ${burnEsc(String(rec.name).toUpperCase())}${rec.used == null ? '' : ` · ${rec.used}% USED`} · $${rec.left} LEFT TO BURN</div>`
     : ''
 
