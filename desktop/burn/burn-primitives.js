@@ -83,7 +83,18 @@ function burnHeader({ title = 'BURN', backLabel = '', diamondActive = false, set
     const wordmark =
       `<span style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 13, fontWeight: 700, letterSpacing: -0.2 })}">` +
       `Maxx<span style="${bstyle({ color: BURN.limeText })}">Token</span></span>`
-    left = tile + wordmark
+    // Brand acts as a Home link — always returns to the usage screen.
+    left =
+      `<button type="button" data-burn-nav="home" aria-label="Home" style="${bstyle({
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 10,
+        background: 'transparent',
+        border: 'none',
+        padding: 0,
+        cursor: 'pointer',
+        color: 'inherit',
+      })}">${tile}${wordmark}</button>`
   }
 
   const diamond =
