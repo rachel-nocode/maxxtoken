@@ -100,7 +100,11 @@ function burnProvSettingRow(pv, enabled, cookieVal) {
           letterSpacing: 0.2,
           outline: 'none',
         })}" />` +
-        `<button type="button" data-burn-action="save-cookie" data-cookie-id="${burnEsc(pv.id)}" style="${burnGhostBtn()}">SAVE</button>` +
+        `<button type="button" data-burn-action="save-cookie" data-cookie-id="${burnEsc(pv.id)}" style="${burnGhostBtn()}">${
+          (burnState.cookieSaved && burnState.cookieSaved[pv.id])
+            ? `<span style="${bstyle({ display: 'inline-flex', alignItems: 'center', gap: 5, color: BURN.limeText })}">${burnCheckTick(BURN.limeText)}SAVED</span>`
+            : 'SAVE'
+        }</button>` +
         `</div>`
       : ''
 
@@ -238,7 +242,11 @@ function burnRenderSettings(state) {
     `<button type="button" data-burn-action="reveal-config" style="${textBtn}">REVEAL CONFIG</button>` +
     `<button type="button" data-burn-action="reveal-log" style="${textBtn}">REVEAL LOG</button>` +
     `<span style="${bstyle({ flex: 1 })}"></span>` +
-    `<button type="button" data-burn-action="save-config" style="${burnPrimaryBtn()}">${state.justSaved ? 'Saved ✓' : 'Save'}</button>` +
+    `<button type="button" data-burn-action="save-config"${state.justSaved ? ' disabled' : ''} style="${burnPrimaryBtn()}">${
+      state.justSaved
+        ? `<span style="${bstyle({ display: 'inline-flex', alignItems: 'center', gap: 6 })}">${burnCheckTick(BURN.bg)}SAVED</span>`
+        : 'Save'
+    }</button>` +
     `</div>`
 
   return burnHeader({ backLabel: 'DETECTED PROVIDERS', settingsActive: true }) + body + footer

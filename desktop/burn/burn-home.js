@@ -159,8 +159,28 @@ function burnProviderExpanded(p) {
   )
 }
 
+// Order home rows to mirror the Settings list: live drag order (settingsOrder)
+// → saved providerOrder → snapshot order. A reorder in Settings shows on Home
+// immediately (even before Save). Explicit index keeps the sort stable so
+// unranked providers hold their snapshot order.
+function burnHomeOrder(state) {
+  const order = []
+  const seen = new Set()
+  for (const id of state.settingsOrder || []) if (!seen.has(id)) { seen.add(id); order.push(id) }
+  for (const id of state.config?.providerOrder || []) if (!seen.has(id)) { seen.add(id); order.push(id) }
+  const rank = new Map(order.map((id, i) => [id, i]))
+  return (state.providers || [])
+    .map((p, i) => ({ p, i }))
+    .sort((a, b) => {
+      const ra = rank.has(a.p.id) ? rank.get(a.p.id) : Infinity
+      const rb = rank.has(b.p.id) ? rank.get(b.p.id) : Infinity
+      return ra === rb ? a.i - b.i : ra - rb
+    })
+    .map((x) => x.p)
+}
+
 function burnRenderHome(state) {
-  const providers = state.providers || []
+  const providers = burnHomeOrder(state)
   const burning = providers.filter((p) => p.status === 'warn').length
   const rows = providers
     .map((p) => burnProviderRow(p, state.expandedId === p.id))

@@ -33,6 +33,7 @@ const burnState = {
   notifs: { ideas: true, alerts: true, restored: true, quota: true },
   app: { lightMode: false, openAtLogin: true },
   cookies: {},
+  cookieSaved: {}, // providerId -> true briefly after a successful key save
   // Scalar settings backed by the config file (populated from getConfig in
   // burnInit). Dropdowns read/write these; Save persists them.
   cfg: { trayMetric: 'left', tokenHistoryDays: '30', sessionThreshold: '50,20', weeklyThreshold: '50,20', alertHours: '48', alertReservePct: '25' },
@@ -238,7 +239,18 @@ function burnHandleClick(e) {
     else if (which === 'save-cookie') {
       const id = action.getAttribute('data-cookie-id')
       const val = burnState.cookies[id]
-      if (id && val) window.maxx?.setApiKey?.(id, val)?.catch?.(() => {})
+      if (id && val && window.maxx?.setApiKey) {
+        Promise.resolve(window.maxx.setApiKey(id, val))
+          .then(() => {
+            burnState.cookieSaved[id] = true
+            if (burnState.screen === 'settings') burnRender()
+            setTimeout(() => {
+              delete burnState.cookieSaved[id]
+              if (burnState.screen === 'settings') burnRender()
+            }, 1600)
+          })
+          .catch(() => {})
+      }
     } else if (which === 'save-config') {
       burnSaveSettings()
     } else if (which === 'check-updates') {
@@ -341,16 +353,23 @@ async function burnSaveSettings() {
     providerOrder: order,
     providers,
   }
+  // Optimistic feedback: flip to "Saved ✓" immediately on click. The IPC
+  // round-trip forces a fresh snapshot (network detection) and can be slow or
+  // reject; the button must confirm regardless, so we don't gate it on await.
+  burnState.justSaved = true
+  burnRender()
+  if (burnState._savedTimer) clearTimeout(burnState._savedTimer)
+  burnState._savedTimer = setTimeout(() => {
+    burnState.justSaved = false
+    if (burnState.screen === 'settings') burnRender()
+  }, 1800)
+
   try {
     const snap = await window.maxx.saveConfig(merged)
-    if (window.maxx.getConfig) burnState.config = await window.maxx.getConfig()
-    burnState.justSaved = true
     if (snap && snap.providers) burnApplySnapshot(snap)
-    else burnRender()
-    setTimeout(() => {
-      burnState.justSaved = false
-      if (burnState.screen === 'settings') burnRender()
-    }, 1600)
+    if (window.maxx.getConfig) {
+      try { burnState.config = await window.maxx.getConfig() } catch (e) {}
+    }
   } catch (err) {
     console.error('[burn] saveConfig failed', err)
   }
