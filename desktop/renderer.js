@@ -1392,8 +1392,17 @@ function onboardingRow(id, p) {
     </div>`
 }
 
+// Which provider tiers the UI lists. Phase 1: only 'core' (the popular agents).
+// Phase 2 will reveal 'extended' behind a "more providers" drawer. 'hidden' never lists.
+// Missing tier falls back to 'core' so legacy configs never blank out.
+const VISIBLE_PROVIDER_TIERS = new Set(['core'])
+function isVisibleProvider(p) {
+  return VISIBLE_PROVIDER_TIERS.has((p && p.tier) || 'core')
+}
+
 function renderOnboarding() {
   $('onboarding-list').innerHTML = Object.entries(config.providers)
+    .filter(([, p]) => isVisibleProvider(p))
     .map(([id, p]) => onboardingRow(id, p))
     .join('')
   $('onboarding-list')
@@ -1423,10 +1432,12 @@ function orderedProviderEntries() {
   const seen = new Set()
   const out = []
   for (const id of order) {
-    if (config.providers[id] && !seen.has(id)) { seen.add(id); out.push([id, config.providers[id]]) }
+    if (config.providers[id] && isVisibleProvider(config.providers[id]) && !seen.has(id)) {
+      seen.add(id); out.push([id, config.providers[id]])
+    }
   }
   for (const [id, p] of Object.entries(config.providers)) {
-    if (!seen.has(id)) out.push([id, p])
+    if (!seen.has(id) && isVisibleProvider(p)) out.push([id, p])
   }
   return out
 }
@@ -2400,7 +2411,7 @@ async function init() {
   if (!config.onboardingComplete) {
     providerDetections = await window.maxx.detectProviders().catch(() => ({}))
     for (const [id, detection] of Object.entries(providerDetections)) {
-      if (detection?.detected && config.providers?.[id]) {
+      if (detection?.detected && config.providers?.[id] && isVisibleProvider(config.providers[id])) {
         config.providers[id] = { ...config.providers[id], enabled: true }
       }
     }

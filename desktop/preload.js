@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('maxx', {
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
   setMissions: (enabled) => ipcRenderer.invoke('set-missions', enabled),
   onSnapshot: (cb) => ipcRenderer.on('snapshot', (_e, snap) => cb(snap)),
+  onPopoverShown: (cb) => ipcRenderer.on('popover-shown', () => cb()),
   close: () => ipcRenderer.send('close-popover'),
   setPopoverMode: (mode) => ipcRenderer.invoke('set-popover-mode', mode),
   setPopoverHeight: (height) => ipcRenderer.invoke('set-popover-height', height),

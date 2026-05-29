@@ -35,15 +35,19 @@ function burnCookiePlaceholder(id) {
   return 'API key (sk-...)'
 }
 
+// Provider visibility (burnProviderVisible) lives in burn-primitives.js — the
+// single tier gate shared by Home and Settings.
+
 // Provider drag order: user override → config.providerOrder → config insertion.
 function burnProviderOrder(state) {
   const provs = state.config?.providers || {}
+  const ok = (id) => provs[id] && burnProviderVisible(provs[id])
   const ids = Object.keys(provs)
   const seen = new Set()
   const out = []
-  for (const id of state.settingsOrder || []) if (provs[id] && !seen.has(id)) { seen.add(id); out.push(id) }
-  for (const id of state.config?.providerOrder || []) if (provs[id] && !seen.has(id)) { seen.add(id); out.push(id) }
-  for (const id of ids) if (!seen.has(id)) { seen.add(id); out.push(id) }
+  for (const id of state.settingsOrder || []) if (ok(id) && !seen.has(id)) { seen.add(id); out.push(id) }
+  for (const id of state.config?.providerOrder || []) if (ok(id) && !seen.has(id)) { seen.add(id); out.push(id) }
+  for (const id of ids) if (ok(id) && !seen.has(id)) { seen.add(id); out.push(id) }
   return out
 }
 

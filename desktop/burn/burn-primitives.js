@@ -2,6 +2,19 @@
    Interaction is wired by burn-app.js via [data-burn-*] attributes;
    these functions only produce markup. */
 
+// Provider visibility tier gate — single source of truth for every Burn screen
+// (Home, Settings). Phase 1 lists only 'core'. Missing tier falls back to 'core'
+// so legacy configs never blank out. Mirrors renderer.js isVisibleProvider.
+const BURN_VISIBLE_TIERS = new Set(['core'])
+function burnProviderVisible(p) {
+  return BURN_VISIBLE_TIERS.has((p && p.tier) || 'core')
+}
+// By id, looked up against the full config — for screens (Home) whose provider
+// objects come from the snapshot and may not carry the tier field.
+function burnProviderVisibleById(state, id) {
+  return burnProviderVisible(state && state.config && state.config.providers && state.config.providers[id])
+}
+
 // THE progress bar. 28×5 default; 20×3 for per-model sub-bars.
 function burnSegBar({ pct, burning = false, cells = 28, height = 5, gap = 2 }) {
   const clamped = Math.max(0, Math.min(100, Number(pct) || 0))
@@ -83,7 +96,18 @@ function burnHeader({ title = 'BURN', backLabel = '', diamondActive = false, set
     const wordmark =
       `<span style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 13, fontWeight: 700, letterSpacing: -0.2 })}">` +
       `Maxx<span style="${bstyle({ color: BURN.limeText })}">Token</span></span>`
-    left = tile + wordmark
+    // Brand acts as a Home link — always returns to the usage screen.
+    left =
+      `<button type="button" data-burn-nav="home" aria-label="Home" style="${bstyle({
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 10,
+        background: 'transparent',
+        border: 'none',
+        padding: 0,
+        cursor: 'pointer',
+        color: 'inherit',
+      })}">${tile}${wordmark}</button>`
   }
 
   const diamond =

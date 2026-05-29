@@ -8,6 +8,7 @@ const CLAUDE_PRICES = new Map([
   ['claude-opus-4-6', { input: 5e-6, output: 2.5e-5, cacheCreation: 6.25e-6, cacheRead: 5e-7 }],
   ['claude-opus-4-6-20260205', { input: 5e-6, output: 2.5e-5, cacheCreation: 6.25e-6, cacheRead: 5e-7 }],
   ['claude-opus-4-7', { input: 5e-6, output: 2.5e-5, cacheCreation: 6.25e-6, cacheRead: 5e-7 }],
+  ['claude-opus-4-8', { input: 5e-6, output: 2.5e-5, cacheCreation: 6.25e-6, cacheRead: 5e-7 }],
   ['claude-sonnet-4-5', {
     input: 3e-6,
     output: 1.5e-5,

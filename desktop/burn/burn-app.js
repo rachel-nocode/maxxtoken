@@ -8,7 +8,6 @@ const BURN_UI = true
 
 const burnState = {
   screen: 'home', // 'home' | 'missions' | 'mission-setup' | 'settings'
-  prevScreen: null, // one-deep nav memory so Back returns where we came from
   expandedId: null,
   providers: [],
   footer: null,
@@ -89,7 +88,6 @@ function burnRender() {
 }
 
 function burnGo(screen) {
-  if (screen !== burnState.screen) burnState.prevScreen = burnState.screen
   burnState.screen = screen
   if (screen !== 'home') burnState.expandedId = null
   burnRender()
@@ -180,7 +178,10 @@ function burnHandleClick(e) {
   const nav = e.target.closest('[data-burn-nav]')
   if (nav) {
     const dest = nav.getAttribute('data-burn-nav')
-    if (dest === 'back') burnGo(burnState.screen === 'mission-setup' ? 'missions' : (burnState.prevScreen || 'home'))
+    // Back is deterministic: mission-setup is a child of missions, every other
+    // screen is a top-level sibling of home. Returning to home (not prevScreen)
+    // avoids the settings⇄missions ping-pong the one-deep memory used to cause.
+    if (dest === 'back') burnGo(burnState.screen === 'mission-setup' ? 'missions' : 'home')
     else burnGo(dest)
     return
   }
@@ -519,6 +520,16 @@ async function burnInit() {
         if (burnState.screen === 'settings') burnRender()
       })
       .catch(() => {})
+  }
+
+  // Reopening the popover resets to the home/usage screen — the renderer keeps
+  // its state while merely hidden, so without this a subpage would persist.
+  if (window.maxx?.onPopoverShown) {
+    window.maxx.onPopoverShown(() => {
+      // Preserve an in-progress mission setup (folder/models/goal the user is
+      // mid-entry on); otherwise return to the home/usage screen.
+      if (burnState.screen !== 'home' && burnState.screen !== 'mission-setup') burnGo('home')
+    })
   }
 
   if (window.maxx?.onSnapshot) window.maxx.onSnapshot(burnApplySnapshot)
