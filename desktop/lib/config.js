@@ -22,6 +22,8 @@ const DEFAULT_CONFIG = {
   quotaWarningSessionEnabled: true,
   quotaWarningWeeklyEnabled: true,
   trayMetric: 'left',
+  // Local read-only HTTP API (loopback only) for statuslines/scripts/tmux.
+  localApiPort: 7878,
   tokenHistoryDays: 30,
   saveModeSuggestions: false,
   onboardingComplete: false,
