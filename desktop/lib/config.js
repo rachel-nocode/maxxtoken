@@ -23,6 +23,7 @@ const DEFAULT_CONFIG = {
   quotaWarningWeeklyEnabled: true,
   trayMetric: 'left',
   tokenHistoryDays: 30,
+  saveModeSuggestions: false,
   onboardingComplete: false,
   // null = not yet decided, true = on, false = declined.
   missions: null,
@@ -99,6 +100,7 @@ function loadConfig(file = FILE) {
       quotaWarningWeeklyEnabled: raw.quotaWarningWeeklyEnabled ?? DEFAULT_CONFIG.quotaWarningWeeklyEnabled,
       trayMetric: normalizeTrayMetric(raw.trayMetric),
       tokenHistoryDays: normalizeTokenHistoryDays(raw.tokenHistoryDays),
+      saveModeSuggestions: raw.saveModeSuggestions === true,
       onboardingComplete: raw.onboardingComplete === true,
       missions: typeof raw.missions === 'boolean' ? raw.missions : null,
       missionHistory: normalizeMissionHistory(raw.missionHistory),

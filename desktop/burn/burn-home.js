@@ -4,7 +4,7 @@
 
 function burnProviderRow(p, expanded) {
   const burning = p.status === 'warn'
-  const rowBg = burning ? 'rgba(255,107,92,0.05)' : BURN.surface2
+  const rowBg = burning ? BURN.warnRowBg : BURN.surface2
 
   const topRow =
     `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 7 })}">` +
@@ -17,7 +17,7 @@ function burnProviderRow(p, expanded) {
       fontFamily: BURN_FONT.mono,
       fontSize: 15,
       fontWeight: 700,
-      color: burning ? BURN.warn : BURN.text,
+      color: burning ? BURN.warnText : BURN.text,
       fontVariantNumeric: 'tabular-nums',
       letterSpacing: -0.3,
       minWidth: 36,
@@ -77,7 +77,7 @@ function burnWindowBar(label, pct, reset, burning) {
   const head =
     `<div style="${bstyle({ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 })}">` +
     `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9.5, color: BURN.text2, letterSpacing: 0.7 })}">${burnEsc(label)}</span>` +
-    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 14, fontWeight: 700, color: burning ? BURN.warn : BURN.text, fontVariantNumeric: 'tabular-nums' })}">` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 14, fontWeight: 700, color: burning ? BURN.warnText : BURN.text, fontVariantNumeric: 'tabular-nums' })}">` +
     `${pct}<span style="${bstyle({ fontSize: 9, color: BURN.text2 })}">%</span></span>` +
     `</div>`
   const caption =
@@ -99,7 +99,7 @@ function burnCostRow(label, tok, usd) {
     })}">` +
     `<span style="${bstyle({ color: BURN.text2 })}">${burnEsc(label)}</span>` +
     `<span style="${bstyle({ color: BURN.text })}">${burnFormatTokensM(tok)} tokens</span>` +
-    `<span style="${bstyle({ color: usd > 0 ? BURN.lime : BURN.text2 })}">${usd > 0 ? '$' + usd.toFixed(2) : '—'}</span>` +
+    `<span style="${bstyle({ color: usd > 0 ? BURN.limeText : BURN.text2 })}">${usd > 0 ? '$' + usd.toFixed(2) : '—'}</span>` +
     `</div>`
   )
 }
@@ -110,8 +110,8 @@ function burnModelRow(m, burning) {
     `<span style="${bstyle({ color: BURN.text, fontWeight: 600 })}">${burnEsc(m.name)}</span>` +
     `<span style="${bstyle({ flex: 1 })}"></span>` +
     `<span style="${bstyle({ color: BURN.text2 })}">${burnFormatTokensM(m.tok)} tok</span>` +
-    `<span style="${bstyle({ color: m.usd > 0 ? BURN.lime : BURN.text2, minWidth: 56, textAlign: 'right' })}">${m.usd > 0 ? '$' + m.usd.toFixed(2) : 'incl.'}</span>` +
-    `<span style="${bstyle({ color: burning ? BURN.warn : BURN.text, minWidth: 32, textAlign: 'right', fontWeight: 600 })}">${m.burn}%</span>` +
+    `<span style="${bstyle({ color: m.usd > 0 ? BURN.limeText : BURN.text2, minWidth: 56, textAlign: 'right' })}">${m.usd > 0 ? '$' + m.usd.toFixed(2) : 'incl.'}</span>` +
+    `<span style="${bstyle({ color: burning ? BURN.warnText : BURN.text, minWidth: 32, textAlign: 'right', fontWeight: 600 })}">${m.burn}%</span>` +
     `</div>`
   return `<div>${top}${burnSegBar({ pct: m.burn, burning, cells: 20, height: 3 })}</div>`
 }
@@ -170,6 +170,6 @@ function burnRenderHome(state) {
     burnHeader({ title: 'BURN' }) +
     burnLiveStrip({ streams: providers.length, burning }) +
     `<div class="burn-body" style="${bstyle({ flex: 1, overflowY: 'auto' })}">${rows}</div>` +
-    burnFooter({ items: state.footer })
+    burnFooter({ items: state.footer, syncing: state.syncing })
   )
 }

@@ -199,6 +199,8 @@ let snap = null
 let snapshotLoading = false
 let syncingNow = false
 const expandedProviders = new Set()
+let activeSaveProvider = null
+let saveModeScanResult = null
 let refreshingProvider = null
 const THEME_KEY = 'maxxtoken-theme'
 
@@ -579,7 +581,286 @@ function providerActions(p) {
     </div>`
 }
 
-function modelBreakdownRows(tokenUsage) {
+function tokenNumber(value) {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+function tokenPercent(part, total) {
+  const t = Math.max(1, tokenNumber(total))
+  return Math.round((tokenNumber(part) / t) * 100)
+}
+
+function burnCause(provider, options = {}) {
+  const id = provider.id
+  const providerName = provider.name || (id === 'codex' ? 'Codex' : id === 'claude' ? 'Claude' : 'this provider')
+  const model = options.model || 'this model'
+  const usage = provider.tokenUsage || {}
+  const total = tokenNumber(usage.total)
+  const input = tokenNumber(usage.input)
+  const cached = tokenNumber(usage.cached)
+  const output = tokenNumber(usage.output)
+  const uncachedInput = tokenNumber(usage.uncachedInput ?? Math.max(0, input - cached))
+  const cacheCreation = tokenNumber(usage.cacheCreation)
+  const priorityEvents = tokenNumber(usage.priorityEvents)
+  const events = tokenNumber(usage.events || usage.requests)
+  const inputPct = tokenPercent(uncachedInput || input, total)
+  const cachedPct = tokenPercent(cached + cacheCreation, total)
+  const outputPct = tokenPercent(output, total)
+  const tokenSplit = `${inputPct}% fresh input, ${cachedPct}% cache, ${outputPct}% output`
+
+  if (id === 'codex' && priorityEvents && (!events || priorityEvents / events >= 0.25)) {
+    return {
+      label: 'Agent work',
+      text: `${model} shows ${priorityEvents} priority events. That is multi-step agent work, not one light chat.`,
+      action: `For ${providerName}, split the next task into one checkpoint and stop before follow-up cleanup.`,
+    }
+  }
+  if (id === 'claude' && cacheCreation && tokenPercent(cacheCreation, total) >= 25) {
+    return {
+      label: 'Context rebuild',
+      text: `${model} spent ${tokens(cacheCreation)} creating cache. Claude likely rebuilt project context.`,
+      action: 'Before next Claude run, compact first and point it at only the files for this change.',
+    }
+  }
+  if (inputPct >= 45) {
+    return {
+      label: 'Large context load',
+      text: `${model} burned ${tokens(uncachedInput || input)} on fresh input (${tokenSplit}).`,
+      action: `Next ${providerName} run: reference 1-3 files, avoid whole folders, and ask for a plan before edits.`,
+    }
+  }
+  if (outputPct >= 40) {
+    return {
+      label: 'Long output',
+      text: `${model} generated ${tokens(output)} output tokens (${tokenSplit}).`,
+      action: `Next ${providerName} run: ask for patch-only output, one file at a time, no recap.`,
+    }
+  }
+  if (cachedPct >= 40) {
+    return {
+      label: 'Cached context read',
+      text: `${model} reread ${tokens(cached + cacheCreation)} cached tokens (${tokenSplit}).`,
+      action: `Next ${providerName} run: compact or start fresh, then paste a short handoff instead of carrying the whole thread.`,
+    }
+  }
+  return {
+    label: 'Mixed burn',
+    text: `${model} split burn across sources (${tokenSplit}).`,
+    action: `Next ${providerName} run: keep the task narrow and stop after the first passing check.`,
+  }
+}
+
+function modelBurnCause(provider, row, rowTotal) {
+  return burnCause({
+    id: provider?.id,
+    name: provider?.name,
+    tokenUsage: {
+      ...row,
+      total: rowTotal,
+      priorityEvents: row.priorityEvents ?? provider?.tokenUsage?.priorityEvents,
+      events: row.events ?? row.requests,
+    },
+  }, {
+    model: row.model || row.modelName || 'this model',
+  })
+}
+
+function modelBurnTip(cause) {
+  return `
+    <div class="token-model-tip" role="tooltip">
+      <b>${h(cause.label)}</b>
+      <p>${h(cause.action)}</p>
+      <span>${h(cause.text)}</span>
+    </div>`
+}
+
+function providerCliName(provider) {
+  return {
+    claude: 'claude',
+    codex: 'codex',
+    cursor: 'cursor',
+    windsurf: 'windsurf',
+    gemini: 'gemini',
+    opencode: 'opencode',
+    opencodego: 'opencode',
+  }[provider?.id] || provider?.name || 'this model'
+}
+
+function focusedSavePrompt(provider, signal) {
+  const name = provider?.name || 'this model'
+  const extra = signal?.kind === 'output'
+    ? 'Return patch-only output. Do not reprint full files.'
+    : signal?.kind === 'agent'
+      ? 'Stop after the first checkpoint and wait for confirmation.'
+      : signal?.kind === 'input'
+        ? 'Do not scan unrelated folders or read files outside the list.'
+        : 'Ignore prior chat unless pasted here.'
+  return `Use ${name} in Save Mode.
+
+Goal: [one concrete result]
+Relevant files: [1-3 file paths]
+Current blocker: [one sentence]
+Next check: [command/test]
+
+Rules:
+- First give a 3-bullet plan.
+- Then change only what is needed.
+- ${extra}
+- No recap. No broad repo scan.`
+}
+
+function handoffSavePrompt(provider) {
+  const name = provider?.name || 'the model'
+  return `Continue in ${name} from this short handoff only:
+
+Goal: [one result]
+Files touched: [paths]
+What changed: [2-4 bullets]
+Current blocker: [one sentence]
+Next check: [command/test]
+
+Ignore prior chat unless pasted here. Keep output short.`
+}
+
+function stopLossPrompt(provider) {
+  const name = provider?.name || 'this model'
+  return `Stop-loss rule for ${name}:
+
+If the first fix fails twice, stop.
+Report:
+- files changed
+- command/test run
+- exact failure
+- next file or question needed
+
+Do not keep guessing across the repo.`
+}
+
+function compactCommand(provider, signal) {
+  if (provider?.id === 'claude') {
+    return signal?.kind === 'cache-create'
+      ? '/compact Keep only the current goal, changed files, failing command, and next action.'
+      : '/clear\n\n' + handoffSavePrompt(provider)
+  }
+  if (provider?.id === 'codex') return handoffSavePrompt(provider)
+  if (provider?.id === 'cursor') return 'Start a new chat, attach only the relevant files, then paste:\n\n' + focusedSavePrompt(provider, signal)
+  return focusedSavePrompt(provider, signal)
+}
+
+function strongestSaveSignal(provider) {
+  if (!provider?.tokenUsage) return null
+  const usage = provider.tokenUsage
+  const total = tokenNumber(usage.total)
+  if (!total) return null
+  const input = tokenNumber(usage.input)
+  const cached = tokenNumber(usage.cached)
+  const output = tokenNumber(usage.output)
+  const uncachedInput = tokenNumber(usage.uncachedInput ?? Math.max(0, input - cached))
+  const cacheCreation = tokenNumber(usage.cacheCreation)
+  const priorityEvents = tokenNumber(usage.priorityEvents)
+  const events = tokenNumber(usage.events || usage.requests)
+  const rows = Array.isArray(usage.dailyBreakdown) ? usage.dailyBreakdown : Array.isArray(usage.dailyUsage) ? usage.dailyUsage : []
+  const topDay = rows
+    .map((row) => ({ date: String(row.date || row.dayKey || row.day || ''), total: tokenNumber(row.total ?? row.totalTokens) }))
+    .filter((row) => row.date && row.total > 0)
+    .sort((a, b) => b.total - a.total)[0]
+  const averageDay = rows.length ? rows.reduce((sum, row) => sum + tokenNumber(row.total ?? row.totalTokens), 0) / rows.length : 0
+  const spike = topDay && averageDay > 0 && topDay.total >= averageDay * 1.6
+  const candidates = []
+  const add = (kind, score, label, evidence, action) => {
+    if (score > 0) candidates.push({ kind, score, label, evidence, action })
+  }
+
+  add(
+    'agent',
+    provider.id === 'codex' && priorityEvents && (!events || priorityEvents / events >= 0.25) ? 98 : 0,
+    'Agent loop risk',
+    `${priorityEvents} priority events in ${provider.name}.`,
+    'Use one checkpoint and stop before cleanup loops.',
+  )
+  add(
+    'cache-create',
+    cacheCreation ? tokenPercent(cacheCreation, total) + 30 : 0,
+    'Context rebuild',
+    `${tokens(cacheCreation)} cache-creation tokens.`,
+    'Compact first and point the next run at fewer files.',
+  )
+  add(
+    'cache',
+    cached ? tokenPercent(cached, total) : 0,
+    'Cached context reread',
+    `${tokens(cached)} cached tokens, ${tokenPercent(cached, total)}% of burn.`,
+    'Start fresh with a short handoff instead of carrying the whole thread.',
+  )
+  add(
+    'input',
+    uncachedInput ? tokenPercent(uncachedInput, total) : 0,
+    'Large fresh input',
+    `${tokens(uncachedInput)} fresh input tokens, ${tokenPercent(uncachedInput, total)}% of burn.`,
+    'Reference 1-3 files and avoid whole-folder scans.',
+  )
+  add(
+    'output',
+    output ? tokenPercent(output, total) : 0,
+    'Long output',
+    `${tokens(output)} output tokens, ${tokenPercent(output, total)}% of burn.`,
+    'Ask for patch-only output and one file at a time.',
+  )
+  add(
+    'spike',
+    spike ? 75 : 0,
+    'Daily spike',
+    `${topDay.date} used ${tokens(topDay.total)}, about ${Math.round(topDay.total / averageDay)}x normal.`,
+    'Use Save Mode for the next similar task and compare after sync.',
+  )
+
+  const winner = candidates.sort((a, b) => b.score - a.score)[0]
+  if (!winner || winner.score < 40) return null
+  return {
+    ...winner,
+    providerId: provider.id,
+    providerName: provider.name,
+    compactText: compactCommand(provider, winner),
+    focusedPrompt: focusedSavePrompt(provider, winner),
+    handoffPrompt: handoffSavePrompt(provider),
+    stopLossText: stopLossPrompt(provider),
+    cli: providerCliName(provider),
+  }
+}
+
+function saveModePanel(provider, signal) {
+  const scan = saveModeScanResult && saveModeScanResult.providerId === provider.id ? saveModeScanResult : null
+  const scanSummary = scan
+    ? scan.canceled
+      ? 'Scan canceled.'
+      : scan.findings?.length
+        ? `${scan.findings.length} context bloat candidates in ${scan.folderName}.`
+        : `No obvious context bloat found in ${scan.folderName}.`
+    : 'Optional: scan a project folder for files agents should not read by default.'
+  return `
+    <div class="save-mode-panel">
+      <div class="save-mode-head">
+        <span>Save Mode</span>
+        <button class="save-mode-close" data-save-close="${h(provider.id)}" aria-label="Close Save Mode">${ICON_CLOSE}</button>
+      </div>
+      <b>${h(signal.label)}</b>
+      <p>${h(signal.evidence)} ${h(signal.action)}</p>
+      <div class="save-mode-actions">
+        <button data-save-copy="${h(provider.id)}" data-save-kind="compact">Copy reset</button>
+        <button data-save-copy="${h(provider.id)}" data-save-kind="focused">Copy prompt</button>
+        <button data-save-copy="${h(provider.id)}" data-save-kind="stop">Copy stop rule</button>
+        <button data-save-scan="${h(provider.id)}">Scan bloat</button>
+      </div>
+      <div class="save-mode-note">${h(scanSummary)}</div>
+      ${scan?.findings?.length ? `
+        <div class="save-mode-findings">
+          ${scan.findings.slice(0, 4).map((item) => `<span>${h(item.label)} · ${h(item.detail)}</span>`).join('')}
+        </div>` : ''}
+    </div>`
+}
+
+function modelBreakdownRows(tokenUsage, provider) {
   const rows = Array.isArray(tokenUsage?.modelBreakdowns)
     ? tokenUsage.modelBreakdowns
     : Array.isArray(tokenUsage?.topModels)
@@ -600,8 +881,9 @@ function modelBreakdownRows(tokenUsage) {
         Number(row.cached) > 0 ? `${tokens(row.cached)} cached` : null,
         Number(row.output) > 0 ? `${tokens(row.output)} out` : null,
       ].filter(Boolean).join(' · ')
+      const cause = modelBurnCause(provider, row, rowTotal)
       return `
-        <div class="token-model-row">
+        <div class="token-model-row" tabindex="0" aria-label="${h(`${model}: ${cause.label}. ${cause.action}`)}">
           <div class="token-model-head">
             <span class="token-model-name" title="${h(model)}">${h(model)}</span>
             <span class="token-model-total mono">${tokens(rowTotal)}</span>
@@ -611,6 +893,7 @@ function modelBreakdownRows(tokenUsage) {
             <span>${h(detail || 'token total')}</span>
             <span>${h(costText)}</span>
           </div>
+          ${modelBurnTip(cause)}
         </div>`
     })
     .join('')
@@ -716,10 +999,10 @@ function serviceTierRows(tokenUsage) {
     .join('')
 }
 
-function tokenDetails(tokenUsage) {
+function tokenDetails(tokenUsage, provider) {
   const costRows = tokenCostRows(tokenUsage)
   const tierRows = serviceTierRows(tokenUsage)
-  const modelRows = modelBreakdownRows(tokenUsage)
+  const modelRows = modelBreakdownRows(tokenUsage, provider)
   if (!costRows && !tierRows && !modelRows) return ''
   const modelBreakdowns = tokenUsage.modelBreakdowns || tokenUsage.topModels || []
   const hiddenCount = Math.max(0, modelBreakdowns.length - 5)
@@ -799,8 +1082,18 @@ function providerCard(p) {
   const linkStack = providerLinkStack(p)
   const expandedTokenDetails = expanded
     ? hasTokenSource
-      ? tokenDetails(tokenUsage)
+      ? tokenDetails(tokenUsage, p)
       : '<div class="token-missing">No token source yet</div>'
+    : ''
+  const saveSignal = config?.saveModeSuggestions === true && hasTokenSource ? strongestSaveSignal(p) : null
+  const saveMode = saveSignal && expanded
+    ? activeSaveProvider === p.id
+      ? saveModePanel(p, saveSignal)
+      : `
+        <button class="save-mode-nudge" data-save-open="${h(p.id)}">
+          <span>Reduce next run</span>
+          <b>${h(saveSignal.label)}</b>
+        </button>`
     : ''
 
   return `
@@ -827,6 +1120,7 @@ function providerCard(p) {
       ${expanded ? (hasWindows ? '' : summaryMeter) : collapsedMeters}
       ${body}
       ${expandedTokenDetails}
+      ${saveMode}
     </div>`
 }
 
@@ -864,6 +1158,12 @@ function syncFooterChip(sync) {
       <span class="fc-l">${h(sync.label)}</span>
       <span class="fc-v num-display">${h(sync.value)}</span>
     </button>`
+}
+
+function saveSignalForProvider(id) {
+  const provider = (snap?.providers || []).find((p) => p.id === id)
+  const signal = provider ? strongestSaveSignal(provider) : null
+  return { provider, signal }
 }
 
 function skeletonProviderCards(count = 4) {
@@ -1101,7 +1401,7 @@ function renderOnboarding() {
 }
 
 function updatePrefMetas() {
-  const onCount = ['missions-toggle', 'maxx-alerts-toggle', 'session-quota-toggle', 'quota-warning-toggle']
+  const onCount = ['missions-toggle', 'maxx-alerts-toggle', 'session-quota-toggle', 'quota-warning-toggle', 'save-mode-toggle']
     .filter((id) => $(id) && $(id).classList.contains('on')).length
   const notif = $('pref-meta-notifications')
   if (notif) notif.textContent = onCount === 0 ? 'all off' : `${onCount} on`
@@ -1169,6 +1469,7 @@ function renderSettings() {
   $('maxx-alerts-toggle').classList.toggle('on', config.maxxAlertsEnabled !== false)
   $('session-quota-toggle').classList.toggle('on', config.sessionQuotaNotificationsEnabled !== false)
   $('quota-warning-toggle').classList.toggle('on', config.quotaWarningNotificationsEnabled === true)
+  $('save-mode-toggle').classList.toggle('on', config.saveModeSuggestions === true)
   $('theme-toggle').classList.toggle('on', currentTheme() === 'light')
   $('maxx-alert-hours').value = String(config.maxxAlertHours || 48)
   $('maxx-alert-reserve').value = String(config.maxxAlertReservePct || 25)
@@ -1180,6 +1481,7 @@ function renderSettings() {
   $('maxx-alerts-toggle').onclick = () => { $('maxx-alerts-toggle').classList.toggle('on'); updatePrefMetas() }
   $('session-quota-toggle').onclick = () => { $('session-quota-toggle').classList.toggle('on'); updatePrefMetas() }
   $('quota-warning-toggle').onclick = () => { $('quota-warning-toggle').classList.toggle('on'); updatePrefMetas() }
+  $('save-mode-toggle').onclick = () => { $('save-mode-toggle').classList.toggle('on'); updatePrefMetas() }
   $('theme-toggle').onclick = () => {
     const next = currentTheme() === 'light' ? 'dark' : 'light'
     applyTheme(next)
@@ -1293,6 +1595,7 @@ function collectSettings() {
     quotaWarningWeeklyThresholds: thresholdsFromSelect('quota-warning-weekly'),
     trayMetric: $('tray-metric').value || 'left',
     tokenHistoryDays: Number($('token-history-days').value) || 30,
+    saveModeSuggestions: $('save-mode-toggle').classList.contains('on'),
     onboardingComplete: config.onboardingComplete === true,
     missions: $('missions-toggle').classList.contains('on'),
     providerOrder,
@@ -1860,6 +2163,67 @@ $('foot-left').addEventListener('click', (event) => {
 })
 
 $('list').addEventListener('click', (event) => {
+  const saveOpen = event.target.closest('[data-save-open]')
+  if (saveOpen) {
+    activeSaveProvider = saveOpen.dataset.saveOpen
+    saveModeScanResult = null
+    render()
+    return
+  }
+
+  const saveClose = event.target.closest('[data-save-close]')
+  if (saveClose) {
+    activeSaveProvider = null
+    saveModeScanResult = null
+    render()
+    return
+  }
+
+  const saveCopy = event.target.closest('[data-save-copy]')
+  if (saveCopy) {
+    const { provider, signal } = saveSignalForProvider(saveCopy.dataset.saveCopy)
+    if (!provider || !signal) return
+    const kind = saveCopy.dataset.saveKind
+    const text = kind === 'compact'
+      ? signal.compactText
+      : kind === 'stop'
+        ? signal.stopLossText
+        : signal.focusedPrompt
+    const original = saveCopy.textContent
+    saveCopy.disabled = true
+    window.maxx.copyText(text).then(() => {
+      saveCopy.textContent = 'Copied'
+      setTimeout(() => {
+        saveCopy.disabled = false
+        saveCopy.textContent = original
+      }, 900)
+    }).catch(() => {
+      saveCopy.disabled = false
+      saveCopy.textContent = original
+    })
+    return
+  }
+
+  const saveScan = event.target.closest('[data-save-scan]')
+  if (saveScan) {
+    const providerId = saveScan.dataset.saveScan
+    saveScan.disabled = true
+    saveScan.textContent = 'Scanning…'
+    window.maxx.scanContextBloat(providerId).then((result) => {
+      saveModeScanResult = {
+        providerId,
+        canceled: result?.canceled === true,
+        folderName: result?.folderName || 'folder',
+        findings: Array.isArray(result?.findings) ? result.findings : [],
+      }
+    }).catch(() => {
+      saveModeScanResult = { providerId, folderName: 'folder', findings: [] }
+    }).finally(() => {
+      render()
+    })
+    return
+  }
+
   const providerLink = event.target.closest('[data-provider-link]')
   if (providerLink) {
     const id = providerLink.dataset.providerId

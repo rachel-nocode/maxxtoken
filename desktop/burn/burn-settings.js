@@ -1,37 +1,75 @@
 /* BURN Settings — provider rows + collapsible groups. Classic script.
-   Provider list derives from live adapted providers (plus the OpenAI API row).
+   Provider list is sourced from config.providers (every configured provider,
+   ordered by config.providerOrder), matching the legacy settings screen.
    Toggles/collapsibles/cookies live in session state; Reveal config/log and
    Save delegate to existing IPC. Full config persistence is a follow-up. */
 
-const BURN_COOKIE_PROVIDERS = new Set(['cursor', 'grok', 'openai'])
+// Providers authenticated by a user-pasted secret (API key / cookie header).
+// Mirrors KEY_PROVIDERS in renderer.js.
+const BURN_KEY_PROVIDERS = new Set([
+  'openai', 'azureopenai', 'cursor', 'copilot', 'windsurf', 'opencode', 'opencodego',
+  'alibaba', 'alibabatokenplan', 'augment', 'warp', 'elevenlabs', 'kilo', 'openrouter',
+  'grok', 'groq', 'perplexity', 'mistral', 'codebuff', 'commandcode', 'crof', 'venice',
+  'moonshot', 'kimik2', 'doubao', 'deepseek', 'deepgram', 'stepfun', 'llmproxy', 'ollama',
+  'abacus', 'amp', 'factory', 'antigravity', 'minimax', 'manus', 'vertexai', 'synthetic',
+  'mimo', 'bedrock', 'zai', 't3chat',
+])
+
+const BURN_COOKIE_IDS = new Set([
+  'cursor', 'windsurf', 'opencode', 'opencodego', 'alibaba', 'ollama', 'abacus', 'amp',
+  'factory', 'augment', 'perplexity', 'mimo', 't3chat', 'grok',
+])
+
+// Option lists mirror the legacy settings selects (index.html) so saved values
+// stay compatible with the config schema.
+const BURN_OPT_THRESHOLD = [['50,20', '50% + 20% left'], ['40,15', '40% + 15% left'], ['25,10', '25% + 10% left'], ['20,0', '20% + depleted']]
+const BURN_OPT_ALERT_HOURS = [['6', '6h before reset'], ['12', '12h before reset'], ['24', '24h before reset'], ['48', '48h before reset'], ['72', '72h before reset']]
+const BURN_OPT_RESERVE = [['15', '15% unused'], ['25', '25% unused'], ['40', '40% unused'], ['60', '60% unused']]
+const BURN_OPT_TRAY = [['left', 'Value left'], ['spent', 'Spent value'], ['percent', 'Used percent'], ['target', 'Next maxx'], ['reset', 'Next reset'], ['tokens', 'Tokens']]
+const BURN_OPT_HISTORY = [['1', 'Today'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', '365 days']]
+const BURN_OPT_WARN = [['inherit', 'Warn auto'], ['off', 'Warn off'], ['15', 'Warn 15%'], ['25', 'Warn 25%'], ['40', 'Warn 40%'], ['60', 'Warn 60%']]
 
 function burnCookiePlaceholder(id) {
-  return id === 'cursor'
-    ? 'Cookie: WorkosCursorSessionToken=...'
-    : 'Cookie: sso=...; sso-rw=... or Bearer ...'
+  if (id === 'cursor') return 'Cookie: WorkosCursorSessionToken=...'
+  if (BURN_COOKIE_IDS.has(id)) return 'Cookie: sso=...; sso-rw=... or Bearer ...'
+  return 'API key (sk-...)'
 }
 
-// Build the settings provider list once per snapshot, preserving any user
-// drag order already in state.
+// Provider drag order: user override → config.providerOrder → config insertion.
+function burnProviderOrder(state) {
+  const provs = state.config?.providers || {}
+  const ids = Object.keys(provs)
+  const seen = new Set()
+  const out = []
+  for (const id of state.settingsOrder || []) if (provs[id] && !seen.has(id)) { seen.add(id); out.push(id) }
+  for (const id of state.config?.providerOrder || []) if (provs[id] && !seen.has(id)) { seen.add(id); out.push(id) }
+  for (const id of ids) if (!seen.has(id)) { seen.add(id); out.push(id) }
+  return out
+}
+
+// Build the full settings provider list from config, with a detected/waiting
+// sub-label derived from the live snapshot + saved-key state.
 function burnSettingsProviders(state) {
-  const base = (state.providers || []).map((p) => ({
-    id: p.id,
-    name: p.name,
-    sub: `${p.plan} · detected`,
-    cookie: BURN_COOKIE_PROVIDERS.has(p.id),
-  }))
-  if (!base.some((p) => p.id === 'openai')) {
-    base.push({ id: 'openai', name: 'OpenAI API', sub: 'Admin API · add API key', cookie: true })
-  }
-  const order = state.settingsOrder || []
-  if (order.length) {
-    base.sort((a, b) => {
-      const ia = order.indexOf(a.id)
-      const ib = order.indexOf(b.id)
-      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib)
-    })
-  }
-  return base
+  const provs = state.config?.providers || {}
+  const apiKeyState = state.apiKeyState || {}
+  return burnProviderOrder(state).map((id) => {
+    const p = provs[id] || {}
+    const detected = (state.providers || []).find((dp) => dp.id === id)
+    const isKey = BURN_KEY_PROVIDERS.has(id)
+    const hasKey = !!apiKeyState[id]
+    const plan = detected?.plan || p.plan || ''
+    let status
+    if (detected?._raw?.connected) status = 'detected'
+    else if (isKey && !hasKey) status = BURN_COOKIE_IDS.has(id) ? 'add cookie' : 'add key'
+    else if (isKey && hasKey) status = 'saved · waiting'
+    else status = p.enabled !== false ? 'waiting' : 'off'
+    return {
+      id,
+      name: p.name || detected?.name || id,
+      sub: `${plan ? plan + ' · ' : ''}${status}`,
+      cookie: isKey,
+    }
+  })
 }
 
 function burnProvSettingRow(pv, enabled, cookieVal) {
@@ -43,7 +81,7 @@ function burnProvSettingRow(pv, enabled, cookieVal) {
     `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 13, fontWeight: 700, color: BURN.text, letterSpacing: -0.1 })}">${burnEsc(pv.name)}</div>` +
     `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9.5, color: BURN.text2, letterSpacing: 0.4, marginTop: 1, textTransform: 'uppercase' })}">${burnEsc(pv.sub)}</div>` +
     `</div>` +
-    burnSettingDropdown('WARN AUTO') +
+    burnSelect(`warn:${pv.id}`, (burnState.provAlert && burnState.provAlert[pv.id]) || 'inherit', BURN_OPT_WARN) +
     burnSwitch(`prov:${pv.id}`, enabled) +
     `</div>`
 
@@ -62,7 +100,7 @@ function burnProvSettingRow(pv, enabled, cookieVal) {
           letterSpacing: 0.2,
           outline: 'none',
         })}" />` +
-        `<button type="button" data-burn-action="save-cookie" data-cookie-id="${burnEsc(pv.id)}" style="${burnGhostBtn}">SAVE</button>` +
+        `<button type="button" data-burn-action="save-cookie" data-cookie-id="${burnEsc(pv.id)}" style="${burnGhostBtn()}">SAVE</button>` +
         `</div>`
       : ''
 
@@ -76,19 +114,60 @@ function burnProvSettingRow(pv, enabled, cookieVal) {
   )
 }
 
+// Human-readable line for the current updater status.
+function burnUpdateStatusText(u) {
+  switch (u.status) {
+    case 'checking': return 'CHECKING FOR UPDATES…'
+    case 'downloading': return `DOWNLOADING ${u.percent || 0}%`
+    case 'up-to-date': return 'UP TO DATE'
+    case 'ready': return 'UPDATE READY — RESTART TO INSTALL'
+    case 'error': return `ERROR: ${String(u.error || 'unknown').slice(0, 80)}`
+    case 'dev': return 'DEV BUILD — UPDATES RUN IN THE PACKAGED APP ONLY'
+    default: return 'CLICK CHECK TO LOOK FOR UPDATES'
+  }
+}
+
+// Expanded UPDATES panel: version row + status line + check/install buttons.
+function burnUpdatesBody(state) {
+  const u = state.update || { status: 'idle' }
+  const checking = u.status === 'checking'
+  const ready = u.status === 'ready'
+  const statusColor =
+    u.status === 'error' ? BURN.warnText
+      : ready || u.status === 'up-to-date' ? BURN.limeText
+      : BURN.text2
+  const versionRow =
+    `<div style="${bstyle({ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '9px 11px', borderBottom: `1px solid ${BURN.border}` })}">` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 12.5, color: BURN.text })}">Current version</span>` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 11, color: BURN.text2, fontVariantNumeric: 'tabular-nums', letterSpacing: 0.4 })}">${burnEsc((state.version || '').toUpperCase())}</span>` +
+    `</div>`
+  // Idle = nothing to report; let the button speak for itself.
+  const statusRow =
+    u.status && u.status !== 'idle'
+      ? `<div style="${bstyle({ padding: '9px 11px', fontFamily: BURN_FONT.mono, fontSize: 9.5, letterSpacing: 0.5, color: statusColor })}">${burnEsc(burnUpdateStatusText(u))}</div>`
+      : ''
+  const buttons =
+    `<div style="${bstyle({ display: 'flex', gap: 6, padding: '2px 11px 4px' })}">` +
+    `<button type="button" data-burn-action="check-updates"${checking ? ' disabled' : ''} style="${burnGhostBtn()}">${checking ? 'Checking…' : 'Check for updates'}</button>` +
+    (ready ? `<button type="button" data-burn-action="install-update" style="${burnPrimaryBtn()}">Restart &amp; install</button>` : '') +
+    `</div>`
+  return `<div style="${bstyle({ padding: '8px 0 0' })}">${versionRow}${statusRow}${buttons}</div>`
+}
+
 function burnRenderSettings(state) {
   const provs = burnSettingsProviders(state)
   const enabled = state.settingsEnabled || {}
   const cookies = state.cookies || {}
   const notifs = state.notifs
   const app = state.app
+  const cfg = state.cfg || {}
 
   const banner =
     `<div style="${bstyle({
       margin: 14,
       padding: '9px 11px',
-      background: 'rgba(182,255,60,0.05)',
-      border: '1px solid rgba(182,255,60,0.20)',
+      background: BURN.accentWashBg,
+      border: `1px solid ${BURN.accentWashBorder}`,
       borderRadius: 2,
       fontFamily: BURN_FONT.mono,
       fontSize: 10.5,
@@ -112,10 +191,10 @@ function burnRenderSettings(state) {
         burnToggleRow('Maxx alerts', notifs.alerts, 'notif:alerts') +
         burnToggleRow('Session restored', notifs.restored, 'notif:restored') +
         burnToggleRow('Quota warnings', notifs.quota, 'notif:quota') +
-        burnDropdownRow('Session warning', '50% + 20% left') +
-        burnDropdownRow('Weekly warning', '50% + 20% left') +
-        burnDropdownRow('Alert window', '48h before reset') +
-        burnDropdownRow('Reserve floor', '25% unused') +
+        burnDropdownRow('Session warning', 'sessionThreshold', cfg.sessionThreshold, BURN_OPT_THRESHOLD) +
+        burnDropdownRow('Weekly warning', 'weeklyThreshold', cfg.weeklyThreshold, BURN_OPT_THRESHOLD) +
+        burnDropdownRow('Alert window', 'alertHours', cfg.alertHours, BURN_OPT_ALERT_HOURS) +
+        burnDropdownRow('Reserve floor', 'alertReservePct', cfg.alertReservePct, BURN_OPT_RESERVE) +
         `</div>`
       : '') +
     `</div>`
@@ -125,8 +204,8 @@ function burnRenderSettings(state) {
     burnCollapsibleHead('APP', 'DARK · VALUE LEFT', state.appOpen, 'app') +
     (state.appOpen
       ? `<div style="${bstyle({ padding: '8px 0 0', display: 'flex', flexDirection: 'column', gap: 2 })}">` +
-        burnDropdownRow('Menu bar', 'Value left') +
-        burnDropdownRow('Token history', '30 days') +
+        burnDropdownRow('Menu bar', 'trayMetric', cfg.trayMetric, BURN_OPT_TRAY) +
+        burnDropdownRow('Token history', 'tokenHistoryDays', cfg.tokenHistoryDays, BURN_OPT_HISTORY) +
         burnToggleRow('Light mode', app.lightMode, 'app:lightMode') +
         burnToggleRow('Open at login', app.openAtLogin, 'app:openAtLogin') +
         `</div>`
@@ -135,7 +214,8 @@ function burnRenderSettings(state) {
 
   const updatesGroup =
     `<div style="${bstyle({ padding: 14 })}">` +
-    burnCollapsibleHead('UPDATES', (state.version || 'v0.2.3-beta.1').toUpperCase(), false, 'updates') +
+    burnCollapsibleHead('UPDATES', (state.version || 'v0.2.3-beta.1').toUpperCase(), state.updatesOpen, 'updates') +
+    (state.updatesOpen ? burnUpdatesBody(state) : '') +
     `</div>`
 
   const body =
@@ -158,7 +238,7 @@ function burnRenderSettings(state) {
     `<button type="button" data-burn-action="reveal-config" style="${textBtn}">REVEAL CONFIG</button>` +
     `<button type="button" data-burn-action="reveal-log" style="${textBtn}">REVEAL LOG</button>` +
     `<span style="${bstyle({ flex: 1 })}"></span>` +
-    `<button type="button" data-burn-action="save-config" style="${burnPrimaryBtn}">Save</button>` +
+    `<button type="button" data-burn-action="save-config" style="${burnPrimaryBtn()}">${state.justSaved ? 'Saved ✓' : 'Save'}</button>` +
     `</div>`
 
   return burnHeader({ backLabel: 'DETECTED PROVIDERS', settingsActive: true }) + body + footer

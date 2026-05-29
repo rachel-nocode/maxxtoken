@@ -38,33 +38,40 @@ function burnModelCheck(m, checked) {
   )
 }
 
-const burnGhostBtn = bstyle({
-  padding: '8px 12px',
-  background: 'transparent',
-  color: BURN.text2,
-  border: `1px solid ${BURN.border}`,
-  borderRadius: 2,
-  fontFamily: BURN_FONT.mono,
-  fontSize: 10.5,
-  fontWeight: 600,
-  letterSpacing: 0.5,
-  textTransform: 'uppercase',
-  cursor: 'pointer',
-})
+// Functions, not const strings: read BURN live at render time so the colors
+// follow the active theme. (As precomputed consts they froze the dark palette
+// at load and the buttons stayed bright lime after a light-mode toggle.)
+function burnGhostBtn() {
+  return bstyle({
+    padding: '8px 12px',
+    background: 'transparent',
+    color: BURN.text2,
+    border: `1px solid ${BURN.border}`,
+    borderRadius: 2,
+    fontFamily: BURN_FONT.mono,
+    fontSize: 10.5,
+    fontWeight: 600,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    cursor: 'pointer',
+  })
+}
 
-const burnPrimaryBtn = bstyle({
-  padding: '9px 16px',
-  background: BURN.lime,
-  color: BURN.bg,
-  border: 'none',
-  borderRadius: 2,
-  fontFamily: BURN_FONT.mono,
-  fontSize: 11,
-  fontWeight: 700,
-  letterSpacing: 0.6,
-  textTransform: 'uppercase',
-  cursor: 'pointer',
-})
+function burnPrimaryBtn() {
+  return bstyle({
+    padding: '9px 16px',
+    background: BURN.lime,
+    color: BURN.bg,
+    border: 'none',
+    borderRadius: 2,
+    fontFamily: BURN_FONT.mono,
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    cursor: 'pointer',
+  })
+}
 
 function burnModelOptions(state) {
   return (state.providers || []).map((p) => ({
@@ -142,10 +149,10 @@ function burnRenderMissionSetup(state) {
 
   const footer =
     `<div style="${bstyle({ display: 'flex', gap: 6, padding: 10, borderTop: `1px solid ${BURN.border}`, background: BURN.surface })}">` +
-    `<button type="button" data-burn-nav="back" style="${burnGhostBtn}">BACK</button>` +
-    `<button type="button" data-burn-action="copy-goal" style="${burnGhostBtn}">COPY GOAL</button>` +
+    `<button type="button" data-burn-nav="back" style="${burnGhostBtn()}">BACK</button>` +
+    `<button type="button" data-burn-action="copy-goal" style="${burnGhostBtn()}">COPY GOAL</button>` +
     `<span style="${bstyle({ flex: 1 })}"></span>` +
-    `<button type="button" data-burn-action="start-mission" style="${burnPrimaryBtn}">Start mission →</button>` +
+    `<button type="button" data-burn-action="start-mission" style="${burnPrimaryBtn()}">Start mission →</button>` +
     `</div>`
 
   return burnHeader({ backLabel: 'NEW MISSION' }) + body + footer

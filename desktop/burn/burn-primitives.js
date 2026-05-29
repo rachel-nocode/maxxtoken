@@ -38,8 +38,8 @@ function burnBtnStyle(active) {
     width: 26,
     height: 26,
     borderRadius: 2,
-    background: active ? 'rgba(182,255,60,0.10)' : BURN.surface,
-    border: `1px solid ${active ? 'rgba(182,255,60,0.40)' : BURN.border}`,
+    background: active ? BURN.accentBtnBg : BURN.surface,
+    border: `1px solid ${active ? BURN.accentBtnBorder : BURN.border}`,
     cursor: 'pointer',
     padding: 0,
     display: 'inline-flex',
@@ -63,7 +63,7 @@ function burnHeader({ title = 'BURN', backLabel = '', diamondActive = false, set
         gap: 4,
         padding: '0 8px',
         height: 22,
-        color: BURN.lime,
+        color: BURN.limeText,
         fontFamily: BURN_FONT.mono,
         fontSize: 12,
         fontWeight: 600,
@@ -93,20 +93,8 @@ function burnHeader({ title = 'BURN', backLabel = '', diamondActive = false, set
       })}">${burnSparkGlyph(11)}</div>`
     const wordmark =
       `<span style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 13, fontWeight: 700, letterSpacing: -0.2 })}">` +
-      `Maxx<span style="${bstyle({ color: BURN.lime })}">Token</span></span>`
-    const pill =
-      `<span style="${bstyle({
-        fontFamily: BURN_FONT.mono,
-        fontSize: 9,
-        color: BURN.text2,
-        letterSpacing: 0.8,
-        padding: '3px 7px',
-        background: BURN.surface,
-        border: `1px solid ${BURN.border}`,
-        borderRadius: 2,
-        textTransform: 'uppercase',
-      })}">${burnEsc(title)}</span>`
-    left = tile + wordmark + pill
+      `Maxx<span style="${bstyle({ color: BURN.limeText })}">Token</span></span>`
+    left = tile + wordmark
   }
 
   const diamond =
@@ -131,7 +119,7 @@ function burnLiveStrip({ streams = 0, burning = 0, label = '' } = {}) {
   const text = label || `LIVE · ${streams} STREAMS`
   const burnCount =
     burning > 0
-      ? `<span style="${bstyle({ color: BURN.warn })}">${burning} BURNING</span>`
+      ? `<span style="${bstyle({ color: BURN.warnText })}">${burning} BURNING</span>`
       : ''
   return (
     `<div style="${bstyle({
@@ -175,27 +163,6 @@ function burnSwitch(toggleKey, on) {
   )
 }
 
-// Mono dropdown pill with chevron (chrome only — options out of scope v1).
-function burnSettingDropdown(value) {
-  return (
-    `<span style="${bstyle({
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: 5,
-      padding: '5px 8px',
-      background: BURN.bg,
-      border: `1px solid ${BURN.border}`,
-      borderRadius: 2,
-      color: BURN.text2,
-      fontFamily: BURN_FONT.mono,
-      fontSize: 9.5,
-      letterSpacing: 0.5,
-      cursor: 'pointer',
-      whiteSpace: 'nowrap',
-    })}">${burnEsc(value)}${burnIcon('chevron-down', 9, BURN.text2)}</span>`
-  )
-}
-
 // Collapsible group head. collapseKey routes the toggle in burn-app.
 function burnCollapsibleHead(label, right, open, collapseKey) {
   return (
@@ -232,11 +199,39 @@ function burnToggleRow(label, on, toggleKey) {
   )
 }
 
-function burnDropdownRow(label, value) {
+// Real, interactive dropdown: a styled native <select>. data-burn-select routes
+// the change to burnState in burn-app. options = [[value, label], ...].
+function burnSelect(key, value, options) {
+  const opts = options
+    .map(([v, label]) => `<option value="${burnEsc(v)}"${String(v) === String(value) ? ' selected' : ''}>${burnEsc(label)}</option>`)
+    .join('')
+  return (
+    `<span style="${bstyle({ position: 'relative', display: 'inline-flex', alignItems: 'center' })}">` +
+    `<select data-burn-select="${burnEsc(key)}" style="${bstyle({
+      appearance: 'none',
+      WebkitAppearance: 'none',
+      padding: '5px 24px 5px 8px',
+      background: BURN.bg,
+      border: `1px solid ${BURN.border}`,
+      borderRadius: 2,
+      color: BURN.text2,
+      fontFamily: BURN_FONT.mono,
+      fontSize: 9.5,
+      letterSpacing: 0.5,
+      cursor: 'pointer',
+      outline: 'none',
+      whiteSpace: 'nowrap',
+    })}">${opts}</select>` +
+    `<span style="${bstyle({ position: 'absolute', right: 7, display: 'inline-flex', pointerEvents: 'none' })}">${burnIcon('chevron-down', 9, BURN.text2)}</span>` +
+    `</span>`
+  )
+}
+
+function burnDropdownRow(label, key, value, options) {
   return (
     `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 11px', borderBottom: `1px solid ${BURN.border}` })}">` +
     `<span style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 12.5, color: BURN.text, flex: 1 })}">${burnEsc(label)}</span>` +
-    burnSettingDropdown(value.toUpperCase()) +
+    burnSelect(key, value, options) +
     `</div>`
   )
 }
@@ -254,7 +249,7 @@ function burnSectionHead(label, right = '') {
       fontSize: 9.5,
       letterSpacing: 0.7,
     })}">` +
-    `<span style="${bstyle({ color: BURN.lime, fontWeight: 600 })}">${burnEsc(label)}</span>` +
+    `<span style="${bstyle({ color: BURN.limeText, fontWeight: 600 })}">${burnEsc(label)}</span>` +
     `<span style="${bstyle({ color: BURN.text2 })}">${burnEsc(right)}</span>` +
     `</div>`
   )
@@ -276,29 +271,41 @@ function burnStat(label, value) {
 }
 
 // 3-tile stats strip (SPENT · LEFT · SYNC).
-function burnFooter({ items } = {}) {
+function burnFooter({ items, syncing = false } = {}) {
   const tiles = items || [
-    { l: 'SPENT', v: '$181', color: BURN.lime },
-    { l: 'LEFT', v: '$421', color: BURN.warn },
-    { l: 'SYNC', v: '15m', color: BURN.text },
+    { l: 'SPENT', v: '$181', tone: 'lime' },
+    { l: 'LEFT', v: '$421', tone: 'warn' },
+    { l: 'SYNC', v: '15m', tone: 'text', action: 'sync' },
   ]
+  const toneColor = { lime: BURN.limeText, warn: BURN.warnText, text: BURN.text }
   const tilesHtml = tiles
-    .map(
-      (it) =>
-        `<div style="${bstyle({
-          flex: 1,
-          background: BURN.bg,
-          border: `1px solid ${BURN.border}`,
-          borderRadius: 2,
-          padding: '6px 8px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 2,
-        })}">` +
-        `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8.5, color: BURN.text2, letterSpacing: 0.6 })}">${burnEsc(it.l)}</span>` +
-        `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 12, fontWeight: 700, color: it.color, fontVariantNumeric: 'tabular-nums' })}">${burnEsc(it.v)}</span>` +
-        `</div>`,
-    )
+    .map((it) => {
+      const color = it.color || toneColor[it.tone] || BURN.text
+      const tileStyle = bstyle({
+        flex: 1,
+        background: BURN.bg,
+        border: `1px solid ${BURN.border}`,
+        borderRadius: 2,
+        padding: '6px 8px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 2,
+        textAlign: 'left',
+        cursor: it.action ? 'pointer' : 'default',
+      })
+      // Sync tile: refresh icon (spins while syncing) pinned to the top-right
+      // corner, with the bold word 'SYNC' as the tile's main label so it reads
+      // clearly as the button that syncs all model usage.
+      const labelRow = it.action
+        ? `<span style="${bstyle({ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', minHeight: 11 })}">` +
+          `<span class="${syncing ? 'burn-spin' : ''}" style="${bstyle({ display: 'inline-flex' })}">${burnIcon('refresh', 13, BURN.text2)}</span></span>`
+        : `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8.5, color: BURN.text2, letterSpacing: 0.6 })}">${burnEsc(it.l)}</span>`
+      const valueText = it.action ? (syncing ? 'SYNCING' : 'SYNC') : it.v
+      const value = `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 12, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums', letterSpacing: it.action ? 0.6 : 0 })}">${burnEsc(valueText)}</span>`
+      const tag = it.action ? 'button' : 'div'
+      const attrs = it.action ? ` type="button" data-burn-action="${burnEsc(it.action)}"` : ''
+      return `<${tag}${attrs} style="${tileStyle}">${labelRow}${value}</${tag}>`
+    })
     .join('')
   return (
     `<div style="${bstyle({

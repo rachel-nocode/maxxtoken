@@ -16,6 +16,16 @@
   outline-offset: 1px;
 }
 
+/* Sync spinner — functional loading feedback while a manual refresh runs. */
+.burn-spin {
+  animation: burnSpin 0.8s linear infinite;
+}
+@keyframes burnSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Scroll body: allow it to shrink/scroll inside the flex column. */
 .burn-body {
   min-height: 0;
@@ -58,4 +68,21 @@
 }
 .burn-root ::-webkit-scrollbar-thumb:hover {
   background: #252525;
+}
+
+/* ---- Light mode ---- only color overrides for things inline styles and the
+   JS palette can't reach (the dot glow, scrollbar chrome, focus ring). */
+.burn-root.burn-light button:focus-visible {
+  outline: 1px solid rgba(85, 127, 15, 0.5);
+}
+.burn-root.burn-light .burn-live-dot {
+  background: #557f0f;
+  border: 1px solid #41620b;
+  box-shadow: 0 0 0 2px rgba(85, 127, 15, 0.30), 0 0 5px rgba(85, 127, 15, 0.30);
+}
+.burn-root.burn-light ::-webkit-scrollbar-thumb {
+  background: #dcd6c4;
+}
+.burn-root.burn-light ::-webkit-scrollbar-thumb:hover {
+  background: #b8b1a0;
 }

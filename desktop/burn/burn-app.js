@@ -11,13 +11,21 @@ const burnState = {
   expandedId: null,
   providers: [],
   footer: null,
+  syncing: false,
   // mission-setup form
   missionRec: null,
   missionModels: {},
   missionFolder: null, // display basename
   missionFolderPath: null, // full path for IPC
   missionGoal: '',
-  // settings (session state; full config persistence is a follow-up)
+  // missions (real burn ideas from window.maxx.burnIdeas)
+  ideas: [],
+  ideaTarget: null,
+  ideasLoaded: false,
+  ideasLoading: false,
+  // settings (sourced from config.providers; toggles are session-only for now)
+  config: null,
+  apiKeyState: {},
   settingsEnabled: {},
   settingsOrder: [],
   notifsOpen: true,
@@ -25,7 +33,14 @@ const burnState = {
   notifs: { ideas: true, alerts: true, restored: true, quota: true },
   app: { lightMode: false, openAtLogin: true },
   cookies: {},
+  // Scalar settings backed by the config file (populated from getConfig in
+  // burnInit). Dropdowns read/write these; Save persists them.
+  cfg: { trayMetric: 'left', tokenHistoryDays: '30', sessionThreshold: '50,20', weeklyThreshold: '50,20', alertHours: '48', alertReservePct: '25' },
+  provAlert: {}, // providerId -> 'inherit' | 'off' | '15' | '25' | '40' | '60'
+  justSaved: false,
   version: 'v0.2.3-beta.1',
+  updatesOpen: false,
+  update: { status: 'idle', percent: 0, error: '' }, // mirrors main's updateState
 }
 
 let burnRoot = null
@@ -79,14 +94,39 @@ function burnScreenHtml() {
 
 function burnRender() {
   if (!burnRoot) return
+  // Preserve scroll position so re-renders (e.g. expanding a settings group)
+  // don't jump the body back to the top.
+  const prevBody = burnRoot.querySelector('.burn-body')
+  const prevScroll = prevBody ? prevBody.scrollTop : 0
+  burnRoot.classList.toggle('burn-light', !!burnState.app.lightMode)
   burnRoot.innerHTML = burnShell(burnScreenHtml())
   burnAfterRender()
+  const newBody = burnRoot.querySelector('.burn-body')
+  if (newBody) newBody.scrollTop = prevScroll
 }
 
 function burnGo(screen) {
   burnState.screen = screen
   if (screen !== 'home') burnState.expandedId = null
   burnRender()
+  if (screen === 'missions' && !burnState.ideasLoaded && !burnState.ideasLoading) burnLoadIdeas()
+}
+
+// Pull real burn ideas (+ target provider) once, then re-render Missions.
+async function burnLoadIdeas() {
+  if (!window.maxx?.burnIdeas) return
+  burnState.ideasLoading = true
+  try {
+    const res = await window.maxx.burnIdeas()
+    burnState.ideas = Array.isArray(res?.ideas) ? res.ideas : []
+    burnState.ideaTarget = res?.target || null
+    burnState.ideasLoaded = true
+  } catch (err) {
+    console.error('[burn] burnIdeas failed', err)
+  } finally {
+    burnState.ideasLoading = false
+    if (burnState.screen === 'missions') burnRender()
+  }
 }
 
 function burnApplySnapshot(snap) {
@@ -95,13 +135,33 @@ function burnApplySnapshot(snap) {
   burnRender()
 }
 
-function burnOpenMissionSetup(missionN) {
-  const mission = BURN_MISSIONS.find((m) => m.n === missionN)
-  burnState.missionRec = mission?.rec || null
-  burnState.missionModels = {}
-  if (mission?.rec && burnState.providers.some((p) => p.id === mission.rec)) {
-    burnState.missionModels[mission.rec] = true
+// SYNC tile: force a fresh detection of every provider. Fresh data also
+// arrives via the onSnapshot push channel.
+async function burnSync() {
+  if (burnState.syncing || !window.maxx?.syncNow) return
+  burnState.syncing = true
+  burnRender()
+  try {
+    const snap = await window.maxx.syncNow()
+    if (snap && snap.providers) burnApplySnapshot(snap)
+  } catch (err) {
+    console.error('[burn] sync failed', err)
+  } finally {
+    burnState.syncing = false
+    burnRender()
   }
+}
+
+function burnOpenMissionSetup(index) {
+  const idea = burnState.ideas[Number(index)]
+  // Preselect the target provider (the model the idea suggests spending).
+  const rec = burnState.ideaTarget?.id || null
+  burnState.missionRec = rec
+  burnState.missionModels = {}
+  if (rec && burnState.providers.some((p) => p.id === rec)) {
+    burnState.missionModels[rec] = true
+  }
+  burnState.missionGoal = idea ? `${idea.title}\n\n${idea.pitch || ''}`.trim() : ''
   burnGo('mission-setup')
 }
 
@@ -158,7 +218,15 @@ function burnHandleClick(e) {
     const [scope, key] = toggle2.getAttribute('data-burn-toggle').split(':')
     if (scope === 'prov') burnState.settingsEnabled[key] = burnState.settingsEnabled[key] === false
     else if (scope === 'notif') burnState.notifs[key] = !burnState.notifs[key]
-    else if (scope === 'app') burnState.app[key] = !burnState.app[key]
+    else if (scope === 'app') {
+      burnState.app[key] = !burnState.app[key]
+      if (key === 'lightMode') {
+        applyBurnTheme(burnState.app.lightMode)
+        // Persist immediately (shared key with the legacy renderer) so the
+        // theme survives relaunch even before the user hits Save.
+        try { localStorage.setItem('maxxtoken-theme', burnState.app.lightMode ? 'light' : 'dark') } catch (e) {}
+      }
+    }
     burnRender()
     return
   }
@@ -168,7 +236,7 @@ function burnHandleClick(e) {
     const key = collapse.getAttribute('data-burn-collapse')
     if (key === 'notifs') burnState.notifsOpen = !burnState.notifsOpen
     else if (key === 'app') burnState.appOpen = !burnState.appOpen
-    // 'updates' head never opens in v1
+    else if (key === 'updates') burnState.updatesOpen = !burnState.updatesOpen
     burnRender()
     return
   }
@@ -176,7 +244,8 @@ function burnHandleClick(e) {
   const action = e.target.closest('[data-burn-action]')
   if (action) {
     const which = action.getAttribute('data-burn-action')
-    if (which === 'pick-folder') burnPickFolder()
+    if (which === 'sync') burnSync()
+    else if (which === 'pick-folder') burnPickFolder()
     else if (which === 'copy-goal') window.maxx?.copyText?.(burnState.missionGoal)
     else if (which === 'start-mission') burnStartMission()
     else if (which === 'reveal-config') window.maxx?.openConfigFile?.()
@@ -186,8 +255,14 @@ function burnHandleClick(e) {
       const val = burnState.cookies[id]
       if (id && val) window.maxx?.setApiKey?.(id, val)?.catch?.(() => {})
     } else if (which === 'save-config') {
-      // Full config persistence pending; close the popover for now.
-      window.maxx?.close?.()
+      burnSaveSettings()
+    } else if (which === 'check-updates') {
+      if (!window.maxx?.checkUpdates) return
+      burnState.update = { ...burnState.update, status: 'checking', error: '' }
+      burnRender()
+      window.maxx.checkUpdates().then(burnUpdateApply).catch(() => {})
+    } else if (which === 'install-update') {
+      window.maxx?.installUpdate?.()
     }
     return
   }
@@ -222,6 +297,92 @@ function burnHandleInput(e) {
   if (cookie) {
     burnState.cookies[cookie.getAttribute('data-burn-cookie')] = cookie.value
   }
+}
+
+// <select> change → update state. No re-render: the native control already
+// shows the new value, and re-rendering would close the dropdown. Values are
+// committed to the config file on Save (burnSaveSettings).
+function burnHandleChange(e) {
+  const sel = e.target.closest('[data-burn-select]')
+  if (!sel) return
+  const key = sel.getAttribute('data-burn-select')
+  if (key.startsWith('warn:')) {
+    burnState.provAlert[key.slice(5)] = sel.value
+  } else {
+    burnState.cfg[key] = sel.value
+  }
+  burnState.justSaved = false
+}
+
+// Merge the Settings UI state into the full config object and persist via IPC.
+// Starts from burnState.config (the complete config from getConfig) so we never
+// drop fields the UI doesn't surface. saveConfig persists + applies login item +
+// updates the tray, and returns a fresh snapshot.
+async function burnSaveSettings() {
+  if (!window.maxx?.saveConfig) {
+    window.maxx?.close?.()
+    return
+  }
+  const base = burnState.config || {}
+  const order = burnSettingsProviders(burnState).map((p) => p.id)
+  const providers = { ...(base.providers || {}) }
+  for (const id of order) {
+    const warn = burnState.provAlert[id] || 'inherit'
+    providers[id] = {
+      ...providers[id],
+      enabled: burnState.settingsEnabled[id] !== false,
+      alertsEnabled: warn === 'off' ? false : undefined,
+      alertReservePct: warn === 'inherit' || warn === 'off' ? undefined : Number(warn),
+    }
+  }
+  const cfg = burnState.cfg || {}
+  const toThresholds = (s) => String(s || '50,20').split(',').map((n) => Number(n)).filter((n) => Number.isFinite(n))
+  const sessionThr = toThresholds(cfg.sessionThreshold)
+  const weeklyThr = toThresholds(cfg.weeklyThreshold)
+  const merged = {
+    ...base,
+    openAtLogin: burnState.app.openAtLogin !== false,
+    missions: !!burnState.notifs.ideas,
+    maxxAlertsEnabled: !!burnState.notifs.alerts,
+    sessionQuotaNotificationsEnabled: !!burnState.notifs.restored,
+    quotaWarningNotificationsEnabled: !!burnState.notifs.quota,
+    maxxAlertHours: Number(cfg.alertHours) || 48,
+    maxxAlertReservePct: Number(cfg.alertReservePct) || 25,
+    quotaWarningThresholds: sessionThr,
+    quotaWarningSessionThresholds: sessionThr,
+    quotaWarningWeeklyThresholds: weeklyThr,
+    trayMetric: cfg.trayMetric || 'left',
+    tokenHistoryDays: Number(cfg.tokenHistoryDays) || 30,
+    providerOrder: order,
+    providers,
+  }
+  try {
+    const snap = await window.maxx.saveConfig(merged)
+    if (window.maxx.getConfig) burnState.config = await window.maxx.getConfig()
+    burnState.justSaved = true
+    if (snap && snap.providers) burnApplySnapshot(snap)
+    else burnRender()
+    setTimeout(() => {
+      burnState.justSaved = false
+      if (burnState.screen === 'settings') burnRender()
+    }, 1600)
+  } catch (err) {
+    console.error('[burn] saveConfig failed', err)
+  }
+}
+
+// Fold a main-process update-status object into state + re-render Settings.
+// Shape: { status, version, percent, error }.
+function burnUpdateApply(s) {
+  if (!s) return
+  const v = s.version || s.currentVersion
+  if (v) burnState.version = String(v).startsWith('v') ? String(v) : `v${v}`
+  burnState.update = {
+    status: s.status || 'idle',
+    percent: Number(s.percent) || 0,
+    error: s.error || '',
+  }
+  if (burnState.screen === 'settings') burnRender()
 }
 
 // Drag-reorder for settings provider rows. Re-attached after each render.
@@ -291,17 +452,67 @@ async function burnInit() {
 
   burnRoot.addEventListener('click', burnHandleClick)
   burnRoot.addEventListener('input', burnHandleInput)
+  burnRoot.addEventListener('change', burnHandleChange)
+  // Restore the persisted theme (shared key with the legacy renderer).
+  try { burnState.app.lightMode = localStorage.getItem('maxxtoken-theme') === 'light' } catch (e) {}
+  applyBurnTheme(burnState.app.lightMode)
   burnRender()
 
   if (window.maxx?.getUpdateStatus) {
-    window.maxx
-      .getUpdateStatus()
-      .then((s) => {
-        const v = s?.version || s?.currentVersion
-        if (v) {
-          burnState.version = v.startsWith('v') ? v : `v${v}`
-          if (burnState.screen === 'settings') burnRender()
+    window.maxx.getUpdateStatus().then(burnUpdateApply).catch(() => {})
+  }
+  // Live push: download progress + "ready" arrive without a manual check.
+  if (window.maxx?.onUpdateStatus) window.maxx.onUpdateStatus(burnUpdateApply)
+
+  // Config drives the full Settings provider list (every configured provider,
+  // not just the detected ones).
+  if (window.maxx?.getConfig) {
+    try {
+      burnState.config = await window.maxx.getConfig()
+      const c = burnState.config || {}
+      const provs = c.providers || {}
+      for (const id in provs) {
+        if (burnState.settingsEnabled[id] === undefined) {
+          burnState.settingsEnabled[id] = provs[id]?.enabled !== false
         }
+        // Per-provider warn floor → dropdown value.
+        const p = provs[id] || {}
+        burnState.provAlert[id] =
+          p.alertsEnabled === false ? 'off' : p.alertReservePct ? String(p.alertReservePct) : 'inherit'
+      }
+      // Hydrate scalar settings + notif toggles from the config file so the
+      // dropdowns/switches show the real saved state.
+      const thr = (raw) => {
+        const v = (Array.isArray(raw) ? raw : [50, 20]).map(Number).filter(Number.isFinite)
+        const key = [...new Set(v)].sort((a, b) => b - a).slice(0, 2).join(',')
+        return ['50,20', '40,15', '25,10', '20,0'].includes(key) ? key : '50,20'
+      }
+      burnState.cfg = {
+        trayMetric: c.trayMetric || 'left',
+        tokenHistoryDays: String(c.tokenHistoryDays || 30),
+        sessionThreshold: thr(c.quotaWarningSessionThresholds || c.quotaWarningThresholds),
+        weeklyThreshold: thr(c.quotaWarningWeeklyThresholds || c.quotaWarningThresholds),
+        alertHours: String(c.maxxAlertHours || 48),
+        alertReservePct: String(c.maxxAlertReservePct || 25),
+      }
+      burnState.notifs = {
+        ideas: c.missions === true,
+        alerts: c.maxxAlertsEnabled !== false,
+        restored: c.sessionQuotaNotificationsEnabled !== false,
+        quota: c.quotaWarningNotificationsEnabled === true,
+      }
+      burnState.app.openAtLogin = c.openAtLogin !== false
+      if (burnState.screen === 'settings') burnRender()
+    } catch (err) {
+      console.error('[burn] getConfig failed', err)
+    }
+  }
+  if (window.maxx?.getApiKeyState) {
+    window.maxx
+      .getApiKeyState()
+      .then((s) => {
+        burnState.apiKeyState = s || {}
+        if (burnState.screen === 'settings') burnRender()
       })
       .catch(() => {})
   }

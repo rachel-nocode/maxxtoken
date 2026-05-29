@@ -179,8 +179,8 @@ function burnAdaptFooter(snap) {
   const spent = totals.spent ?? totals.captured ?? 0
   const left = totals.left ?? totals.remaining ?? 0
   return [
-    { l: 'SPENT', v: burnFormatUsd(spent), color: BURN.lime },
-    { l: 'LEFT', v: burnFormatUsd(left), color: BURN.warn },
-    { l: 'SYNC', v: burnFormatSync(snap?.generatedAt), color: BURN.text },
+    { l: 'SPENT', v: burnFormatUsd(spent), tone: 'lime' },
+    { l: 'LEFT', v: burnFormatUsd(left), tone: 'warn' },
+    { l: 'SYNC', v: burnFormatSync(snap?.generatedAt), tone: 'text', action: 'sync' },
   ]
 }
