@@ -27,6 +27,7 @@
       "renderer.js",
       "index.html",
       "styles.css",
+      "burn/**/*",
       "assets/**/*",
       "bin/**/*",
       "lib/**/*",
