@@ -526,7 +526,9 @@ async function burnInit() {
   // its state while merely hidden, so without this a subpage would persist.
   if (window.maxx?.onPopoverShown) {
     window.maxx.onPopoverShown(() => {
-      if (burnState.screen !== 'home') burnGo('home')
+      // Preserve an in-progress mission setup (folder/models/goal the user is
+      // mid-entry on); otherwise return to the home/usage screen.
+      if (burnState.screen !== 'home' && burnState.screen !== 'mission-setup') burnGo('home')
     })
   }
 

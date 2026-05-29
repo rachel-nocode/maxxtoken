@@ -170,6 +170,9 @@ function burnHomeOrder(state) {
   for (const id of state.config?.providerOrder || []) if (!seen.has(id)) { seen.add(id); order.push(id) }
   const rank = new Map(order.map((id, i) => [id, i]))
   return (state.providers || [])
+    // Same tier gate as Settings — never surface a provider on Home that the
+    // user can't find/manage in Settings (e.g. an enabled hidden-tier provider).
+    .filter((p) => burnProviderVisibleById(state, p.id))
     .map((p, i) => ({ p, i }))
     .sort((a, b) => {
       const ra = rank.has(a.p.id) ? rank.get(a.p.id) : Infinity

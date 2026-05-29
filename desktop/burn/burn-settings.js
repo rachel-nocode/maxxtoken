@@ -35,13 +35,8 @@ function burnCookiePlaceholder(id) {
   return 'API key (sk-...)'
 }
 
-// Only list providers in a visible tier (phase 1: 'core'). Mirrors
-// VISIBLE_PROVIDER_TIERS / isVisibleProvider in renderer.js. Missing tier → 'core'
-// so legacy configs never blank out.
-const BURN_VISIBLE_TIERS = new Set(['core'])
-function burnProviderVisible(p) {
-  return BURN_VISIBLE_TIERS.has((p && p.tier) || 'core')
-}
+// Provider visibility (burnProviderVisible) lives in burn-primitives.js — the
+// single tier gate shared by Home and Settings.
 
 // Provider drag order: user override → config.providerOrder → config insertion.
 function burnProviderOrder(state) {
