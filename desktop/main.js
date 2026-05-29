@@ -16,6 +16,7 @@ const { canonicalProviderId } = require('./lib/provider-ids')
 const widgetSnapshot = require('./lib/widget-snapshot')
 const { trayTitleFromSnapshot } = require('./lib/tray-title')
 const { buildUsageExport } = require('./lib/usage-export')
+const localApi = require('./lib/local-api')
 const logger = require('./lib/logger')
 logger.init(app.getPath('userData'))
 process.on('uncaughtException', (err) => logger.error('main', 'uncaught exception', { error: err && err.stack ? err.stack : String(err) }))
@@ -611,6 +612,12 @@ ipcMain.on('open-debug-log', () => {
   if (p) shell.showItemInFolder(p)
 })
 ipcMain.on('open-site', () => shell.openExternal('https://maxxtoken.app'))
+ipcMain.handle('open-external', (_e, url) => {
+  // Only allow well-formed http(s) URLs — never shell-open arbitrary schemes.
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) throw new Error('Invalid external URL')
+  shell.openExternal(url)
+  return { ok: true }
+})
 ipcMain.handle('open-provider-link', (_e, payload) => {
   const url = providerLinks.linkForProvider(payload && payload.id, payload && payload.kind)
   if (!url) throw new Error('Unknown provider link')
@@ -1181,6 +1188,12 @@ if (!gotSingleInstanceLock) {
     createPopover()
     createTray()
     refreshTimer = setInterval(() => syncSnapshot({ force: true }).catch(() => {}), REFRESH_INTERVAL_MS)
+    localApi.startLocalApi({
+      port: loadConfig().localApiPort,
+      getSnapshot: () => lastSnapshot,
+      requestRefresh: () => { syncSnapshot({ force: true }).catch(() => {}) },
+      logger,
+    })
     setupAutoUpdate()
   })
 }
@@ -1188,6 +1201,7 @@ if (!gotSingleInstanceLock) {
 app.on('before-quit', () => {
   clearInterval(refreshTimer)
   clearInterval(updateTimer)
+  localApi.stopLocalApi()
   for (const child of activeSnapshotWorkers) {
     try { child.kill() } catch {}
   }

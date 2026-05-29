@@ -563,6 +563,45 @@ function providerStatusPanel(status) {
     </div>`
 }
 
+// Short, glanceable label for an active provider incident.
+const INCIDENT_LABEL = {
+  minor: 'Degraded',
+  major: 'Outage',
+  critical: 'Critical',
+  maintenance: 'Maintenance',
+}
+
+// Only minor/major/critical/maintenance are "active" incidents worth a badge.
+// 'none' (operational) and 'unknown' (status page unreachable) stay silent.
+function isActiveIncident(status) {
+  return !!status && Object.prototype.hasOwnProperty.call(INCIDENT_LABEL, status.indicator)
+}
+
+// A clickable incident pill rendered next to the provider name when its status
+// page reports a live issue. Opens the provider status page (reuses the
+// data-provider-link handler). Full detail lives in the tooltip.
+function providerIncidentBadge(p) {
+  const status = p.status
+  if (!isActiveIncident(status)) return ''
+  const label = INCIDENT_LABEL[status.indicator]
+  const detail = [status.label || label]
+  if (status.description) detail.push(status.description)
+  if (status.updatedAt) detail.push(`updated ${syncAge(status.updatedAt)}`)
+  return `
+    <button class="prov-incident ${h(status.indicator)}" data-provider-id="${h(p.id)}" data-provider-link="status" aria-label="${h(p.name)} status: ${h(detail.join(' — '))}" title="${h(detail.join(' — '))}">
+      ${h(label)}
+    </button>`
+}
+
+// "Why is this number old?" — the tooltip text behind the activity dot.
+function freshnessHint(p) {
+  const base = p.lastUpdatedAt ? `Updated ${syncAge(p.lastUpdatedAt)}` : 'No successful update yet'
+  if (p.error) return `${base}. Last refresh failed: ${p.error}`
+  if (p.activity === 'stale') return `${base}. No new ${p.name} activity since — showing last known usage.`
+  if (p.activity === 'live') return `${base}. Live — recently active.`
+  return `${base}.`
+}
+
 function providerActions(p) {
   const links = p.links || {}
   const actions = [
@@ -1099,15 +1138,20 @@ function providerCard(p) {
         </button>`
     : ''
 
+  const stale = p.activity === 'stale' && !p.error
+  const incidentBadge = providerIncidentBadge(p)
+  const statusPanel = expanded && isActiveIncident(p.status) ? providerStatusPanel(p.status) : ''
+
   return `
-    <div class="prov ${expanded ? 'open' : ''} ${p.urgent ? 'urgent' : ''}" style="--accent:${accent}">
+    <div class="prov ${expanded ? 'open' : ''} ${p.urgent ? 'urgent' : ''} ${stale ? 'stale' : ''}" style="--accent:${accent}">
       <div class="prov-top">
         ${providerIcon(p.id, glyph)}
         <span class="prov-id">
           <span class="prov-name">${h(p.name)}</span>
           <span class="prov-sub">
-            <span class="activity-dot ${p.activity}"></span>
+            <span class="prov-fresh" title="${h(freshnessHint(p))}"><span class="activity-dot ${p.activity}"></span></span>
             <span class="prov-plan">${h(p.plan)}</span>
+            ${incidentBadge}
           </span>
         </span>
         <span class="prov-pct">
@@ -1122,6 +1166,7 @@ function providerCard(p) {
       </div>
       ${expanded ? (hasWindows ? '' : summaryMeter) : collapsedMeters}
       ${body}
+      ${statusPanel}
       ${expandedTokenDetails}
       ${saveMode}
     </div>`

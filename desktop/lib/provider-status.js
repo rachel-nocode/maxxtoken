@@ -10,6 +10,7 @@ const STATUSPAGE_URLS = {
   cursor: 'https://status.cursor.com',
   copilot: 'https://www.githubstatus.com',
   factory: 'https://status.factory.ai',
+  windsurf: 'https://status.windsurf.com',
 }
 
 const WORKSPACE_PRODUCTS = {

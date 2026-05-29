@@ -7,11 +7,19 @@
 const BURN_UI = true
 
 const burnState = {
-  screen: 'home', // 'home' | 'missions' | 'mission-setup' | 'settings'
+  screen: 'home', // 'home' | 'missions' | 'mission-setup' | 'settings' | 'optimize'
   expandedId: null,
   providers: [],
   footer: null,
   syncing: false,
+  // optimize (signals derived from the raw snapshot by window.OptimizeDetect)
+  lastSnap: null,
+  optimizeModel: null,
+  optFilter: 'ALL',
+  optExpanded: {}, // signalId -> true (multiple cards open at once)
+  optStore: {}, // signalId -> { snoozedUntil?, dismissedAt?, metricValue? } (persisted)
+  optDrillOpen: {}, // providerId -> true (agentic session drill-down expanded)
+  optDrillDay: {}, // providerId -> dayKey (which day's detail is open)
   // mission-setup form
   missionModels: {},
   missionFolder: null, // display basename
@@ -68,6 +76,8 @@ function burnScreenHtml() {
       return burnRenderMissionSetup(burnState)
     case 'settings':
       return burnRenderSettings(burnState)
+    case 'optimize':
+      return burnRenderOptimize(burnState)
     case 'home':
     default:
       return burnRenderHome(burnState)
@@ -114,7 +124,56 @@ async function burnLoadIdeas() {
 function burnApplySnapshot(snap) {
   burnState.providers = burnAdaptProviders(snap)
   burnState.footer = burnAdaptFooter(snap)
+  burnComputeOptimize(snap)
   burnRender()
+}
+
+// Derive Optimize signals from the raw snapshot (no new data pipe). Pure +
+// defensive: any failure leaves the panel empty rather than breaking Burn.
+function burnComputeOptimize(snap) {
+  burnState.lastSnap = snap
+  try {
+    if (window.OptimizeDetect) burnState.optimizeModel = window.OptimizeDetect.buildOptimizeModel(snap)
+  } catch (err) {
+    console.error('[burn] optimize detect failed', err)
+    burnState.optimizeModel = null
+  }
+}
+
+const BURN_OPT_STORE_KEY = 'maxxtoken-optimize-state'
+
+// Load persisted snooze/dismiss records (durable across restarts, like theme).
+function burnOptLoadStore() {
+  try {
+    const raw = localStorage.getItem(BURN_OPT_STORE_KEY)
+    burnState.optStore = raw ? JSON.parse(raw) : {}
+  } catch (e) {
+    burnState.optStore = {}
+  }
+}
+
+function burnOptSaveStore() {
+  try {
+    localStorage.setItem(BURN_OPT_STORE_KEY, JSON.stringify(burnState.optStore || {}))
+  } catch (e) {}
+}
+
+function burnOptFindSignal(id) {
+  const sigs = burnState.optimizeModel && burnState.optimizeModel.signals
+  return Array.isArray(sigs) ? sigs.find((s) => s.id === id) || null : null
+}
+
+// Primary card action → open the relevant external page (caching docs or the
+// provider dashboard). Spec'd per-kind in optimize-detect (signal.action).
+function burnOptPrimaryAction(sig) {
+  const a = sig && sig.action
+  if (!a) return
+  try {
+    if (a.type === 'external' && a.url) window.maxx?.openExternal?.(a.url)
+    else if (a.type === 'providerLink') window.maxx?.openProviderLink?.(sig.provider, a.kind || 'dashboard')
+  } catch (err) {
+    console.error('[burn] optimize primary action failed', err)
+  }
 }
 
 // SYNC tile: force a fresh detection of every provider. Fresh data also
@@ -261,6 +320,79 @@ function burnHandleClick(e) {
       window.maxx.checkUpdates().then(burnUpdateApply).catch(() => {})
     } else if (which === 'install-update') {
       window.maxx?.installUpdate?.()
+    } else if (which === 'opt-rescan') {
+      // Re-read the last snapshot (no new collection) and re-detect.
+      if (burnState.lastSnap) burnComputeOptimize(burnState.lastSnap)
+      burnRender()
+    }
+    return
+  }
+
+  // Optimize: provider filter chip.
+  const optFilter = e.target.closest('[data-burn-opt-filter]')
+  if (optFilter) {
+    burnState.optFilter = optFilter.getAttribute('data-burn-opt-filter')
+    burnRender()
+    return
+  }
+
+  // Optimize: agentic session drill-down — toggle a provider's day list.
+  const optDrill = e.target.closest('[data-burn-opt-drill]')
+  if (optDrill) {
+    const id = optDrill.getAttribute('data-burn-opt-drill')
+    burnState.optDrillOpen[id] = !burnState.optDrillOpen[id]
+    burnRender()
+    return
+  }
+
+  // Optimize: select a day inside a provider's drill-down (toggles its detail).
+  const optDay = e.target.closest('[data-burn-opt-day]')
+  if (optDay) {
+    const raw = optDay.getAttribute('data-burn-opt-day')
+    const i = raw.indexOf(':')
+    const pid = raw.slice(0, i)
+    const day = raw.slice(i + 1)
+    burnState.optDrillDay[pid] = burnState.optDrillDay[pid] === day ? null : day
+    burnRender()
+    return
+  }
+
+  // Optimize: card expand/collapse (multiple open at once — it's a dashboard).
+  const optCardEl = e.target.closest('[data-burn-opt-card]')
+  if (optCardEl) {
+    const id = optCardEl.getAttribute('data-burn-opt-card')
+    burnState.optExpanded[id] = !burnState.optExpanded[id]
+    burnRender()
+    return
+  }
+
+  // Optimize: card actions (primary / snooze / dismiss). Snooze + dismiss hide
+  // the signal for the session (durable persistence is a later step).
+  const optAction = e.target.closest('[data-burn-opt-action]')
+  if (optAction) {
+    // Split on the FIRST colon only — signal ids contain colons (e.g.
+    // "codex:cache"), so a plain split() would mangle the id.
+    const raw = optAction.getAttribute('data-burn-opt-action')
+    const idx = raw.indexOf(':')
+    const kind = raw.slice(0, idx)
+    const id = raw.slice(idx + 1)
+    const sig = burnOptFindSignal(id)
+    if (kind === 'snooze') {
+      const days = window.OptimizeDetect?.CONFIG?.snoozeDays || 30
+      burnState.optStore[id] = { ...(burnState.optStore[id] || {}), snoozedUntil: Date.now() + days * 86400000 }
+      burnOptSaveStore()
+      burnRender()
+    } else if (kind === 'dismiss') {
+      // Store the metric at dismiss time so we only resurface when it moves.
+      burnState.optStore[id] = {
+        ...(burnState.optStore[id] || {}),
+        dismissedAt: Date.now(),
+        metricValue: sig ? sig.metricValue : null,
+      }
+      burnOptSaveStore()
+      burnRender()
+    } else if (kind === 'primary') {
+      burnOptPrimaryAction(sig)
     }
     return
   }
@@ -460,6 +592,7 @@ async function burnInit() {
   burnRoot.addEventListener('change', burnHandleChange)
   // Restore the persisted theme (shared key with the legacy renderer).
   try { burnState.app.lightMode = localStorage.getItem('maxxtoken-theme') === 'light' } catch (e) {}
+  burnOptLoadStore()
   applyBurnTheme(burnState.app.lightMode)
   burnRender()
 

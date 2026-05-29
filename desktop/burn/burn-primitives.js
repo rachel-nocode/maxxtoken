@@ -63,7 +63,7 @@ function burnBtnStyle(active) {
 }
 
 // The 48pt header. Home mode (wordmark) when no backLabel; subpage mode otherwise.
-function burnHeader({ title = 'BURN', backLabel = '', diamondActive = false, settingsActive = false }) {
+function burnHeader({ title = 'BURN', backLabel = '', diamondActive = false, settingsActive = false, optimizeActive = false, hasSignals = false }) {
   let left
   if (backLabel) {
     const backBtn =
@@ -110,6 +110,26 @@ function burnHeader({ title = 'BURN', backLabel = '', diamondActive = false, set
       })}">${tile}${wordmark}</button>`
   }
 
+  // Optimize entry — sliders glyph, always lime so it reads as the primary
+  // money-saving affordance (per optimize-handoff/ENTRYPOINT.md). Fresh-signal
+  // dot pinned top-right when there's at least one un-actioned signal.
+  const optimizeDot = hasSignals
+    ? `<span style="${bstyle({
+        position: 'absolute',
+        top: -3,
+        right: -3,
+        width: 7,
+        height: 7,
+        borderRadius: 7,
+        background: BURN.lime,
+        boxShadow: `0 0 6px ${BURN.lime}`,
+      })}"></span>`
+    : ''
+  const optimize =
+    `<span style="${bstyle({ position: 'relative', display: 'inline-flex' })}">` +
+    `<button type="button" data-burn-nav="optimize" aria-label="Optimize" style="${burnBtnStyle(true)}">${burnIcon('sliders', 14, BURN.limeText)}</button>` +
+    optimizeDot +
+    `</span>`
   const diamond =
     `<button type="button" data-burn-nav="missions" aria-label="Missions" style="${burnBtnStyle(diamondActive)}">${burnDiamondGlyph(11)}</button>`
   const gear =
@@ -122,7 +142,7 @@ function burnHeader({ title = 'BURN', backLabel = '', diamondActive = false, set
       gap: 10,
       padding: '11px 14px',
       borderBottom: `1px solid ${BURN.border}`,
-    })}">${left}<span style="${bstyle({ flex: 1 })}"></span>${diamond}${gear}</div>`
+    })}">${left}<span style="${bstyle({ flex: 1 })}"></span>${optimize}${diamond}${gear}</div>`
   )
 }
 

@@ -1,5 +1,8 @@
 const { getKey } = require('../secrets')
 const { fetchWithTimeout } = require('../http')
+const { readCookieHeader } = require('../browser-cookies')
+
+const COOKIE_HOSTS = ['perplexity.ai']
 
 const ENDPOINT = 'https://www.perplexity.ai/rest/billing/credits?version=2.18&source=default'
 const COOKIE_NAMES = [
@@ -80,11 +83,23 @@ function cookieCandidates(raw) {
   return out
 }
 
-function resolveCandidates() {
+function resolveCandidates(options = {}) {
   const saved = getKey('perplexity')
   const envCookie = process.env.PERPLEXITY_COOKIE || process.env.perplexity_cookie
   const envToken = process.env.PERPLEXITY_SESSION_TOKEN || process.env.perplexity_session_token
-  return [...cookieCandidates(saved), ...cookieCandidates(envCookie), ...cookieCandidates(envToken)].filter(
+  // Zero-paste fallback: pull the session cookie from a logged-in browser.
+  const browser = readCookieHeader({
+    hosts: COOKIE_HOSTS,
+    cookieNames: COOKIE_NAMES,
+    home: options.home,
+    files: options.browserCookieFiles,
+  })
+  return [
+    ...cookieCandidates(saved),
+    ...cookieCandidates(envCookie),
+    ...cookieCandidates(envToken),
+    ...cookieCandidates(browser),
+  ].filter(
     (item, index, all) => item.token && all.findIndex((other) => other.name === item.name && other.token === item.token) === index,
   )
 }

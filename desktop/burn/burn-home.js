@@ -190,7 +190,7 @@ function burnRenderHome(state) {
     .join('')
 
   return (
-    burnHeader({ title: 'BURN' }) +
+    burnHeader({ title: 'BURN', hasSignals: typeof optHasSignals === 'function' && optHasSignals(state) }) +
     burnLiveStrip({ streams: providers.length, burning }) +
     `<div class="burn-body" style="${bstyle({ flex: 1, overflowY: 'auto' })}">${rows}</div>` +
     burnFooter({ items: state.footer, syncing: state.syncing })

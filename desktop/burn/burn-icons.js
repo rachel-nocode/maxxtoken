@@ -24,6 +24,11 @@ const BURN_ICON_PATHS = {
   plus: '<line x1="7" y1="2.5" x2="7" y2="11.5" /><line x1="2.5" y1="7" x2="11.5" y2="7" />',
   'arrow-up-right': '<line x1="3" y1="11" x2="11" y2="3" /><polyline points="5,3 11,3 11,9" />',
   diamond: '<polygon points="7,1.5 12.5,7 7,12.5 1.5,7" />',
+  // Optimize entry glyph — three sliders with offset handles.
+  sliders:
+    '<line x1="2" y1="3.5" x2="12" y2="3.5" /><line x1="2" y1="7" x2="12" y2="7" /><line x1="2" y1="10.5" x2="12" y2="10.5" />' +
+    '<rect x="3.4" y="2.2" width="2.4" height="2.6" /><rect x="8.2" y="5.7" width="2.4" height="2.6" /><rect x="5" y="9.2" width="2.4" height="2.6" />',
+  check: '<polyline points="2.5,7.5 5.5,10.5 11.5,3.5" />',
 }
 
 // Per-icon overrides (viewBox / stroke). Default: 14×14, 1.4 square/miter.
