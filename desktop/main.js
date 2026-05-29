@@ -596,6 +596,12 @@ ipcMain.on('open-debug-log', () => {
   if (p) shell.showItemInFolder(p)
 })
 ipcMain.on('open-site', () => shell.openExternal('https://maxxtoken.app'))
+ipcMain.handle('open-external', (_e, url) => {
+  // Only allow well-formed http(s) URLs — never shell-open arbitrary schemes.
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) throw new Error('Invalid external URL')
+  shell.openExternal(url)
+  return { ok: true }
+})
 ipcMain.handle('open-provider-link', (_e, payload) => {
   const url = providerLinks.linkForProvider(payload && payload.id, payload && payload.kind)
   if (!url) throw new Error('Unknown provider link')
