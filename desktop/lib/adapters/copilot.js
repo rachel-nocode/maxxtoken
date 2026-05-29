@@ -1,7 +1,25 @@
 const { getKey } = require('../secrets')
+const { readLocalCopilotToken } = require('../copilot-auth')
 const { fetchWithTimeout } = require('../http')
 
 const USAGE_URL = 'https://api.github.com/copilot_internal/user'
+
+// Cache the locally-discovered token so we don't re-read files / spawn `gh`
+// on every snapshot. Short TTL keeps it fresh after a re-login.
+const LOCAL_TOKEN_TTL_MS = 5 * 60 * 1000
+let localTokenCache = { token: null, at: 0 }
+
+function localToken(now = Date.now()) {
+  if (now - localTokenCache.at < LOCAL_TOKEN_TTL_MS) return localTokenCache.token
+  let token = null
+  try {
+    token = readLocalCopilotToken()
+  } catch {
+    token = null
+  }
+  localTokenCache = { token: token || null, at: now }
+  return localTokenCache.token
+}
 
 function num(value) {
   const n = Number(value)
@@ -96,7 +114,8 @@ function parseUsage(body) {
 }
 
 async function read() {
-  const token = getKey('copilot')
+  // Saved key wins; otherwise reuse a token already on disk (Copilot plugin or gh).
+  const token = getKey('copilot') || localToken()
   if (!token) return { connected: false, needsKey: true }
 
   try {

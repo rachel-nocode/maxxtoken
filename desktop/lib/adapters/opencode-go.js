@@ -1,6 +1,9 @@
 const crypto = require('crypto')
 const { getKey } = require('../secrets')
 const { fetchWithTimeout } = require('../http')
+const { readCookieHeader } = require('../browser-cookies')
+
+const COOKIE_HOSTS = ['opencode.ai']
 
 const BASE = 'https://opencode.ai'
 const SERVER_URL = `${BASE}/_server`
@@ -337,8 +340,24 @@ async function fetchWorkspaceID(cookie) {
   return ids[0]
 }
 
-async function read() {
-  const cookie = cookieHeader(getKey('opencodego'))
+// saved paste -> env -> local browser session (zero-paste). The browser header
+// is filtered by cookieHeader() down to the auth/__Host-auth cookies the API needs.
+function resolveCookie(options = {}) {
+  const saved = cookieHeader(options.savedKey ?? getKey('opencodego'))
+  if (saved) return saved
+  const env = cookieHeader(process.env.OPENCODE_COOKIE || process.env.OPENCODE_GO_COOKIE)
+  if (env) return env
+  const browser = cookieHeader(readCookieHeader({
+    hosts: COOKIE_HOSTS,
+    cookieNames: [...COOKIE_NAMES],
+    home: options.home,
+    files: options.browserCookieFiles,
+  }))
+  return browser || null
+}
+
+async function read(options = {}) {
+  const cookie = resolveCookie(options)
   if (!cookie) return { connected: false, needsKey: true }
 
   try {
@@ -356,6 +375,7 @@ module.exports = {
   read,
   _private: {
     cookieHeader,
+    resolveCookie,
     normalizeWorkspaceID,
     parseWorkspaceIDs,
     parseSubscription,

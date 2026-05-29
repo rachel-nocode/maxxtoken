@@ -4,6 +4,7 @@ const path = require('path')
 const { execFileSync } = require('child_process')
 const windsurf = require('./adapters/windsurf')
 const cursor = require('./adapters/cursor')
+const copilotAuth = require('./copilot-auth')
 
 function shQuote(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'"
@@ -201,6 +202,9 @@ function detectLocalProviders(options = {}) {
     path.join(home, 'Library', 'Application Support', 'GitHub Copilot'),
   ], fsImpl)
   if (copilotEvidence) mark(out, 'copilot', 'Copilot local data found', copilotEvidence)
+  else if (copilotAuth.readLocalCopilotToken({ home, env, fs: fsImpl, execFileSync: execImpl })) {
+    mark(out, 'copilot', 'GitHub CLI token found', 'gh auth')
+  }
 
   const windsurfBrowserSession = windsurf._private.importBrowserSessions({ home, fs: fsImpl })[0]
   if (windsurfBrowserSession) mark(out, 'windsurf', 'Windsurf browser session found', windsurfBrowserSession.sourceLabel)
