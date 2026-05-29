@@ -338,6 +338,53 @@ body {
   background: #d9a441;
 }
 
+/* Freshness affordance — hovering the activity dot explains how old the number is. */
+.prov-fresh {
+  display: inline-flex;
+  align-items: center;
+  cursor: help;
+}
+
+/* Stale-data dimming: de-emphasize a row whose number is no longer fresh.
+   Hovering restores full opacity so the user can still read it clearly. */
+.prov.stale {
+  opacity: 0.6;
+  transition: opacity 0.12s ease;
+}
+.prov.stale:hover {
+  opacity: 1;
+}
+
+/* Live incident badge next to the provider name. */
+.prov-incident {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft, var(--line));
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  line-height: 1.4;
+  cursor: pointer;
+  background: transparent;
+}
+.prov-incident.minor,
+.prov-incident.maintenance {
+  color: var(--yellow);
+  border-color: color-mix(in srgb, var(--yellow) 40%, transparent);
+  background: color-mix(in srgb, var(--yellow) 12%, transparent);
+}
+.prov-incident.major,
+.prov-incident.critical {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, transparent);
+  background: var(--red-bg);
+}
+.prov-incident:hover {
+  filter: brightness(1.15);
+}
+
 .prov-pct {
   text-align: right;
   min-width: 50px;
