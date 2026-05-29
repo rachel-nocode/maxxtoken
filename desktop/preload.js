@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('maxx', {
   openDebugLog: () => ipcRenderer.send('open-debug-log'),
   openSite: () => ipcRenderer.send('open-site'),
   openProviderLink: (id, kind) => ipcRenderer.invoke('open-provider-link', { id, kind }),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
   forgeIdeas: () => ipcRenderer.invoke('forge-ideas'),
   forgeFeedback: (payload) => ipcRenderer.invoke('forge-feedback', payload),
   forgeStart: (idea) => ipcRenderer.invoke('forge-start', idea),

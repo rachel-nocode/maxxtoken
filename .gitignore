@@ -39,6 +39,9 @@ desktop/node_modules/
 desktop/debug.log
 debug.log
 
+# Optimize preview — embeds a live usage snapshot, local only
+desktop/optimize-preview.html
+
 # Ad-hoc screenshots — not source
 maxxtoken-desktop*.png
 maxxtoken-mobile*.png
