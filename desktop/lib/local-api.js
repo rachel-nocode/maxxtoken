@@ -2,12 +2,15 @@
 // loopback-only HTTP server so statuslines, scripts, and tmux can read live
 // usage without IPC or the Electron renderer.
 //
-//   GET /v1/usage             -> full snapshot JSON
+//   GET /v1/usage             -> sanitized usage snapshot (no PII)
 //   GET /v1/usage/:provider   -> single provider object (id is canonicalized)
 //   GET /v1/health            -> { ok, hasSnapshot, generatedAt }
 //
-// Read-only by design: only GET is allowed, the server binds to 127.0.0.1, and
-// any non-loopback peer is rejected. No mutation endpoints exist.
+// Read-only and not browser-reachable by design: only GET is allowed, the
+// server binds to 127.0.0.1, non-loopback peers are rejected, non-loopback Host
+// headers (DNS rebinding) are rejected, and no Access-Control-Allow-Origin is
+// sent. The payload is whitelisted to usage numbers — account emails and other
+// PII in the raw snapshot are stripped before serving. No mutation endpoints.
 
 const http = require('http')
 const { canonicalProviderId } = require('./provider-ids')
@@ -25,13 +28,100 @@ function isLoopback(address) {
 
 function sendJson(res, status, body) {
   const payload = JSON.stringify(body, null, 2)
+  // No Access-Control-Allow-Origin: this endpoint must NOT be readable from a
+  // web page. Consumers are local processes (curl, tmux, statusline scripts),
+  // not browsers — they don't need CORS, and granting it would let any site the
+  // user visits read their usage data cross-origin.
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(payload),
     'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': '*',
   })
   res.end(payload)
+}
+
+// Reject any request whose Host header isn't a loopback literal. The socket is
+// already loopback-bound, but a malicious page can DNS-rebind its own hostname
+// to 127.0.0.1; that request arrives on the loopback socket yet carries the
+// attacker's Host. Browsers always send Host, so an empty Host means a non-
+// browser client and is allowed.
+function isAllowedHost(hostHeader, port) {
+  const host = String(hostHeader || '').toLowerCase()
+  if (!host) return true
+  return host === `127.0.0.1:${port}` || host === `localhost:${port}` || host === `[::1]:${port}`
+}
+
+// Whitelist of provider fields safe to expose. Deliberately omits PII/secret-
+// adjacent fields (extra[], accountEmail, cookieName, links, etc.) — the API
+// serves usage numbers, not account identity.
+function publicProvider(p) {
+  if (!p || typeof p !== 'object') return null
+  return {
+    id: p.id,
+    name: p.name ?? null,
+    plan: p.plan ?? null,
+    connected: !!p.connected,
+    activity: p.activity ?? null,
+    urgent: !!p.urgent,
+    lastUpdatedAt: p.lastUpdatedAt ?? null,
+    capturedPct: p.capturedPct ?? null,
+    remainingPct: p.remainingPct ?? null,
+    totalValue: p.totalValue ?? null,
+    spentValue: p.spentValue ?? null,
+    leftValue: p.leftValue ?? null,
+    usageLabel: p.usageLabel ?? null,
+    valueUnit: p.valueUnit ?? null,
+    resetAt: p.resetAt ?? null,
+    resetKind: p.resetKind ?? null,
+    windows: Array.isArray(p.windows)
+      ? p.windows.map((w) => ({
+          label: w.label ?? null,
+          kind: w.kind ?? null,
+          usedPct: w.usedPct ?? null,
+          resetAt: w.resetAt ?? null,
+          periodMs: w.periodMs ?? null,
+          reservePct: w.reservePct ?? null,
+        }))
+      : [],
+    tokenUsage: p.tokenUsage
+      ? {
+          input: p.tokenUsage.input ?? null,
+          cached: p.tokenUsage.cached ?? null,
+          output: p.tokenUsage.output ?? null,
+          total: p.tokenUsage.total ?? null,
+          costUSD: p.tokenUsage.costUSD ?? null,
+          source: p.tokenUsage.source ?? null,
+          historyDays: p.tokenUsage.historyDays ?? null,
+          period: p.tokenUsage.period ?? null,
+          modelBreakdowns: p.tokenUsage.modelBreakdowns || p.tokenUsage.topModels || [],
+          dailyBreakdown: p.tokenUsage.dailyBreakdown || p.tokenUsage.dailyUsage || [],
+        }
+      : null,
+    status: p.status
+      ? {
+          indicator: p.status.indicator ?? null,
+          label: p.status.label ?? null,
+          description: p.status.description ?? null,
+          updatedAt: p.status.updatedAt ?? null,
+          url: p.status.url ?? null,
+        }
+      : null,
+    error: p.error || null,
+  }
+}
+
+// Sanitized snapshot for the wire. totals/cycle/rating carry no PII; provider
+// objects do (emails in extra[]), so each is run through publicProvider.
+function publicSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return null
+  return {
+    generatedAt: snapshot.generatedAt ?? null,
+    cached: !!snapshot.cached,
+    cycle: snapshot.cycle || null,
+    totals: snapshot.totals || null,
+    rating: snapshot.rating || null,
+    providers: Array.isArray(snapshot.providers) ? snapshot.providers.map(publicProvider) : [],
+  }
 }
 
 function findProvider(snapshot, rawId) {
@@ -40,10 +130,16 @@ function findProvider(snapshot, rawId) {
   return providers.find((p) => canonicalProviderId(p.id) === id) || null
 }
 
-function handleRequest(req, res, { getSnapshot, requestRefresh, logger }) {
+function handleRequest(req, res, { getSnapshot, requestRefresh, logger, port }) {
   // Loopback-only: refuse any peer that is not the local machine.
   if (!isLoopback(req.socket && req.socket.remoteAddress)) {
     sendJson(res, 403, { error: 'forbidden', message: 'loopback only' })
+    return
+  }
+
+  // Anti-DNS-rebinding: the Host must be a loopback literal (or empty).
+  if (!isAllowedHost(req.headers && req.headers.host, port)) {
+    sendJson(res, 403, { error: 'forbidden', message: 'invalid host' })
     return
   }
 
@@ -78,7 +174,7 @@ function handleRequest(req, res, { getSnapshot, requestRefresh, logger }) {
       sendJson(res, 503, { error: 'no_snapshot', message: 'snapshot not ready, retry shortly' })
       return
     }
-    sendJson(res, 200, snapshot)
+    sendJson(res, 200, publicSnapshot(snapshot))
     return
   }
 
@@ -94,7 +190,7 @@ function handleRequest(req, res, { getSnapshot, requestRefresh, logger }) {
       sendJson(res, 404, { error: 'unknown_provider', id: decodeURIComponent(m[1]) })
       return
     }
-    sendJson(res, 200, { generatedAt: snapshot.generatedAt, provider })
+    sendJson(res, 200, { generatedAt: snapshot.generatedAt, provider: publicProvider(provider) })
     return
   }
 
@@ -111,7 +207,7 @@ function startLocalApi(opts = {}) {
 
   server = http.createServer((req, res) => {
     try {
-      handleRequest(req, res, opts)
+      handleRequest(req, res, { ...opts, port })
     } catch (err) {
       logger.error('local-api', 'request-failed', { error: err && err.message })
       try { sendJson(res, 500, { error: 'internal' }) } catch {}
@@ -142,4 +238,4 @@ function stopLocalApi() {
   server = null
 }
 
-module.exports = { startLocalApi, stopLocalApi, DEFAULT_PORT, isLoopback, findProvider }
+module.exports = { startLocalApi, stopLocalApi, DEFAULT_PORT, isLoopback, isAllowedHost, findProvider, publicSnapshot, publicProvider }
