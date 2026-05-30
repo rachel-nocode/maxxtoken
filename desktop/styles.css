@@ -1862,9 +1862,14 @@ body {
 
 .settings-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px 12px;
   padding: 10px 16px 6px;
+}
+
+.settings-actions .primary-btn {
+  margin-left: auto;
 }
 
 .link-btn {

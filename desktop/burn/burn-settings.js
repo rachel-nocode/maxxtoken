@@ -245,6 +245,7 @@ function burnRenderSettings(state) {
     `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 8, padding: 10, borderTop: `1px solid ${BURN.border}`, background: BURN.surface })}">` +
     `<button type="button" data-burn-action="reveal-config" style="${textBtn}">REVEAL CONFIG</button>` +
     `<button type="button" data-burn-action="reveal-log" style="${textBtn}">REVEAL LOG</button>` +
+    `<button type="button" data-burn-action="export-usage" style="${textBtn}">${state.justExported ? 'EXPORTED ✓' : 'EXPORT JSON'}</button>` +
     `<span style="${bstyle({ flex: 1 })}"></span>` +
     `<button type="button" data-burn-action="save-config"${state.justSaved ? ' disabled' : ''} style="${burnPrimaryBtn()}">${
       state.justSaved
