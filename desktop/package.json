@@ -1,7 +1,7 @@
 {
   "name": "maxxtoken-menubar",
   "private": true,
-  "version": "0.2.3-beta.1",
+  "version": "0.2.3-beta.2",
   "description": "MaxxToken menu bar app - reverse AI usage tracker that nudges you to use what you pay for",
   "main": "main.js",
   "bin": {
