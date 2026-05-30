@@ -4,6 +4,7 @@ const os = require('os')
 const path = require('path')
 const { readClaudeCredentials, persistClaudeCredentials } = require('./auth')
 const { fetchWithTimeout } = require('./http')
+const { generateText, canGenerateWith } = require('./llm')
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages'
 const REFRESH_URL = 'https://platform.claude.com/v1/oauth/token'
@@ -866,6 +867,22 @@ function buildIdeaPrompt(recentContext, lenses, extraAvoid) {
     .join('\n')
 }
 
+// Tell the model how much surplus there is and how long until it resets, so it
+// sizes the build to actually consume the unused window rather than guessing.
+function surplusFraming(t) {
+  if (!t) return ''
+  const parts = []
+  if (Number.isFinite(Number(t.leftValue))) parts.push(`about $${Math.round(Number(t.leftValue))} of unused capacity left`)
+  if (t.usedPct != null) parts.push(`only ${t.usedPct}% of the window used`)
+  if (t.resetText) parts.push(`window resets in ${t.resetText}`)
+  if (!parts.length) return ''
+  return (
+    `SURPLUS TO BURN: ${parts.join(', ')}. Size each first build so it can plausibly ` +
+    `consume a meaningful chunk of this unused window before it resets — favor builds ` +
+    `that lean on the model heavily (generation, iteration, agentic loops), not thin wrappers.`
+  )
+}
+
 function buildBurnPrompt(recentContext, signals, targetProvider) {
   const seed = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
   return [
@@ -877,6 +894,7 @@ function buildBurnPrompt(recentContext, signals, targetProvider) {
     BUILDER_CONTEXT,
     '',
     `Route these ideas to: ${targetProvider?.name || 'the most unused model'} (${targetProvider?.cli || 'claude'}).`,
+    surplusFraming(targetProvider),
     '',
     'LIVE SIGNALS:',
     signalPrompt(signals),
@@ -973,59 +991,91 @@ async function generateIdeas(targetProvider) {
   }
 }
 
-async function generateBurnIdeas(targetProvider) {
+// targetProvider = { name, cli, leftValue, usedPct, resetText }.
+// options.candidates = underused provider ids (most-underused first) to try as
+// the self-eating fallback when Claude is rate-limited. options.log(meta) is
+// called once with the chosen generation mode so the outcome isn't invisible.
+async function generateBurnIdeas(targetProvider, options = {}) {
   const cli = (targetProvider && targetProvider.cli) || 'claude'
   const history = readHistory()
   const signals = await collectSignals().catch(() => [])
-  const creds = readClaudeCredentials()
-  const fallback = () => finalize(padFromBank([], cli, history).slice(0, BURN_COUNT), cli)
-  if (!creds) return { signals, ideas: fallback() }
   const recentContext = promptHistory(history)
+  const prompt = buildBurnPrompt(recentContext, signals, targetProvider)
+  const candidates = Array.isArray(options.candidates) ? options.candidates : []
+  const log = typeof options.log === 'function' ? options.log : () => {}
 
-  try {
-    let token = creds.data.claudeAiOauth.accessToken
-    const exp = creds.data.claudeAiOauth.expiresAt
-    if (exp && exp - Date.now() < 5 * 60 * 1000) {
-      const t = await refresh(creds)
-      if (t) token = t
-    }
-
-    const call = (tok) =>
-      fetchWithTimeout(MESSAGES_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer ' + tok,
-          'anthropic-version': '2023-06-01',
-          'anthropic-beta': 'oauth-2025-04-20',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          max_tokens: 4200,
-          temperature: 0.9,
-          messages: [{ role: 'user', content: buildBurnPrompt(recentContext, signals, targetProvider) }],
-        }),
-      }, 30000)
-
-    let resp = await call(token)
-    if (resp.status === 401) {
-      const t = await refresh(creds)
-      if (t) {
-        token = t
-        resp = await call(token)
-      }
-    }
-    if (!resp.ok) return { signals, ideas: fallback() }
-    const data = await resp.json()
-    const text = (data.content || []).map((b) => b.text || '').join('')
-    const raw = extractJson(text)
-    const picked = []
-    if (raw && raw.length) pickFresh(raw, cli, 'Signals', history, picked)
-    const ideas = finalize(padFromBank(picked, cli, history).slice(0, BURN_COUNT), cli)
-    return { signals, ideas }
-  } catch {
-    return { signals, ideas: fallback() }
+  const bankIdeas = () => finalize(padFromBank([], cli, history).slice(0, BURN_COUNT), cli)
+  const done = (ideas, generation) => {
+    log(generation)
+    return { signals, ideas, generation }
   }
+  // Shape + dedup raw model output into up to BURN_COUNT ideas; null if nothing usable.
+  const harvest = (text, source) => {
+    const raw = extractJson(text)
+    if (!raw || !raw.length) return null
+    const picked = []
+    pickFresh(raw, cli, source, history, picked)
+    if (!picked.length) return null
+    return finalize(padFromBank(picked, cli, history).slice(0, BURN_COUNT), cli)
+  }
+
+  // 1) Primary: Claude OAuth (the subscription most builders are underusing).
+  const creds = readClaudeCredentials()
+  let lastError = creds ? '' : 'no-claude-credentials'
+  if (creds) {
+    try {
+      let token = creds.data.claudeAiOauth.accessToken
+      const exp = creds.data.claudeAiOauth.expiresAt
+      if (exp && exp - Date.now() < 5 * 60 * 1000) {
+        const t = await refresh(creds)
+        if (t) token = t
+      }
+      const call = (tok) =>
+        fetchWithTimeout(MESSAGES_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer ' + tok,
+            'anthropic-version': '2023-06-01',
+            'anthropic-beta': 'oauth-2025-04-20',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ model: MODEL, max_tokens: 4200, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
+        }, 30000)
+      let resp = await call(token)
+      if (resp.status === 401) {
+        const t = await refresh(creds)
+        if (t) { token = t; resp = await call(token) }
+      }
+      if (resp.ok) {
+        const data = await resp.json()
+        const text = (data.content || []).map((b) => b.text || '').join('')
+        const ideas = harvest(text, 'claude')
+        if (ideas) return done(ideas, { mode: 'live', provider: 'claude', providerName: 'Claude' })
+        lastError = 'claude-empty-or-duplicate'
+      } else {
+        lastError = `claude-http-${resp.status}`
+      }
+    } catch (err) {
+      lastError = `claude-${err.message || 'error'}`
+    }
+  }
+
+  // 2) Self-eating fallback: re-route generation to an underused provider the
+  //    user already has a key for — the idea engine burns surplus quota too.
+  const usable = candidates.filter((id) => id !== 'claude' && canGenerateWith(id)).slice(0, 2)
+  for (const id of usable) {
+    try {
+      const text = await generateText(id, prompt, { temperature: 0.9, maxTokens: 4200, timeout: 20000 })
+      const ideas = harvest(text, id)
+      if (ideas) return done(ideas, { mode: 'live', provider: id, providerName: targetProvider?.name || id })
+      lastError = `${id}-empty-or-duplicate`
+    } catch (err) {
+      lastError = `${id}-${err.status || err.message || 'error'}`
+    }
+  }
+
+  // 3) Last resort: rotated hardcoded BANK, clearly flagged as offline.
+  return done(bankIdeas(), { mode: 'offline', provider: 'bank', providerName: 'Idea Bank', error: lastError })
 }
 
 function recordIdeaFeedback(idea, feedback) {

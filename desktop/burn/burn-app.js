@@ -28,8 +28,13 @@ const burnState = {
   // missions (real burn ideas from window.maxx.burnIdeas)
   ideas: [],
   ideaTarget: null,
+  generation: null, // { mode:'live'|'offline', provider, providerName, error }
   ideasLoaded: false,
   ideasLoading: false,
+  // missions screen mode: 'new' (generated app ideas) | 'backlog' (repo missions)
+  missionMode: 'new',
+  backlog: null, // { dir, folderName, stack, missions, sourceCount, testCount }
+  backlogLoading: false,
   // settings (sourced from config.providers; toggles are session-only for now)
   config: null,
   apiKeyState: {},
@@ -113,12 +118,54 @@ async function burnLoadIdeas() {
     const res = await window.maxx.burnIdeas()
     burnState.ideas = Array.isArray(res?.ideas) ? res.ideas : []
     burnState.ideaTarget = res?.target || null
+    burnState.generation = res?.generation || null
     burnState.ideasLoaded = true
   } catch (err) {
     console.error('[burn] burnIdeas failed', err)
+    // Mark loaded so the UI shows an empty/error state instead of hanging on
+    // "Finding burn ideas…" forever when the IPC call rejects.
+    burnState.ideasLoaded = true
   } finally {
     burnState.ideasLoading = false
     if (burnState.screen === 'missions') burnRender()
+  }
+}
+
+// Pick a repo and scan it for backlog missions (deterministic, main-process).
+async function burnPickBacklog() {
+  if (!window.maxx?.backlogMissions || burnState.backlogLoading) return
+  burnState.backlogLoading = true
+  burnRender()
+  try {
+    const res = await window.maxx.backlogMissions()
+    if (res && res.ok) {
+      burnState.backlog = {
+        dir: res.dir,
+        folderName: res.folderName,
+        stack: res.stack,
+        missions: Array.isArray(res.missions) ? res.missions : [],
+        sourceCount: res.sourceCount,
+        testCount: res.testCount,
+      }
+    }
+    // canceled → leave existing backlog state untouched
+  } catch (err) {
+    console.error('[burn] backlogMissions failed', err)
+  } finally {
+    burnState.backlogLoading = false
+    if (burnState.screen === 'missions') burnRender()
+  }
+}
+
+// Launch a build for one backlog mission in its repo.
+async function burnStartBacklog(index) {
+  const bl = burnState.backlog
+  const mission = bl && Array.isArray(bl.missions) ? bl.missions[index] : null
+  if (!mission || !window.maxx?.backlogStart) return
+  try {
+    await window.maxx.backlogStart({ dir: bl.dir, mission })
+  } catch (err) {
+    console.error('[burn] backlogStart failed', err)
   }
 }
 
@@ -252,6 +299,12 @@ function burnHandleClick(e) {
     return
   }
 
+  const backlogBuild = e.target.closest('[data-burn-backlog]')
+  if (backlogBuild) {
+    burnStartBacklog(Number(backlogBuild.getAttribute('data-burn-backlog')))
+    return
+  }
+
   const model = e.target.closest('[data-burn-model]')
   if (model) {
     const id = model.getAttribute('data-burn-model')
@@ -298,6 +351,9 @@ function burnHandleClick(e) {
     else if (which === 'reveal-config') window.maxx?.openConfigFile?.()
     else if (which === 'reveal-log') window.maxx?.openDebugLog?.()
     else if (which === 'export-usage') burnExportUsage()
+    else if (which === 'mode-new') { burnState.missionMode = 'new'; burnRender() }
+    else if (which === 'mode-backlog') { burnState.missionMode = 'backlog'; burnRender() }
+    else if (which === 'pick-backlog') burnPickBacklog()
     else if (which === 'save-cookie') {
       const id = action.getAttribute('data-cookie-id')
       const val = burnState.cookies[id]

@@ -5,6 +5,8 @@ const path = require('path')
 const { fork } = require('child_process')
 const { loadConfig, saveConfig, FILE } = require('./lib/config')
 const { generateIdeas, generateBurnIdeas, recordIdeaFeedback } = require('./lib/ideas')
+const { canGenerateWith } = require('./lib/llm')
+const { scanBacklogMissions, backlogPrompt } = require('./lib/backlog')
 const { openBuild } = require('./lib/launch')
 const { setKey, hasKey, allKeys } = require('./lib/secrets')
 const { requestDeviceCode, pollForToken } = require('./lib/copilot-auth')
@@ -635,6 +637,17 @@ function leastUsedProvider(snap) {
   return { id: p.id, name: p.name, cli: CLI_FOR[p.id] }
 }
 
+// Soonest future reset across a provider's windows (+ its own resetAt), in ms,
+// or null. Local to main so we don't depend on aggregate internals.
+function providerResetAt(provider, now = Date.now()) {
+  const resets = (provider?.windows || [])
+    .map((w) => Number(w.resetAt))
+    .filter((n) => Number.isFinite(n) && n > now)
+  const own = Number(provider?.resetAt)
+  if (Number.isFinite(own) && own > now) resets.push(own)
+  return resets.length ? Math.min(...resets) : null
+}
+
 function mostLeftProvider(snap) {
   const providers = Array.isArray(snap?.providers) ? snap.providers : []
   const tracked = providers.filter((p) => p.connected && CLI_FOR[p.id])
@@ -647,6 +660,7 @@ function mostLeftProvider(snap) {
       cli: CLI_FOR[provider.id],
       leftValue: Number(provider.leftValue ?? provider.burnValue ?? provider.remainingValue),
       usedPct: provider.capturedPct == null ? null : Math.round(provider.capturedPct),
+      resetAt: providerResetAt(provider),
     }))
     .sort((a, b) => {
       const av = Number.isFinite(a.leftValue) ? a.leftValue : -1
@@ -904,10 +918,44 @@ ipcMain.handle('forge-start', async (_e, idea) => {
   return { ok: result.ok, terminal: result.terminal, dir: picked.filePaths[0], error: result.error }
 })
 
+// Format ms-until-reset as a compact countdown ("1H 23M", "23D 21H", "12M").
+function formatResetCountdown(resetAt) {
+  const ms = Number(resetAt) - Date.now()
+  if (!Number.isFinite(ms) || ms <= 0) return null
+  const mins = Math.floor(ms / 60000)
+  const days = Math.floor(mins / 1440)
+  const hours = Math.floor((mins % 1440) / 60)
+  const m = mins % 60
+  if (days > 0) return `${days}D ${hours}H`
+  if (hours > 0) return `${hours}H ${m}M`
+  return `${m}M`
+}
+
+// Underused providers (most room first) that we hold a generation key for —
+// the ordered fallback list for the self-eating idea engine.
+function burnFallbackCandidates(snap) {
+  const providers = Array.isArray(snap?.providers) ? snap.providers : []
+  return providers
+    .filter((p) => p.connected && canGenerateWith(p.id))
+    .map((p) => ({ id: p.id, left: Number(p.leftValue ?? p.burnValue ?? p.remainingValue) }))
+    .sort((a, b) => (Number.isFinite(b.left) ? b.left : -1) - (Number.isFinite(a.left) ? a.left : -1))
+    .map((p) => p.id)
+}
+
 ipcMain.handle('burn-ideas', async () => {
   const snap = await readSnapshot({ staleOk: true })
   const target = mostLeftProvider(snap)
-  const { signals, ideas } = await generateBurnIdeas(target)
+  target.resetText = formatResetCountdown(target.resetAt)
+  const candidates = burnFallbackCandidates(snap)
+  const { signals, ideas, generation } = await generateBurnIdeas(target, {
+    candidates,
+    log: (meta) =>
+      logger.info('burn-ideas', 'generated', {
+        mode: meta.mode,
+        provider: meta.provider,
+        error: meta.error || undefined,
+      }),
+  })
   return {
     target: {
       ...target,
@@ -915,6 +963,7 @@ ipcMain.handle('burn-ideas', async () => {
     },
     signals: signals.slice(0, 6),
     ideas,
+    generation,
   }
 })
 
@@ -960,6 +1009,39 @@ ipcMain.handle('burn-start', async (_e, idea) => {
 ipcMain.handle('copy-text', (_e, text) => {
   clipboard.writeText(String(text || ''))
   return { ok: true }
+})
+
+// Backlog burn: pick a repo, scan it deterministically, return concrete missions.
+ipcMain.handle('backlog-missions', async () => {
+  const picked = await dialog.showOpenDialog(popover, {
+    title: 'Pick a project to burn down its backlog',
+    properties: ['openDirectory'],
+    buttonLabel: 'Scan project',
+  })
+  if (picked.canceled || !picked.filePaths.length) return { ok: false, canceled: true }
+  const dir = picked.filePaths[0]
+  try {
+    const scan = scanBacklogMissions(dir)
+    logger.info('backlog-missions', 'scanned', { dir, missions: scan.missions.length, stack: scan.stack })
+    return { ok: true, dir, folderName: path.basename(dir) || dir, ...scan }
+  } catch (err) {
+    logger.error('backlog-missions', 'scan failed', { error: String(err && err.message || err) })
+    return { ok: false, error: 'Could not scan that folder.' }
+  }
+})
+
+// Launch a build for one backlog mission, anchored to its repo.
+ipcMain.handle('backlog-start', async (_e, payload) => {
+  const dir = payload && payload.dir
+  const mission = payload && payload.mission
+  if (!dir || !mission) return { ok: false, error: 'No mission selected.' }
+  const snap = await readSnapshot({ staleOk: true })
+  const target = mostLeftProvider(snap)
+  const cli = PROMPT_CAPABLE_CLIS.has(target.cli) ? target.cli : 'claude'
+  const prompt = backlogPrompt(mission, dir, cli)
+  clipboard.writeText(prompt)
+  const result = await openBuild({ dir, cli, prompt })
+  return { ok: result.ok, terminal: result.terminal, dir, copied: true, cli, error: result.error }
 })
 
 function scanProjectBloat(dir) {

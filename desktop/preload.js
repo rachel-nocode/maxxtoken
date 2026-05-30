@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('maxx', {
   burnIdeas: () => ipcRenderer.invoke('burn-ideas'),
   burnCopy: (idea) => ipcRenderer.invoke('burn-copy', idea),
   burnStart: (idea) => ipcRenderer.invoke('burn-start', idea),
+  backlogMissions: () => ipcRenderer.invoke('backlog-missions'),
+  backlogStart: (payload) => ipcRenderer.invoke('backlog-start', payload),
   copyText: (text) => ipcRenderer.invoke('copy-text', text),
   scanContextBloat: (providerId) => ipcRenderer.invoke('scan-context-bloat', providerId),
   getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
