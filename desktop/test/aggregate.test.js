@@ -1039,6 +1039,36 @@ test('cached provider fallback keeps last good usage when a transient poll fails
   assert.equal(fallback.lastUpdatedAt, now - 60000)
 })
 
+test('carryForwardTokenUsage fills null tokenUsage from cache on light pulls', () => {
+  const providers = [
+    { id: 'claude', connected: true, tokenUsage: null },
+    { id: 'codex', connected: true, tokenUsage: { total: 999, topModels: [{ model: 'gpt' }] } },
+    { id: 'kimi', connected: false, tokenUsage: null },
+  ]
+  const cache = {
+    providers: [
+      { id: 'claude', tokenUsage: { total: 12345, topModels: [{ model: 'sonnet' }], dailyUsage: [{ date: '2026-05-30', total: 12345 }] } },
+      { id: 'kimi', tokenUsage: { total: 5 } },
+    ],
+  }
+
+  const out = _private.carryForwardTokenUsage(providers, cache)
+
+  // claude was null + connected → carried forward (and compacted to modelBreakdowns/dailyBreakdown).
+  assert.equal(out[0].tokenUsage.total, 12345)
+  assert.deepEqual(out[0].tokenUsage.modelBreakdowns, [{ model: 'sonnet' }])
+  assert.deepEqual(out[0].tokenUsage.dailyBreakdown, [{ date: '2026-05-30', total: 12345 }])
+  // codex already had fresh tokenUsage → untouched.
+  assert.equal(out[1].tokenUsage.total, 999)
+  // kimi is disconnected → never carried, stays null.
+  assert.equal(out[2].tokenUsage, null)
+})
+
+test('carryForwardTokenUsage leaves providers untouched when cache missing', () => {
+  const providers = [{ id: 'claude', connected: true, tokenUsage: null }]
+  assert.equal(_private.carryForwardTokenUsage(providers, null)[0].tokenUsage, null)
+})
+
 test('usage snapshot CLI renders overview and token burn from the last widget snapshot', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'maxxtoken-usage-cli-'))
   const file = path.join(tmp, 'widget-snapshot.json')

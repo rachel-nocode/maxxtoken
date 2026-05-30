@@ -73,10 +73,10 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
-async function buildProviderSafe(id, conf, cycle, config) {
+async function buildProviderSafe(id, conf, cycle, config, options = {}) {
   const start = Date.now()
   try {
-    const result = await withTimeout(buildProvider(id, conf, cycle, config), PROVIDER_TIMEOUT_MS, `provider:${id}`)
+    const result = await withTimeout(buildProvider(id, conf, cycle, config, options), PROVIDER_TIMEOUT_MS, `provider:${id}`)
     const ms = Date.now() - start
     if (ms >= 3000) logger.warn('provider', `${id} slow`, { ms })
     else logger.info('provider', `${id} ok`, { ms })
@@ -721,6 +721,20 @@ function applyCachedProviderFallbacks(providers, cache = widgetSnapshot.readWidg
   })
 }
 
+// Light (5-min) pulls skip the heavy token-history scan, so providers come back
+// with tokenUsage === null. Carry forward the last heavy scan from cache so the
+// token/cost UI stays populated between hourly heavy refreshes.
+function carryForwardTokenUsage(providers, cache = widgetSnapshot.readWidgetSnapshot()) {
+  if (!cache) return providers
+  const cachedById = new Map((cache.providers || []).map((provider) => [provider.id, provider]))
+  return (providers || []).map((provider) => {
+    if (!provider?.connected || provider.tokenUsage) return provider
+    const cached = cachedById.get(provider.id)
+    if (!cached?.tokenUsage) return provider
+    return { ...provider, tokenUsage: compactTokenUsageToProvider(cached.tokenUsage) }
+  })
+}
+
 function resetQueueFromProviders(providers, now = Date.now()) {
   const horizonMs = 14 * DAY
   const items = []
@@ -774,8 +788,8 @@ function valueFromSpendLeft(spentValue, leftValue, meta) {
   return valueFields(spent + left, spent, left, null, meta)
 }
 
-async function buildProvider(id, conf, cycle, config = loadConfig()) {
-  const tokenOptions = { tokenHistoryDays: config.tokenHistoryDays }
+async function buildProvider(id, conf, cycle, config = loadConfig(), options = {}) {
+  const tokenOptions = { tokenHistoryDays: config.tokenHistoryDays, skipTokenHistory: options.heavy === false }
   const base = { id, name: conf.name, plan: conf.plan, monthly: conf.monthly, links: providerLinks.linksForProvider(id) }
 
   if (id === 'claude' || id === 'kimi') {
@@ -3387,8 +3401,12 @@ function maxxRating(avg) {
   return { stars: 1, verdict: 'Donating to Big AI. Fix it.' }
 }
 
-async function snapshot() {
+async function snapshot(options = {}) {
   const snapStart = Date.now()
+  // Heavy pulls (default) scan local token-history logs; light pulls skip that
+  // and carry forward the last heavy scan. Main process schedules heavy hourly,
+  // light every 5 min + on popover open.
+  const heavy = options.heavy !== false
   const config = loadConfig()
   const cycle = billingCycle(config.billingDay)
   try {
@@ -3400,8 +3418,9 @@ async function snapshot() {
   const enabled = Object.entries(config.providers)
     .filter(([, c]) => c.enabled)
     .sort(([a], [b]) => (PROVIDER_BUILD_PRIORITY[a] ?? 10) - (PROVIDER_BUILD_PRIORITY[b] ?? 10))
-  logger.info('snapshot', 'building', { enabledCount: enabled.length })
-  let providers = (await Promise.all(enabled.map(([id, c]) => buildProviderSafe(id, c, cycle, config)))).map((p) => addProviderPace(p))
+  logger.info('snapshot', 'building', { enabledCount: enabled.length, heavy })
+  let providers = (await Promise.all(enabled.map(([id, c]) => buildProviderSafe(id, c, cycle, config, { heavy })))).map((p) => addProviderPace(p))
+  if (!heavy) providers = carryForwardTokenUsage(providers)
   providers = applyCachedProviderFallbacks(providers).map((p) => addProviderPace(p))
   providers = addProviderStorageFootprints(providers)
   try {
@@ -3591,6 +3610,7 @@ module.exports = {
     addProviderSourceLabels,
     applyCachedProviderFallbacks,
     providerHasUsefulUsage,
+    carryForwardTokenUsage,
     resetQueueFromProviders,
   },
 }

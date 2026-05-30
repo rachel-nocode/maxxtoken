@@ -175,7 +175,9 @@ function resultFromUsage(plan, data, cached = false, options = {}) {
     extra.push({ label: 'Extra usage', value: `$${used.toFixed(2)} / $${limit.toFixed(0)}` })
   }
   if (cached) extra.push({ label: 'Status', value: 'cached live usage' })
-  const tokenUsage = scanClaudeTokenUsage(null, Date.now(), options.tokenHistoryDays)
+  // Heavy: the token-history disk scan only runs on heavy (hourly) pulls. Light
+  // pulls return null and the aggregator carries forward the last scanned data.
+  const tokenUsage = options.skipTokenHistory ? null : scanClaudeTokenUsage(null, Date.now(), options.tokenHistoryDays)
   if (tokenUsage?.historyTotal) {
     extra.push({ label: tokenHistoryLabel(tokenUsage.historyDays), value: formatInteger(tokenUsage.historyTotal) })
   }

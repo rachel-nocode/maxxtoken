@@ -10,8 +10,8 @@ process.on('message', async (message) => {
   if (!message || message.type !== 'snapshot') return
   try {
     setProcessOverride(message.secrets)
-    logger.info('worker', 'snapshot requested', { requestId: message.requestId })
-    const snap = await snapshot()
+    logger.info('worker', 'snapshot requested', { requestId: message.requestId, heavy: message.heavy !== false })
+    const snap = await snapshot({ heavy: message.heavy !== false })
     safeSend({ type: 'snapshot-result', requestId: message.requestId, ok: true, snap })
   } catch (err) {
     logger.error('worker', 'snapshot failed', {

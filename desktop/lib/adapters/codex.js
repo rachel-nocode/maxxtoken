@@ -486,11 +486,15 @@ function clone(value) {
 }
 
 function readLocal(options = {}) {
-  const tokenFiles = rolloutFiles({ limit: Infinity, sinceMs: tokenHistorySince(options.tokenHistoryDays) })
+  // Light pulls skip the full rollout enumeration + token scan; they only need
+  // the most recent files for rate-limit windows.
+  const tokenFiles = options.skipTokenHistory
+    ? []
+    : rolloutFiles({ limit: Infinity, sinceMs: tokenHistorySince(options.tokenHistoryDays) })
   const files = tokenFiles.length ? tokenFiles : rolloutFiles()
   if (!files.length) return { connected: false }
 
-  const tokenUsage = readTokenUsage(tokenFiles.length ? tokenFiles : files, options)
+  const tokenUsage = options.skipTokenHistory ? null : readTokenUsage(tokenFiles.length ? tokenFiles : files, options)
   let rl = null
   let mtime = 0
   for (const f of files) {
@@ -1224,9 +1228,14 @@ function resetTokenScanCacheForTesting() {
 async function read(options = {}) {
   try {
     const live = await readLive()
-    const files = rolloutFiles({ limit: Infinity, sinceMs: tokenHistorySince(options.tokenHistoryDays) })
-    const tokenUsage = readTokenUsage(files, options)
-    if (live.windows.length) return tokenUsage ? { ...live, tokenUsage } : live
+    // Heavy: scanning the rollout files for token history only on heavy pulls.
+    if (options.skipTokenHistory) {
+      if (live.windows.length) return live
+    } else {
+      const files = rolloutFiles({ limit: Infinity, sinceMs: tokenHistorySince(options.tokenHistoryDays) })
+      const tokenUsage = readTokenUsage(files, options)
+      if (live.windows.length) return tokenUsage ? { ...live, tokenUsage } : live
+    }
   } catch (error) {
     const local = readLocal(options)
     if (local.connected) {

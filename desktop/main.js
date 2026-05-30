@@ -115,6 +115,7 @@ const KEY_PROVIDERS = new Set([
 let tray = null
 let popover = null
 let refreshTimer = null
+let heavyRefreshTimer = null
 let lastSnapshot = null
 let snapshotInFlight = null
 const activeSnapshotWorkers = new Set()
@@ -123,7 +124,14 @@ const copilotLoginSessions = new Map()
 const POPOVER_WIDTH = 420
 const POPOVER_HEIGHT = 720
 const POPOVER_COMPACT_HEIGHT = 610
-const REFRESH_INTERVAL_MS = 15 * 60 * 1000
+// Light pull: rate-limit windows + balances. Cheap, runs often.
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000
+// Heavy pull: also scans local token-history logs for cost data. Expensive, so
+// it runs far less often (CodexBar uses the same 1-hour cadence for cost data).
+const HEAVY_REFRESH_INTERVAL_MS = 60 * 60 * 1000
+// On popover open we fire a live (light) pull, showing cache first. Throttle it
+// so rapid toggling doesn't hammer provider APIs — cache is always shown.
+const OPEN_REFRESH_THROTTLE_MS = 30 * 1000
 const SNAPSHOT_WORKER_TIMEOUT_MS = 90 * 1000
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 
@@ -208,10 +216,10 @@ function setTraySnapshot(snap) {
 
 let workerRequestId = 0
 
-function snapshotViaWorker() {
+function snapshotViaWorker(heavy = true) {
   const requestId = ++workerRequestId
   const start = Date.now()
-  logger.info('snapshot-worker', 'starting', { requestId })
+  logger.info('snapshot-worker', 'starting', { requestId, heavy })
 
   return new Promise((resolve, reject) => {
     let timer = null
@@ -254,7 +262,7 @@ function snapshotViaWorker() {
       activeSnapshotWorkers.delete(child)
       if (!settled) finish(new Error(`snapshot worker exited early (${signal || code})`))
     })
-    child.send({ type: 'snapshot', requestId, secrets: allKeys() })
+    child.send({ type: 'snapshot', requestId, heavy, secrets: allKeys() })
   })
 }
 
@@ -417,18 +425,12 @@ async function showPopover() {
   logger.info('popover', 'opened', { hasCachedSnap: !!lastSnapshot })
   if (config.onboardingComplete && lastSnapshot) popover.webContents.send('snapshot', lastSnapshot)
   if (!config.onboardingComplete) return
-  if (!lastSnapshot) {
-    readSnapshot({ staleOk: true })
-      .then((snap) => {
-        if (snap && popover && !popover.isDestroyed() && popover.isVisible()) {
-          popover.webContents.send('snapshot', snap)
-        }
-      })
-      .catch((err) => logger.error('popover', 'snapshot fetch failed', { error: err && err.message }))
-  }
+  // Show cache instantly (above), then always fire a live pull so the user sees
+  // current usage on open — not just whatever the last scheduled refresh cached.
+  refreshOnOpen()
 }
 
-async function readSnapshot({ staleOk = false, force = false } = {}) {
+async function readSnapshot({ staleOk = false, force = false, heavy = true } = {}) {
   if (staleOk && lastSnapshot) {
     return lastSnapshot
   }
@@ -439,7 +441,7 @@ async function readSnapshot({ staleOk = false, force = false } = {}) {
   }
 
   if (!snapshotInFlight) {
-    snapshotInFlight = snapshotViaWorker()
+    snapshotInFlight = snapshotViaWorker(heavy)
       .then((snap) => {
         setTraySnapshot(snap)
         return snap
@@ -457,11 +459,30 @@ function sendSnapshotToPopover(snap) {
   }
 }
 
-async function syncSnapshot({ force = true } = {}) {
-  const snap = await readSnapshot({ force })
+async function syncSnapshot({ force = true, heavy = true } = {}) {
+  const snap = await readSnapshot({ force, heavy })
   updateTray().catch(() => {})
   sendSnapshotToPopover(snap)
   return snap
+}
+
+let lastOpenRefreshAt = 0
+
+// CodexBar-style refresh-on-open: the popover already rendered the cached
+// snapshot, so kick a non-blocking live pull and push the fresh result when it
+// lands. Throttled to avoid hammering provider APIs on rapid open/close.
+function refreshOnOpen() {
+  const now = Date.now()
+  if (now - lastOpenRefreshAt < OPEN_REFRESH_THROTTLE_MS) return
+  // Skip if the current snapshot is already fresh (e.g. a scheduled refresh just ran).
+  if (lastSnapshot && lastSnapshot.generatedAt && now - lastSnapshot.generatedAt < OPEN_REFRESH_THROTTLE_MS) return
+  lastOpenRefreshAt = now
+  readSnapshot({ force: true, heavy: false })
+    .then((snap) => {
+      sendSnapshotToPopover(snap)
+      updateTray().catch(() => {})
+    })
+    .catch((err) => logger.error('popover', 'open refresh failed', { error: err && err.message }))
 }
 
 function applyLoginItemSettings(config = loadConfig()) {
@@ -1194,7 +1215,11 @@ ipcMain.handle('mission-start-project', async (_e, payload) => {
 
 let updateTimer = null
 let updatePromptShown = false
-let updateState = { status: 'idle', version: app.getVersion() }
+// `version` is ALWAYS the running app's version and must never be overwritten by
+// update-feed events (those describe the latest *available* release, surfaced
+// separately as `availableVersion`). Conflating them made "Current version" show
+// the newest published release instead of what's installed.
+let updateState = { status: 'idle', version: app.getVersion(), availableVersion: null }
 
 function emitUpdate(patch) {
   updateState = { ...updateState, ...patch }
@@ -1209,10 +1234,10 @@ function setupAutoUpdate() {
 
   autoUpdater.on('checking-for-update', () => emitUpdate({ status: 'checking' }))
   autoUpdater.on('update-available', (info) =>
-    emitUpdate({ status: 'downloading', version: info && info.version, percent: 0 }),
+    emitUpdate({ status: 'downloading', availableVersion: info && info.version, percent: 0 }),
   )
   autoUpdater.on('update-not-available', (info) =>
-    emitUpdate({ status: 'up-to-date', version: (info && info.version) || app.getVersion() }),
+    emitUpdate({ status: 'up-to-date', availableVersion: (info && info.version) || null }),
   )
   autoUpdater.on('download-progress', (p) =>
     emitUpdate({ status: 'downloading', percent: Math.round(p.percent || 0) }),
@@ -1222,7 +1247,7 @@ function setupAutoUpdate() {
   )
 
   autoUpdater.on('update-downloaded', async (info) => {
-    emitUpdate({ status: 'ready', version: info && info.version })
+    emitUpdate({ status: 'ready', availableVersion: info && info.version })
     if (updatePromptShown) return
     updatePromptShown = true
     const { response } = await dialog.showMessageBox({
@@ -1280,7 +1305,11 @@ if (!gotSingleInstanceLock) {
     if (lastSnapshot) logger.info('snapshot-cache', 'loaded', { generatedAt: lastSnapshot.generatedAt })
     createPopover()
     createTray()
-    refreshTimer = setInterval(() => syncSnapshot({ force: true }).catch(() => {}), REFRESH_INTERVAL_MS)
+    // Prime token/cost data once on launch, then split cadence: light every
+    // 5 min (windows + balances), heavy hourly (also scans token-history logs).
+    syncSnapshot({ force: true, heavy: true }).catch(() => {})
+    refreshTimer = setInterval(() => syncSnapshot({ force: true, heavy: false }).catch(() => {}), REFRESH_INTERVAL_MS)
+    heavyRefreshTimer = setInterval(() => syncSnapshot({ force: true, heavy: true }).catch(() => {}), HEAVY_REFRESH_INTERVAL_MS)
     localApi.startLocalApi({
       port: loadConfig().localApiPort,
       getSnapshot: () => lastSnapshot,
@@ -1293,6 +1322,7 @@ if (!gotSingleInstanceLock) {
 
 app.on('before-quit', () => {
   clearInterval(refreshTimer)
+  clearInterval(heavyRefreshTimer)
   clearInterval(updateTimer)
   localApi.stopLocalApi()
   for (const child of activeSnapshotWorkers) {

@@ -508,7 +508,10 @@ function scanClaudeVertexUsage(files = claudeLogFiles(), sinceMs = Date.now() - 
 
 async function read(options = {}) {
   const historyDays = tokenHistoryDays(options.tokenHistoryDays)
-  const tokenUsage = scanClaudeVertexUsage(claudeLogFiles(), Date.now() - historyDays * 86400000, historyDays)
+  // Heavy disk scan — skipped on light pulls; aggregator carries forward cache.
+  const tokenUsage = options.skipTokenHistory
+    ? null
+    : scanClaudeVertexUsage(claudeLogFiles(), Date.now() - historyDays * 86400000, historyDays)
   let quota = null
   let credentials = null
   let error = null
