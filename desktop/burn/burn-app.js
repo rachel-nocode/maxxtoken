@@ -46,6 +46,7 @@ const burnState = {
   cfg: { trayMetric: 'left', tokenHistoryDays: '30', sessionThreshold: '50,20', weeklyThreshold: '50,20', alertHours: '48', alertReservePct: '25' },
   provAlert: {}, // providerId -> 'inherit' | 'off' | '15' | '25' | '40' | '60'
   justSaved: false,
+  justExported: false,
   version: 'v0.2.3-beta.1',
   updatesOpen: false,
   update: { status: 'idle', percent: 0, error: '' }, // mirrors main's updateState
@@ -296,6 +297,7 @@ function burnHandleClick(e) {
     else if (which === 'start-mission') burnStartMission()
     else if (which === 'reveal-config') window.maxx?.openConfigFile?.()
     else if (which === 'reveal-log') window.maxx?.openDebugLog?.()
+    else if (which === 'export-usage') burnExportUsage()
     else if (which === 'save-cookie') {
       const id = action.getAttribute('data-cookie-id')
       const val = burnState.cookies[id]
@@ -505,6 +507,25 @@ async function burnSaveSettings() {
     }
   } catch (err) {
     console.error('[burn] saveConfig failed', err)
+  }
+}
+
+// Export usage + cost history to JSON via the native save dialog (main process
+// owns the dialog + file write). Flip the button to "EXPORTED ✓" on success.
+async function burnExportUsage() {
+  if (!window.maxx?.exportUsage) return
+  try {
+    const res = await window.maxx.exportUsage()
+    if (!res || !res.ok) return
+    burnState.justExported = true
+    if (burnState.screen === 'settings') burnRender()
+    if (burnState._exportTimer) clearTimeout(burnState._exportTimer)
+    burnState._exportTimer = setTimeout(() => {
+      burnState.justExported = false
+      if (burnState.screen === 'settings') burnRender()
+    }, 1800)
+  } catch (err) {
+    console.error('[burn] exportUsage failed', err)
   }
 }
 
