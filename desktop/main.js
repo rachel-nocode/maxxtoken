@@ -390,18 +390,29 @@ async function togglePopover() {
   await showPopover()
 }
 
-function showPopover() {
+async function preparePopoverForOpen() {
+  if (!popover || popover.isDestroyed()) return
+  if (popover.webContents.isLoadingMainFrame()) return
+  const script = 'Promise.resolve(typeof window.__maxxPreparePopoverOpen === "function" ? window.__maxxPreparePopoverOpen() : true)'
+  try {
+    await popover.webContents.executeJavaScript(script, true)
+  } catch (err) {
+    logger.warn('popover', 'pre-open prepare failed', { error: err && err.message ? err.message : String(err) })
+  }
+}
+
+async function showPopover() {
   if (!popover || !tray) return
   const config = loadConfig()
   popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
   popover.setAlwaysOnTop(true, 'pop-up-menu')
+  await preparePopoverForOpen()
   positionPopover()
   popover.show()
   popover.moveTop()
   popover.focus()
-  // The renderer process stays alive while the popover is only hidden, so its
-  // view state persists. Tell it the popover reopened so it can reset to the
-  // home/usage screen instead of stranding the user on a subpage.
+  // Keep the event as a fallback for a newly loaded renderer; the normal path
+  // already prepared hidden state before the first visible paint.
   popover.webContents.send('popover-shown')
   logger.info('popover', 'opened', { hasCachedSnap: !!lastSnapshot })
   if (config.onboardingComplete && lastSnapshot) popover.webContents.send('snapshot', lastSnapshot)

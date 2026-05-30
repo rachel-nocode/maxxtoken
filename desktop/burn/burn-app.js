@@ -616,9 +616,9 @@ function burnApplyDrag(fromId, toId) {
 // Measured from intrinsic child heights so a short list doesn't leave a gap
 // and a long one still scrolls.
 function burnResize() {
-  if (!burnRoot || !window.maxx?.setPopoverHeight) return
+  if (!burnRoot || !window.maxx?.setPopoverHeight) return Promise.resolve()
   const shell = burnRoot.firstElementChild
-  if (!shell) return
+  if (!shell) return Promise.resolve()
   let h = 0
   for (const child of shell.children) {
     if (child.classList.contains('burn-body')) {
@@ -629,7 +629,12 @@ function burnResize() {
       h += child.offsetHeight
     }
   }
-  window.maxx.setPopoverHeight(Math.ceil(h) + 2)
+  return window.maxx.setPopoverHeight(Math.ceil(h) + 2).catch(() => {})
+}
+
+function burnPreparePopoverOpen() {
+  if (burnState.screen !== 'home' && burnState.screen !== 'mission-setup') burnGo('home')
+  return Promise.resolve(burnResize()).catch(() => {})
 }
 
 function burnAfterRender() {
@@ -734,11 +739,12 @@ async function burnInit() {
 
   // Reopening the popover resets to the home/usage screen — the renderer keeps
   // its state while merely hidden, so without this a subpage would persist.
+  window.__maxxPreparePopoverOpen = burnPreparePopoverOpen
   if (window.maxx?.onPopoverShown) {
     window.maxx.onPopoverShown(() => {
       // Preserve an in-progress mission setup (folder/models/goal the user is
       // mid-entry on); otherwise return to the home/usage screen.
-      if (burnState.screen !== 'home' && burnState.screen !== 'mission-setup') burnGo('home')
+      burnPreparePopoverOpen()
     })
   }
 
