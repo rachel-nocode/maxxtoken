@@ -103,6 +103,7 @@ function burnFormatSync(generatedAt) {
 
 // Token count (already in millions) → '5.5B' / '87M' / '400K' per DATA.md.
 function burnFormatTokensM(m) {
+  if (m == null || Number.isNaN(Number(m))) return '—'
   const v = Number(m) || 0
   if (v >= 1000) return `${(v / 1000).toFixed(1)}B`
   if (v >= 1) return `${v % 1 === 0 ? v : Math.round(v * 10) / 10}M`
@@ -116,21 +117,22 @@ function burnToM(raw) {
 // Best-effort expansion detail from the raw snapshot provider. Missing cost
 // data degrades to 0 (rendered as '—' / 'incl.').
 function burnAdaptExpanded(raw) {
-  const usage = raw?.tokenUsage || {}
-  const events = Number(usage.events ?? usage.requests) || 0
+  const usage = raw?.tokenUsage || null
+  const hasTokenSource = !!usage && Number.isFinite(Number(usage.total))
+  const events = Number(usage?.events ?? usage?.requests) || 0
 
   // Raw token millions (unrounded); burn-home formats via burnFormatTokensM so
   // sub-million precision survives and matches burnCostRow's formatting.
   const inOut = {
-    in: burnToM(usage.input),
-    cached: burnToM(usage.cached),
-    out: burnToM(usage.output),
+    in: hasTokenSource ? burnToM(usage.input) : null,
+    cached: hasTokenSource ? burnToM(usage.cached) : null,
+    out: hasTokenSource ? burnToM(usage.output) : null,
     events,
   }
 
-  const dailyRaw = Array.isArray(usage.dailyBreakdown)
+  const dailyRaw = Array.isArray(usage?.dailyBreakdown)
     ? usage.dailyBreakdown
-    : Array.isArray(usage.dailyUsage)
+    : Array.isArray(usage?.dailyUsage)
       ? usage.dailyUsage
       : []
   const daily = dailyRaw
@@ -143,22 +145,28 @@ function burnAdaptExpanded(raw) {
     .sort((a, b) => (a.date < b.date ? 1 : -1)) // newest first
 
   const sum = (arr, pick) => arr.reduce((acc, x) => acc + pick(x), 0)
-  const tokens = {
-    today: daily[0] || { tok: 0, usd: 0 },
-    yest: daily[1] || { tok: 0, usd: 0 },
-    last30: {
-      tok: sum(daily.slice(0, 30), (d) => d.tok),
-      usd: sum(daily.slice(0, 30), (d) => d.usd),
-    },
-  }
+  const tokens = hasTokenSource
+    ? {
+        today: daily[0] || { tok: 0, usd: 0 },
+        yest: daily[1] || { tok: 0, usd: 0 },
+        last30: {
+          tok: daily.length ? sum(daily.slice(0, 30), (d) => d.tok) : burnToM(usage.total),
+          usd: daily.length ? sum(daily.slice(0, 30), (d) => d.usd) : Number(usage.costUSD) || 0,
+        },
+      }
+    : {
+        today: { tok: null, usd: null },
+        yest: { tok: null, usd: null },
+        last30: { tok: null, usd: null },
+      }
 
-  const breakdowns = Array.isArray(usage.modelBreakdowns)
+  const breakdowns = Array.isArray(usage?.modelBreakdowns)
     ? usage.modelBreakdowns
-    : Array.isArray(usage.topModels)
+    : Array.isArray(usage?.topModels)
       ? usage.topModels
       : []
   const totalTok = breakdowns.reduce((acc, r) => acc + (Number(r.total ?? r.totalTokens) || 0), 0) || 1
-  const models = breakdowns
+  const models = hasTokenSource ? breakdowns
     .map((r) => {
       const tokRaw = Number(r.total ?? r.totalTokens) || 0
       return {
@@ -168,10 +176,14 @@ function burnAdaptExpanded(raw) {
         usd: Number(r.costUSD) || 0,
       }
     })
-    .sort((a, b) => b.burn - a.burn)
+    .sort((a, b) => b.burn - a.burn) : []
 
-  const costMeta = raw?.id === 'cursor' ? 'plan included' : 'estimated'
-  return { inOut, tokens, models, costMeta }
+  const costMeta = hasTokenSource
+    ? usage?.costAccuracy === 'hypothetical'
+      ? 'hypothetical'
+      : 'estimated'
+    : 'billing usage only'
+  return { inOut, tokens, models, costMeta, hasTokenSource }
 }
 
 function burnAdaptFooter(snap) {

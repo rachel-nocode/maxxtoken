@@ -357,6 +357,59 @@ test('grok web billing parser reads CodexBar gRPC-web quota payloads', async () 
   }
 })
 
+test('grok auth resolver refreshes expired OIDC access tokens before billing', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maxxtoken-grok-auth-'))
+  const now = Date.parse('2026-05-22T12:00:00Z')
+  const scope = 'https://auth.x.ai::client-id'
+  const authPath = path.join(home, 'auth.json')
+
+  try {
+    fs.writeFileSync(authPath, JSON.stringify({
+      [scope]: {
+        key: 'old-access-token',
+        auth_mode: 'oidc',
+        email: 'user@example.com',
+        refresh_token: 'refresh-token',
+        expires_at: '2026-05-22T11:00:00.000Z',
+        oidc_issuer: 'https://auth.x.ai',
+        oidc_client_id: 'client-id',
+      },
+    }))
+
+    const calls = []
+    const credentials = await grok._private.resolveCredentialsFresh(home, {
+      now,
+      fetchImpl: async (url, options) => {
+        calls.push({ url, options })
+        if (String(url).endsWith('/.well-known/openid-configuration')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ token_endpoint: 'https://auth.x.ai/oauth2/token' }),
+          }
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ access_token: 'new-access-token', refresh_token: 'new-refresh-token', expires_in: 3600 }),
+        }
+      },
+    })
+
+    assert.equal(credentials.accessToken, 'new-access-token')
+    assert.equal(credentials.auth.refreshToken, 'new-refresh-token')
+    assert.equal(calls.length, 2)
+    assert.equal(String(calls[1].options.body), 'grant_type=refresh_token&refresh_token=refresh-token&client_id=client-id')
+
+    const persisted = JSON.parse(fs.readFileSync(authPath, 'utf8'))[scope]
+    assert.equal(persisted.key, 'new-access-token')
+    assert.equal(persisted.refresh_token, 'new-refresh-token')
+    assert.equal(persisted.expires_at, '2026-05-22T13:00:00.000Z')
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('provider detection preselects token providers from env and local credential files', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maxxtoken-detect-creds-'))
   fs.mkdirSync(path.join(home, '.kimi', 'credentials'), { recursive: true })

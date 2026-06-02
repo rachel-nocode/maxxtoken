@@ -87,6 +87,8 @@ function burnWindowBar(label, pct, reset, burning) {
 }
 
 function burnCostRow(label, tok, usd) {
+  const hasTok = tok != null && !Number.isNaN(Number(tok))
+  const hasUsd = usd != null && Number.isFinite(Number(usd))
   return (
     `<div style="${bstyle({
       display: 'grid',
@@ -98,8 +100,8 @@ function burnCostRow(label, tok, usd) {
       padding: '5px 0',
     })}">` +
     `<span style="${bstyle({ color: BURN.text2 })}">${burnEsc(label)}</span>` +
-    `<span style="${bstyle({ color: BURN.text })}">${burnFormatTokensM(tok)} tokens</span>` +
-    `<span style="${bstyle({ color: usd > 0 ? BURN.limeText : BURN.text2 })}">${usd > 0 ? '$' + usd.toFixed(2) : '—'}</span>` +
+    `<span style="${bstyle({ color: hasTok ? BURN.text : BURN.text2 })}">${hasTok ? burnFormatTokensM(tok) + ' tokens' : '—'}</span>` +
+    `<span style="${bstyle({ color: hasUsd && usd > 0 ? BURN.limeText : BURN.text2 })}">${hasUsd && usd > 0 ? '$' + usd.toFixed(2) : '—'}</span>` +
     `</div>`
   )
 }
@@ -134,7 +136,7 @@ function burnProviderExpanded(p) {
     `</div>`
 
   const tokens =
-    burnSectionHead('TOKENS', `${x.inOut.events.toLocaleString()} EVENTS`) +
+    burnSectionHead('TOKENS', x.hasTokenSource ? `${x.inOut.events.toLocaleString()} EVENTS` : 'NOT AVAILABLE') +
     `<div style="${bstyle({ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 })}">` +
     burnStat('IN', burnFormatTokensM(x.inOut.in)) +
     burnStat('CACHED', burnFormatTokensM(x.inOut.cached)) +
@@ -143,9 +145,9 @@ function burnProviderExpanded(p) {
 
   const modelsBody = x.models.length
     ? x.models.map((m) => burnModelRow(m, burning)).join('')
-    : `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10, color: BURN.text2, letterSpacing: 0.4 })}">NO MODEL DATA</div>`
+    : `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10, color: BURN.text2, letterSpacing: 0.4 })}">${x.hasTokenSource ? 'NO MODEL DATA' : 'TOKEN DATA NOT EXPOSED'}</div>`
   const models =
-    burnSectionHead('MODEL BURN', `${x.models.length} ACTIVE`) +
+    burnSectionHead('MODEL BURN', x.hasTokenSource ? `${x.models.length} ACTIVE` : 'USAGE ONLY') +
     `<div style="${bstyle({ display: 'flex', flexDirection: 'column', gap: 8 })}">${modelsBody}</div>`
 
   return (
