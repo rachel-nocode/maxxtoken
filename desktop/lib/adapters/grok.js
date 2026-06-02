@@ -7,6 +7,7 @@ const { fetchWithTimeout } = require('../http')
 const DEFAULT_HISTORY_DAYS = 30
 const GROK_WEB_BILLING_URL = 'https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig'
 const USER_AGENT = 'MaxxToken'
+const OIDC_EARLY_REFRESH_MS = 5 * 60 * 1000
 
 function grokHome(options = {}) {
   return options.grokHome || options.env?.GROK_HOME || process.env.GROK_HOME || path.join(os.homedir(), '.grok')
@@ -88,10 +89,108 @@ function parseAuthFile(root) {
   const selected = (oidc || legacy || entries[0])?.[1]
   return selected ? {
     accessToken: clean(selected.key),
+    refreshToken: clean(selected.refresh_token || selected.refreshToken),
     email: clean(selected.email),
     authMode: clean(selected.auth_mode),
     expiresAt: clean(selected.expires_at),
+    oidcIssuer: clean(selected.oidc_issuer),
+    oidcClientId: clean(selected.oidc_client_id),
+    scope: (oidc || legacy || entries[0])?.[0] || null,
   } : {}
+}
+
+function parseTime(value) {
+  if (!value) return null
+  const ms = Date.parse(value)
+  return Number.isFinite(ms) ? ms : null
+}
+
+function tokenExpiresAt(body, now = Date.now()) {
+  const expiresIn = Number(body?.expires_in ?? body?.expiresIn)
+  if (Number.isFinite(expiresIn) && expiresIn > 0) return new Date(now + expiresIn * 1000).toISOString()
+  return null
+}
+
+async function tokenEndpointForIssuer(issuer, fetchImpl, timeoutMs) {
+  const base = clean(issuer) || 'https://auth.x.ai'
+  const discoveryURL = `${base.replace(/\/+$/, '')}/.well-known/openid-configuration`
+  const response = await fetchImpl(discoveryURL, {
+    method: 'GET',
+    headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
+  }, timeoutMs)
+  if (!response.ok) throw new Error(`Grok OIDC discovery failed (${response.status}).`)
+  const json = await response.json()
+  const endpoint = clean(json?.token_endpoint)
+  if (!endpoint) throw new Error('Grok OIDC discovery missing token endpoint.')
+  return endpoint
+}
+
+function authNeedsRefresh(auth, now = Date.now()) {
+  if (!auth?.refreshToken) return false
+  const expiresAt = parseTime(auth.expiresAt)
+  return expiresAt != null && expiresAt <= now + OIDC_EARLY_REFRESH_MS
+}
+
+function writeRefreshedAuth(root, auth, tokenJSON, now = Date.now()) {
+  const file = path.join(root, 'auth.json')
+  let raw
+  try {
+    raw = JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+
+  const scope = auth.scope && raw[auth.scope] ? auth.scope : Object.keys(raw)[0]
+  if (!scope || !raw[scope] || typeof raw[scope] !== 'object') return null
+
+  const nextAccess = clean(tokenJSON?.access_token || tokenJSON?.accessToken)
+  if (!nextAccess) throw new Error('Grok OIDC refresh returned no access token.')
+  raw[scope].key = nextAccess
+  const nextRefresh = clean(tokenJSON.refresh_token || tokenJSON.refreshToken)
+  if (nextRefresh) raw[scope].refresh_token = nextRefresh
+  const nextExpiresAt = tokenExpiresAt(tokenJSON, now)
+  if (nextExpiresAt) raw[scope].expires_at = nextExpiresAt
+
+  const tmp = `${file}.${process.pid}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify(raw, null, 2), { mode: 0o600 })
+  fs.renameSync(tmp, file)
+
+  return {
+    ...auth,
+    accessToken: nextAccess,
+    refreshToken: nextRefresh || auth.refreshToken,
+    expiresAt: nextExpiresAt || auth.expiresAt,
+  }
+}
+
+async function refreshAuthIfNeeded(root, auth, options = {}) {
+  if (!authNeedsRefresh(auth, options.now || Date.now())) return auth
+  const fetchImpl = options.fetchImpl || fetchWithTimeout
+  const timeoutMs = options.timeoutMs || 10000
+  const endpoint = await tokenEndpointForIssuer(auth.oidcIssuer, fetchImpl, timeoutMs)
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: auth.refreshToken,
+    client_id: auth.oidcClientId || 'b1a00492-073a-47ea-816f-4c329264a828',
+  })
+  const response = await fetchImpl(endpoint, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': USER_AGENT,
+    },
+    body,
+  }, timeoutMs)
+  let json = null
+  try {
+    json = await response.json()
+  } catch {
+    /* ignore parse details to avoid leaking provider payloads */
+  }
+  if (!response.ok) throw new Error(`Grok OIDC refresh failed (${response.status}).`)
+  return writeRefreshedAuth(root, auth, json, options.now || Date.now()) || auth
 }
 
 function resolveCredentials(root, options = {}) {
@@ -104,6 +203,21 @@ function resolveCredentials(root, options = {}) {
     cookieHeader: envCookie.cookieHeader || saved.cookieHeader || null,
     accessToken: envToken || envCookie.accessToken || saved.accessToken || auth.accessToken || null,
     auth,
+  }
+}
+
+async function resolveCredentialsFresh(root, options = {}) {
+  const credentials = resolveCredentials(root, options)
+  if (!credentials.auth?.refreshToken) return credentials
+  try {
+    const auth = await refreshAuthIfNeeded(root, credentials.auth, options)
+    return {
+      ...credentials,
+      accessToken: credentials.cookieHeader ? credentials.accessToken : auth.accessToken,
+      auth,
+    }
+  } catch {
+    return credentials
   }
 }
 
@@ -477,7 +591,7 @@ async function fetchWebBilling(credentials, options = {}) {
 // We infer "usage" the same way Gemini does: active days within the billing cycle.
 async function read(cycle, options = {}) {
   const root = grokHome(options)
-  const credentials = resolveCredentials(root, options)
+  const credentials = await resolveCredentialsFresh(root, options)
   let exists = Boolean(credentials.cookieHeader || credentials.accessToken)
   try {
     exists = exists || fs.existsSync(path.join(root, 'auth.json'))
@@ -580,8 +694,11 @@ module.exports = {
   _private: {
     grokHome,
     resolveCredentials,
+    resolveCredentialsFresh,
     manualCredentials,
     parseAuthFile,
+    refreshAuthIfNeeded,
+    authNeedsRefresh,
     parseGrokWebBillingResponse,
     fetchWebBilling,
     scanGrokSignals,
