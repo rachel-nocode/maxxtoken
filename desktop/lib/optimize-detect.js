@@ -54,6 +54,36 @@ const CONFIG = {
     alertDays: 30, // 30+ days idle => a whole unused billing cycle (alert)
     minMonthly: 5, // ignore sub-$5 plans — not worth a cancel prompt
   },
+  // Config bloat (#6): instruction files + MCP servers re-sent EVERY message.
+  // Rides on provider.configScan (filled by lib/config-bloat.js in the main
+  // process). Fires when the per-turn tax is meaningful OR the instruction file
+  // is over the documented target OR several MCP servers are loaded.
+  configBloat: {
+    minTokensPerTurn: 6000, // below this the per-message tax isn't worth a card
+    alertTokensPerTurn: 30000, // way over — only hard-alerts on usage-based plans
+    instrLineTarget: 200, // Anthropic's CLAUDE.md guidance: keep under ~200 lines
+    mcpNudge: 3, // 3+ loaded MCP servers is enough context fat to mention
+    assumedMsgsPerMonth: 900, // ~30 msgs/day — conservative $ estimate basis only
+  },
+  // Over-powered settings (#7): a coding agent set to a high reasoning effort
+  // by default thinks at max on every task. Reasoning bills as OUTPUT (the
+  // priciest tokens) — ~3–5x routine cost for no quality gain on simple work.
+  // Rides on provider.configScan.settings (Codex config.toml, via config-bloat).
+  overdrive: {
+    heavyEfforts: ['high', 'xhigh'], // only these defaults are "overdrive"
+    trimmableShare: 0.4, // est. share of output reclaimable by right-sizing effort
+  },
+  // Pace alert (#8): at the current burn rate the weekly cap runs out BEFORE it
+  // resets. Rides on window.pace (aggregate.js), which is computed from the
+  // provider's API-reported usedPct — accurate, not per-machine. The mirror of
+  // detectReset (under-using) → this is over-pacing toward the wall.
+  pace: {
+    projOver: 115, // projected ≥115% of cap at reset → on track to run out early
+    alertProjOver: 140, // ≥140% → hard alert, you'll hit the wall well before reset
+    minActualPct: 25, // ignore until the cap is meaningfully used (avoid early noise)
+    weekDays: 7, // weekly window length, for the "locked out" estimate
+    weeksPerMonth: 4.345,
+  },
   // Coding-agent providers are input-heavy BY DESIGN (read codebase, write small
   // edit) — a 30d ratio always looks "wasteful" and would cry wolf. So ratio
   // does NOT auto-fire for these; instead the UI offers an opt-in per-day
@@ -73,6 +103,8 @@ const CONFIG = {
     cacheDropPts: 10, // cache hit % falls another 10pts → resurface
     resetRisePts: 10, // reset expiring % climbs another 10pts → resurface
     ratioRelChange: 0.25, // ratio moves ±25% → resurface
+    bloatRiseTokens: 4000, // per-turn tax climbs another 4K tok → resurface
+    paceRisePts: 10, // projected-over-cap climbs another 10pts → resurface
   },
 }
 
@@ -90,6 +122,21 @@ const CACHE_DOCS = {
 
 function cacheDocFor(providerId) {
   return CACHE_DOCS[providerId] || CACHE_DOCS._default
+}
+
+// "how to trim context" deep-link for the config-bloat card. Falls back to the
+// Claude Code cost-management guide.
+const BLOAT_DOCS = {
+  claude: 'https://code.claude.com/docs/en/costs',
+  anthropic: 'https://code.claude.com/docs/en/costs',
+  codex: 'https://developers.openai.com/codex/guides/agents-md',
+  openai: 'https://developers.openai.com/codex/guides/agents-md',
+  chatgpt: 'https://developers.openai.com/codex/guides/agents-md',
+  _default: 'https://code.claude.com/docs/en/costs',
+}
+
+function bloatDocFor(providerId) {
+  return BLOAT_DOCS[providerId] || BLOAT_DOCS._default
 }
 
 function isAgentic(providerId) {
@@ -565,9 +612,250 @@ function detectDormant(provider, now) {
 }
 
 // ---------------------------------------------------------------------------
+// DETECTOR 5 — config bloat (instruction files + MCP re-sent every message)
+// Rides on provider.configScan (lib/config-bloat.js, main process). Pure here:
+// no I/O, so it still runs in the renderer + CLI. On flat agent plans this is
+// HEADROOM (more usage before the limit), never a hard bill — softSaving=true.
+// ---------------------------------------------------------------------------
+function detectConfigBloat(provider) {
+  const scan = provider && provider.configScan
+  if (!scan) return null
+  const C = CONFIG.configBloat
+  const perTurn = Number(scan.estTokensPerTurn) || 0
+  const lines = Number(scan.instrLines) || 0
+  const mcp = Number(scan.mcpServers) || 0
+
+  const overLines = lines > C.instrLineTarget
+  const manyMcp = mcp >= C.mcpNudge
+  // Need at least one real reason: a meaningful per-turn tax, an oversized
+  // instruction file, or several loaded MCP servers.
+  if (perTurn < C.minTokensPerTurn && !overLines && !manyMcp) return null
+
+  const flat = isFlatPlan(provider)
+  // Flat subscription (Pro/Max $X/mo) → trimming buys quota, not a smaller bill.
+  // Only usage-based billing turns this into a hard alert.
+  const severity = !flat && perTurn >= C.alertTokensPerTurn ? 'alert' : 'nudge'
+
+  const rates = ratesFor(provider.id)
+  // The config prefix is cached after turn 1, so its marginal cost is the
+  // cache-read rate, paid once per message. Value it over a conservative month.
+  const saving = perTurn * C.assumedMsgsPerMonth * rates.cacheRead
+
+  const instr = scan.instrFile || 'instructions'
+  const reasons = []
+  if (overLines) reasons.push(`${instr} is ${lines} lines (aim < ${C.instrLineTarget})`)
+  if (manyMcp) reasons.push(`${mcp} MCP server${mcp === 1 ? '' : 's'} loaded`)
+  const detailRows = []
+  if (scan.instrFile) {
+    detailRows.push({
+      l: `${instr} size`,
+      v: `${lines} lines · ${fmtTokRaw(scan.instrTokens)} tok`,
+      tone: overLines ? 'warn' : 'text',
+    })
+  }
+  if (mcp > 0) {
+    detailRows.push({
+      l: 'MCP servers',
+      v: `${mcp} · ≈${fmtTokRaw(scan.mcpTokens)} tok`,
+      tone: manyMcp ? 'warn' : 'text',
+    })
+  }
+  detailRows.push({ l: 'Extra per message', v: `${fmtTokRaw(perTurn)} tok`, tone: 'warn', strong: true })
+  detailRows.push({
+    l: flat ? 'Room reclaimed' : 'Worth cutting',
+    v: `≈${fmtUSD(saving)} / mo`,
+    tone: 'lime',
+    strong: true,
+  })
+
+  // meter fills toward a 40K "very bloated" ceiling so the bar reads at a glance.
+  const meterPct = pct((perTurn / 40000) * 100)
+
+  return {
+    id: `${provider.id}:configBloat`,
+    kind: 'configBloat',
+    provider: provider.id,
+    providerName: providerName(provider),
+    plan: planLabel(provider),
+    severity,
+    title: 'CARRYING DEAD WEIGHT EVERY MESSAGE',
+    metric: fmtTokRaw(perTurn),
+    metricValue: perTurn,
+    metricUnit: 'EXTRA / MSG',
+    signal:
+      reasons.length > 0
+        ? `Every message re-sends ${reasons.join(' + ')} before you type.`
+        : `Every message re-sends ${fmtTokRaw(perTurn)} tokens of setup before you type.`,
+    saving,
+    savingNote: flat ? 'ROOM' : '/MO',
+    softSaving: flat, // flat agent plan → headroom (more usage), not a bill cut
+    fix:
+      overLines && manyMcp
+        ? `Trim ${instr} under ${C.instrLineTarget} lines and turn off idle MCP servers.`
+        : overLines
+          ? `Trim ${instr} under ${C.instrLineTarget} lines — move details into skills.`
+          : manyMcp
+            ? 'Turn off MCP servers you are not using right now.'
+            : 'Slim your setup files so each message carries less.',
+    source: scan.instrFile ? `${scan.instrFile} + MCP config` : 'MCP config',
+    action: { type: 'external', url: bloatDocFor(provider.id) },
+    meter: { type: 'bloat', filled: meterPct },
+    detail: {
+      rows: detailRows,
+      barsTitle: null,
+      bars: null,
+      note: flat
+        ? 'On a flat plan this is headroom, not a smaller bill — every token your setup re-sends is a token you can’t spend on real work before you hit your limit. Keeping instruction files lean and turning off idle MCP servers lets you do more per session. ($ is a rough estimate at ~30 messages/day.)'
+        : 'These setup files reload on every message. Trimming them cuts what you pay on every single turn. ($ is a rough estimate at ~30 messages/day.)',
+      primary: 'How to trim →',
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DETECTOR 6 — overdrive (reasoning effort set too high by default)
+// Codex exposes a default reasoning effort in config.toml; high/xhigh makes
+// every task think at max. Reasoning bills as output, so this is the single
+// biggest avoidable Codex drain. Pure: rides on the settings we already scanned.
+// ---------------------------------------------------------------------------
+const EFFORT_INTENSITY = { minimal: 0, low: 1, medium: 2, high: 3, xhigh: 4 }
+
+function detectOverdrive(provider) {
+  const scan = provider && provider.configScan
+  const settings = scan && scan.settings
+  if (!settings) return null
+  const effort = String(settings.effort || '').toLowerCase()
+  if (!CONFIG.overdrive.heavyEfforts.includes(effort)) return null
+
+  const usage = tokenUsage(provider)
+  const output = usage ? Number(usage.output) || 0 : 0
+  const flat = isFlatPlan(provider)
+  const rates = ratesFor(provider.id)
+  // Reasoning bills as output; right-sizing effort reclaims a share of it.
+  const saving = output * CONFIG.overdrive.trimmableShare * rates.output
+
+  const planEffort = String(settings.planEffort || '').toLowerCase()
+  const rows = [
+    { l: 'Default effort', v: effort.toUpperCase(), tone: 'warn', strong: true },
+  ]
+  if (planEffort) rows.push({ l: 'Plan-mode effort', v: planEffort.toUpperCase(), tone: 'text' })
+  if (settings.model) rows.push({ l: 'Model', v: settings.model, tone: 'text' })
+  if (output > 0) rows.push({ l: 'AI replies · 30d', v: `${fmtTokRaw(output)} tok` })
+  rows.push({
+    l: flat ? 'Room reclaimed' : 'Worth cutting',
+    v: `≈${fmtUSD(saving)} / mo`,
+    tone: 'lime',
+    strong: true,
+  })
+
+  return {
+    id: `${provider.id}:overdrive`,
+    kind: 'overdrive',
+    provider: provider.id,
+    providerName: providerName(provider),
+    plan: planLabel(provider),
+    severity: 'nudge', // a setting nudge, never a hard alert
+    title: 'THINKING AT MAX ON EVERY TASK',
+    metric: effort.toUpperCase(),
+    metricValue: EFFORT_INTENSITY[effort] != null ? EFFORT_INTENSITY[effort] : 3,
+    metricUnit: 'DEFAULT EFFORT',
+    signal: `Every task reasons at ${effort} effort — most jobs don't need it.`,
+    saving,
+    savingNote: flat ? 'ROOM' : '/MO',
+    softSaving: flat, // flat plan → headroom (more usage), not a smaller bill
+    fix: `Set medium as your default; switch to ${effort} only for hard jobs.`,
+    source: 'config.toml effort setting',
+    action: { type: 'external', url: 'https://developers.openai.com/codex/config-reference' },
+    meter: { type: 'bloat', filled: effort === 'xhigh' ? 100 : 78 },
+    detail: {
+      rows,
+      barsTitle: null,
+      bars: null,
+      note: flat
+        ? 'Reasoning tokens are billed as output — the priciest kind — and high effort can use several times more of them. On a flat plan that burns your weekly limit faster for no quality gain on routine work. Set medium as the default and bump to high only for genuinely hard tasks (or use /effort per task). ($ is a rough estimate of reclaimable output.)'
+        : 'Reasoning bills as output — the priciest tokens — and high effort uses several times more on every task. Drop the default to medium and reserve high for hard jobs to cut what you pay each turn. ($ is a rough estimate of reclaimable output.)',
+      primary: 'How to set effort →',
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DETECTOR 7 — pace alert (on track to run out before reset)
+// The early warning $20-plan users beg for. Rides on the weekly window's pace,
+// already projected in aggregate.js from API-reported usedPct (global, not
+// per-machine). Fires only when the burn rate exhausts the cap BEFORE reset.
+// ---------------------------------------------------------------------------
+function detectPace(provider, now) {
+  const wk = weeklyWindow(provider)
+  const pace = (wk && wk.pace) || provider.pace || null
+  if (!pace) return null
+  if (pace.willLastToReset) return null // current rate lasts to reset — safe
+  if (!pace.exhaustsAt) return null // no exhaustion projection available
+
+  const C = CONFIG.pace
+  const proj = Number(pace.projectedAtResetPercent) || 0
+  const actual = Number(pace.actualUsedPercent) || 0
+  if (proj < C.projOver) return null
+  if (actual < C.minActualPct) return null // too little used to trust the slope
+
+  const msLeft = pace.exhaustsAt - now
+  if (msLeft <= 0) return null // already out — that's a different (post-hoc) state
+
+  const resetAt = (wk && wk.resetAt) || soonestResetAt(provider)
+  const daysEarly = resetAt ? Math.max(0, (resetAt - pace.exhaustsAt) / DAY_MS) : 0
+  const overshoot = Math.max(0, Math.round(proj - 100))
+
+  // On a flat plan the "value at risk" = the slice of the weekly cap you'll be
+  // locked out of (days early / 7). Soft: it's lost capacity, not a bill.
+  const monthly = Number(provider.monthly) || 0
+  const weeklyCapValue = monthly / C.weeksPerMonth
+  const saving = weeklyCapValue > 0 ? (Math.min(daysEarly, C.weekDays) / C.weekDays) * weeklyCapValue : 0
+
+  const severity = proj >= C.alertProjOver ? 'alert' : 'nudge'
+  const expected = Number(pace.expectedUsedPercent) || 0
+  const daysEarlyLabel = daysEarly >= 1 ? `${Math.round(daysEarly)}d` : '<1d'
+
+  return {
+    id: `${provider.id}:pace`,
+    kind: 'pace',
+    provider: provider.id,
+    providerName: providerName(provider),
+    plan: planLabel(provider),
+    severity,
+    title: 'ON TRACK TO RUN OUT EARLY',
+    metric: `+${overshoot}%`,
+    metricValue: proj, // for re-trigger comparison
+    metricUnit: 'OVER PACE',
+    signal: `At this rate you hit your weekly limit in ${resetLabel(pace.exhaustsAt, now)} — about ${daysEarlyLabel} before it resets.`,
+    saving,
+    savingNote: 'AT RISK',
+    softSaving: true, // lost capacity / headroom, never a hard recoverable bill
+    fix: 'Save heavy jobs for after reset, or switch to a cheaper model now.',
+    source: 'weekly use % · time to reset',
+    action: { type: 'providerLink', kind: 'dashboard' },
+    meter: { type: 'pace', used: actual, expected },
+    detail: {
+      rows: [
+        { l: 'Used so far', v: `${actual}%`, tone: 'warn', strong: true },
+        { l: 'Normal by now', v: `${expected}%` },
+        { l: 'Runs out in', v: resetLabel(pace.exhaustsAt, now), tone: 'warn', strong: true },
+        { l: 'Resets in', v: resetLabel(resetAt, now), tone: 'lime' },
+        ...(saving > 0
+          ? [{ l: 'Locked out', v: `${daysEarlyLabel} · ≈${fmtUSD(saving)}`, tone: 'warn' }]
+          : []),
+      ],
+      barsTitle: null,
+      bars: null,
+      note: 'This reads your provider’s reported weekly usage, so it counts every device — not just this one. You are burning faster than the week allows; easing off now or saving the big jobs for after the reset keeps you from hitting the wall mid-task.',
+      primary: 'See my usage →',
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // public API
 // ---------------------------------------------------------------------------
-const DETECTORS = [detectCache, detectRatio, detectReset, detectDormant]
+const DETECTORS = [detectCache, detectRatio, detectReset, detectDormant, detectConfigBloat, detectOverdrive, detectPace]
 
 // detectSignals(snapshot, { now }) → Signal[] sorted by saving desc.
 function detectSignals(snapshot, opts = {}) {
@@ -654,6 +942,12 @@ function signalMovedPastDelta(signal, record) {
       return cur >= prev + CONFIG.retrigger.resetRisePts
     case 'ratio':
       return Math.abs(cur - prev) / (Math.abs(prev) || 1) > CONFIG.retrigger.ratioRelChange
+    case 'configBloat':
+      return cur >= prev + CONFIG.retrigger.bloatRiseTokens
+    case 'overdrive':
+      return cur > prev // effort bumped even higher → resurface
+    case 'pace':
+      return cur >= prev + CONFIG.retrigger.paceRisePts
     default:
       return false
   }
@@ -680,7 +974,7 @@ const OPTIMIZE_API = {
   // exposed for tests / tuning
   CONFIG,
   FAMILY_RATES,
-  _detectors: { detectCache, detectRatio, detectReset, detectDormant },
+  _detectors: { detectCache, detectRatio, detectReset, detectDormant, detectConfigBloat, detectOverdrive, detectPace },
   _fmt: { fmtUSD, fmtTokRaw, pct },
 }
 

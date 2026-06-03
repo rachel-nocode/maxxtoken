@@ -66,6 +66,15 @@ const logCli = require('../lib/log-cli')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const vm = require('node:vm')
+
+function loadBurnAdaptForTest() {
+  const source = fs.readFileSync(path.join(__dirname, '../burn/burn-adapt.js'), 'utf8')
+  const context = { Date }
+  vm.createContext(context)
+  vm.runInContext(source, context)
+  return context
+}
 
 test('monthly quota value exposes one canonical spent/left pair', () => {
   const value = _private.valueFromMonthly({ monthly: 200 }, 12, {
@@ -886,6 +895,41 @@ test('claude usage parser exposes CodexBar-style specific buckets', () => {
   assert.equal(windows.find((w) => w.label === 'Daily Routines').usedPct, 0)
 })
 
+test('burn adapter only renders primary provider windows plus Claude Agent SDK credit', () => {
+  const { burnAdaptProvider } = loadBurnAdaptForTest()
+  const resetAt = Date.now() + 5 * 3600e3
+  const adapted = burnAdaptProvider({
+    id: 'claude',
+    name: 'Claude',
+    plan: 'Max 20x',
+    connected: true,
+    capturedPct: 3,
+    resetAt,
+    windows: [
+      { label: 'Session', kind: '5h', usedPct: 2, resetAt },
+      { label: 'Weekly', kind: '7d', usedPct: 3, resetAt },
+      { label: 'Sonnet', kind: '7d', usedPct: 0, resetAt },
+      { label: 'Opus', kind: '7d', usedPct: 0, resetAt },
+      { label: 'Agent SDK', kind: 'agent-sdk-credit', usedPct: null, valueLabel: '$200/mo', resetAt },
+    ],
+  })
+
+  const visible = JSON.parse(JSON.stringify(adapted.windows.map((w) => [w.label, w.value])))
+  assert.deepEqual(visible, [
+    ['5H', '2%'],
+    ['7D', '3%'],
+    ['AGENT SDK', '$200/MO'],
+  ])
+  assert.equal(adapted.windowSummary, '5H 2% · 7D 3% · AGENT SDK $200/MO')
+})
+
+test('Claude Agent SDK credit amount follows official paid plan tiers', () => {
+  assert.equal(_private.claudeAgentSdkCreditAmount('Pro'), 20)
+  assert.equal(_private.claudeAgentSdkCreditAmount('Max 5x'), 100)
+  assert.equal(_private.claudeAgentSdkCreditAmount('Max 20x'), 200)
+  assert.equal(_private.claudeAgentSdkCreditAmount('Claude'), null)
+})
+
 test('token cost uses cached models.dev prices for new OpenAI and Anthropic models', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'maxxtoken-models-dev-'))
   const old = process.env.MAXXTOKEN_MODELS_DEV_CACHE_ROOT
@@ -984,6 +1028,7 @@ test('widget snapshot exports compact token-maxxing state and keeps enabled prov
             pace: { tone: 'reserve', leftLabel: '20% in reserve', willLastToReset: true, expectedUsedPercent: 50, projectedAtResetPercent: 80 },
           },
           { label: 'Session', kind: '5h', usedPct: 10, resetAt: Date.parse('2026-05-21T15:00:00Z') },
+          { label: 'Agent SDK', kind: 'agent-sdk-credit', usedPct: null, valueLabel: '$200/mo', creditUSD: 200, resetAt: Date.parse('2026-06-15T00:00:00Z') },
         ],
         tokenUsage: {
           total: 123,
@@ -1030,6 +1075,8 @@ test('widget snapshot exports compact token-maxxing state and keeps enabled prov
   assert.equal(compact.providers[0].primaryWindow.pace.expectedUsedPercent, 50)
   assert.equal(compact.providers[0].primaryWindow.pace.projectedAtResetPercent, 80)
   assert.equal(compact.providers[0].secondaryWindow.label, 'Session')
+  assert.equal(compact.providers[0].windows[2].valueLabel, '$200/mo')
+  assert.equal(compact.providers[0].windows[2].creditUSD, 200)
   assert.equal(compact.providers[0].tokenUsage.total, 123)
   assert.equal(compact.providers[0].tokenUsage.costUSD, 0.04)
   assert.equal(compact.providers[0].tokenUsage.pricingSource, 'models.dev')
@@ -1044,6 +1091,40 @@ test('widget snapshot exports compact token-maxxing state and keeps enabled prov
   assert.equal(compact.providers[1].connected, false)
   assert.equal(compact.providers[1].needsKey, true)
   assert.equal(compact.providers[1].error, 'Cursor needs Cookie')
+})
+
+test('widget snapshot preserves daily token totals from split token fields', () => {
+  const compact = widgetSnapshot.buildWidgetSnapshot({
+    generatedAt: Date.parse('2026-06-02T12:00:00Z'),
+    providers: [
+      {
+        id: 'claude',
+        name: 'Claude',
+        connected: true,
+        windows: [],
+        tokenUsage: {
+          total: 1200,
+          input: 100,
+          cached: 1000,
+          output: 100,
+          costUSD: 0.42,
+          dailyBreakdown: [
+            {
+              dayKey: '2026-06-02',
+              input: 12,
+              cached: 345,
+              output: 6,
+              costUSD: 0.13,
+            },
+          ],
+        },
+      },
+    ],
+  })
+
+  assert.equal(compact.providers[0].dailyUsage[0].totalTokens, 363)
+  assert.equal(compact.providers[0].tokenUsage.dailyUsage[0].totalTokens, 363)
+  assert.equal(compact.providers[0].dailyUsage[0].costUSD, 0.13)
 })
 
 test('cached provider fallback keeps last good usage when a transient poll fails', () => {
