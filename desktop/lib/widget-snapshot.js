@@ -36,6 +36,7 @@ function compactProvider(provider) {
     secondaryWindow: compactWindow(secondary),
     tokenUsage,
     dailyUsage: tokenUsage?.dailyUsage || [],
+    configScan: provider.configScan || null,
   }
 }
 
@@ -92,15 +93,28 @@ function compactModelBreakdowns(modelBreakdowns) {
 
 function compactDailyUsage(dailyBreakdown) {
   return (Array.isArray(dailyBreakdown) ? dailyBreakdown : [])
-    .filter((row) => Number(row?.total) > 0 || Number.isFinite(Number(row?.costUSD)))
+    .map((row) => {
+      const totalTokens = dailyTotalTokens(row)
+      return {
+        dayKey: row.date || row.dayKey || null,
+        totalTokens,
+        costUSD: row.costUSD ?? null,
+        requests: row.requests ?? null,
+        topModels: compactModelBreakdowns(row.modelBreakdowns).slice(0, 3),
+      }
+    })
+    .filter((row) => Number(row.totalTokens) > 0 || Number.isFinite(Number(row.costUSD)))
     .slice(0, 14)
-    .map((row) => ({
-      dayKey: row.date || row.dayKey || null,
-      totalTokens: row.total ?? null,
-      costUSD: row.costUSD ?? null,
-      requests: row.requests ?? null,
-      topModels: compactModelBreakdowns(row.modelBreakdowns).slice(0, 3),
-    }))
+}
+
+function dailyTotalTokens(row) {
+  const explicit = Number(row?.total ?? row?.totalTokens)
+  if (Number.isFinite(explicit) && explicit > 0) return explicit
+  const split =
+    (Number(row?.input) || 0) +
+    (Number(row?.cached) || 0) +
+    (Number(row?.output) || 0)
+  return split > 0 ? split : null
 }
 
 function compactWindow(window) {
@@ -109,6 +123,8 @@ function compactWindow(window) {
     label: window.label || window.kind || 'Window',
     kind: window.kind || 'cycle',
     usedPct: window.usedPct ?? null,
+    valueLabel: window.valueLabel || null,
+    creditUSD: window.creditUSD ?? null,
     resetAt: window.resetAt || null,
     historyRiskPct: window.history?.missRiskPct || null,
     pace: window.pace

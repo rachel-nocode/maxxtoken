@@ -78,6 +78,8 @@ function publicProvider(p) {
           label: w.label ?? null,
           kind: w.kind ?? null,
           usedPct: w.usedPct ?? null,
+          valueLabel: w.valueLabel ?? null,
+          creditUSD: w.creditUSD ?? null,
           resetAt: w.resetAt ?? null,
           periodMs: w.periodMs ?? null,
           reservePct: w.reservePct ?? null,

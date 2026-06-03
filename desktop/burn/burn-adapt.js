@@ -28,6 +28,36 @@ function burnFindWindow(windows, kind) {
   return windows.find((w) => w.kind !== '5h' && w.kind !== 'cycle') || null
 }
 
+function burnFiniteNumber(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+function burnWindowCaption(window) {
+  const label = String(window?.label || window?.kind || 'Window').toUpperCase()
+  const kind = String(window?.kind || '').toLowerCase()
+  if (kind === '5h') return '5H'
+  if (kind === '7d') return '7D'
+  if (kind === 'cycle') return label
+  return label
+}
+
+function burnPrimaryWindows(windows) {
+  const session = burnFindWindow(windows, '5h')
+  const weekly = burnFindWindow(windows, 'weekly')
+  const agentSdk = (windows || []).find((w) => w.kind === 'agent-sdk-credit')
+  const primary = [session, weekly].filter(Boolean)
+  if (agentSdk) primary.push(agentSdk)
+  if (primary.length) return primary
+  return (windows || []).slice(0, 1)
+}
+
+function burnWindowValue(window) {
+  if (window?.valueLabel) return String(window.valueLabel).toUpperCase()
+  const pct = burnFiniteNumber(window?.usedPct)
+  return pct == null ? '—' : `${burnPct(pct)}%`
+}
+
 function burnPct(v) {
   return Math.max(0, Math.min(100, Math.round(Number(v) || 0)))
 }
@@ -64,8 +94,16 @@ function burnAdaptProvider(provider) {
   const used = burnPct(provider.capturedPct)
   const status = burnStatus(provider, windows)
   // Reset shown on the collapsed row: prefer the soonest window reset.
-  const resets = windows.map((w) => w.resetAt).filter(Boolean)
+  const resets = [...windows.map((w) => w.resetAt), provider.resetAt].filter(Boolean)
   const soonest = resets.length ? Math.min(...resets) : null
+  const displayWindows = burnPrimaryWindows(windows)
+    .filter((w) => w && (w.kind !== 'cycle' ? true : w?.label))
+    .map((w) => ({
+      label: burnWindowCaption(w),
+      pct: burnFiniteNumber(w.usedPct) == null ? null : burnPct(w.usedPct),
+      value: burnWindowValue(w),
+      reset: burnFormatReset(w.resetAt),
+    }))
 
   return {
     id: provider.id,
@@ -74,6 +112,8 @@ function burnAdaptProvider(provider) {
     used,
     s5h: session ? burnPct(session.usedPct) : 0,
     w7d: weekly ? burnPct(weekly.usedPct) : used,
+    windowSummary: displayWindows.map((w) => `${w.label} ${w.value}`).join(' · '),
+    windows: displayWindows,
     status,
     reset: burnFormatReset(soonest),
     sessionReset: burnFormatReset(session?.resetAt ?? soonest),
@@ -118,7 +158,7 @@ function burnToM(raw) {
 // data degrades to 0 (rendered as '—' / 'incl.').
 function burnAdaptExpanded(raw) {
   const usage = raw?.tokenUsage || null
-  const hasTokenSource = !!usage && Number.isFinite(Number(usage.total))
+  const hasTokenSource = !!usage && Number.isFinite(Number(usage.total)) && Number(usage.total) > 0
   const events = Number(usage?.events ?? usage?.requests) || 0
 
   // Raw token millions (unrounded); burn-home formats via burnFormatTokensM so
@@ -183,7 +223,7 @@ function burnAdaptExpanded(raw) {
       ? 'hypothetical'
       : 'estimated'
     : 'billing usage only'
-  return { inOut, tokens, models, costMeta, hasTokenSource }
+  return { inOut, tokens, models, costMeta, hasTokenSource, hasDailyUsage: daily.length > 0 }
 }
 
 function burnAdaptFooter(snap) {

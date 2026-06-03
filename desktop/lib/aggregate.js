@@ -54,6 +54,7 @@ const providerLinks = require('./provider-links')
 const tokenCost = require('./token-cost')
 const logger = require('./logger')
 const widgetSnapshot = require('./widget-snapshot')
+const configBloat = require('./config-bloat')
 
 const PROVIDER_TIMEOUT_MS = 30000
 const STATUS_TIMEOUT_MS = 8000
@@ -788,6 +789,28 @@ function valueFromSpendLeft(spentValue, leftValue, meta) {
   return valueFields(spent + left, spent, left, null, meta)
 }
 
+function claudeAgentSdkCreditAmount(plan) {
+  const label = String(plan || '').toLowerCase()
+  if (/\b20x\b/.test(label) || /enterprise.*premium/.test(label)) return 200
+  if (/\b5x\b/.test(label) || /team.*premium/.test(label)) return 100
+  if (/\bpro\b/.test(label) || /team.*standard/.test(label) || /enterprise/.test(label)) return 20
+  return null
+}
+
+function claudeAgentSdkCreditWindow(plan, cycle) {
+  const amount = claudeAgentSdkCreditAmount(plan)
+  if (!amount) return null
+  return {
+    label: 'Agent SDK',
+    kind: 'agent-sdk-credit',
+    usedPct: null,
+    valueLabel: `$${amount}/mo`,
+    creditUSD: amount,
+    resetAt: cycle?.endMs || null,
+    periodMs: null,
+  }
+}
+
 async function buildProvider(id, conf, cycle, config = loadConfig(), options = {}) {
   const tokenOptions = { tokenHistoryDays: config.tokenHistoryDays, skipTokenHistory: options.heavy === false }
   const base = { id, name: conf.name, plan: conf.plan, monthly: conf.monthly, links: providerLinks.linksForProvider(id) }
@@ -799,12 +822,16 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
     const session = d.windows.find((w) => w.label === 'Session')
     const capturedPct = weekly ? weekly.usedPct : session ? session.usedPct : null
     const urgent = d.windows.some(windowUrgent)
+    const plan = d.plan || conf.plan
+    const windows = id === 'claude'
+      ? [...d.windows, claudeAgentSdkCreditWindow(plan, cycle)].filter(Boolean)
+      : d.windows
     return {
       ...base,
       connected: true,
-      plan: d.plan || conf.plan,
+      plan,
       ...valueFromMonthly(conf, capturedPct, { label: 'live quota', accuracy: 'live' }),
-      windows: d.windows,
+      windows,
       tokenUsage: d.tokenUsage || null,
       extra: d.extra || [],
       resetAt: weekly ? weekly.resetAt : session ? session.resetAt : cycle.endMs,
@@ -1861,28 +1888,35 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
     const d = await grok.read(cycle, tokenOptions)
     if (!d.connected) return { ...base, connected: false, activity: 'none' }
     const livePct = Number(d.billing?.usedPercent)
-    const capturedPct = Number.isFinite(livePct)
-      ? Math.round(Math.max(0, Math.min(100, livePct)))
-      : Math.min(100, Math.round((d.activeDays / cycle.daysElapsed) * 100))
-    const urgent = cycle.daysLeft <= 3 && capturedPct < 70
+    const capturedPct = Number.isFinite(livePct) ? Math.round(Math.max(0, Math.min(100, livePct))) : null
+    const urgent = capturedPct != null && cycle.daysLeft <= 3 && capturedPct < 70
+    const resetAt = d.billing?.resetsAt || cycle.endMs
     return {
       ...base,
       connected: true,
       ...valueFromMonthly(conf, capturedPct, {
-        label: d.billing ? 'live quota' : 'activity estimate',
-        accuracy: d.billing ? 'live' : 'estimate',
-        usageLabel: d.billing ? 'used' : 'active',
+        label: d.billing ? 'live Grok credits' : 'local Grok activity',
+        accuracy: d.billing ? 'live' : 'local',
+        usageLabel: 'used',
       }),
-      windows: [],
+      windows: capturedPct == null
+        ? []
+        : [
+            {
+              label: 'Credits',
+              kind: 'cycle',
+              usedPct: capturedPct,
+              resetAt,
+              periodMs: null,
+            },
+          ],
       extra: [
         d.accountEmail ? { label: 'Account', value: d.accountEmail } : null,
         { label: 'Sessions', value: String(d.sessions) },
         { label: 'Active days', value: `${d.activeDays} / ${cycle.daysElapsed}` },
-        d.tokenUsage?.total ? { label: 'Tokens', value: String(Math.round(d.tokenUsage.total)) } : null,
-        d.tokenUsage?.modelNames?.length ? { label: 'Models', value: d.tokenUsage.modelNames.slice(0, 2).join(', ') } : null,
       ].filter(Boolean),
-      tokenUsage: d.tokenUsage || null,
-      resetAt: d.billing?.resetsAt || cycle.endMs,
+      tokenUsage: null,
+      resetAt,
       resetKind: d.billing?.resetsAt ? 'monthly' : 'cycle',
       urgent,
       activity: d.billing ? 'live' : activityState(d.lastActive),
@@ -3444,6 +3478,13 @@ async function snapshot(options = {}) {
   providers = providers.map((provider) => (
     provider?.connected && !provider.lastUpdatedAt ? { ...provider, lastUpdatedAt: snapStart } : provider
   ))
+  // Attach the config-bloat scan (instruction files + MCP re-sent every message)
+  // so the pure Optimize detector can flag it without doing any I/O itself.
+  providers = providers.map((provider) => {
+    if (!provider?.connected) return provider
+    const scan = configBloat.scanConfigBloat(provider.id)
+    return scan ? { ...provider, configScan: scan } : provider
+  })
   // Honor user-defined ordering. Unknown ids drop to end in original order.
   const orderIndex = new Map((config.providerOrder || []).map((id, i) => [id, i]))
   providers = providers.slice().sort((a, b) => {
@@ -3612,5 +3653,7 @@ module.exports = {
     providerHasUsefulUsage,
     carryForwardTokenUsage,
     resetQueueFromProviders,
+    claudeAgentSdkCreditAmount,
+    claudeAgentSdkCreditWindow,
   },
 }

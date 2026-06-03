@@ -72,6 +72,17 @@ function optMeter(meter) {
       `</div>`
     )
   }
+  if (meter.type === 'pace') {
+    // lime up to where you SHOULD be by now; warn for the over-pace beyond it.
+    const used = Math.round((Math.max(0, Math.min(100, meter.used)) / 100) * cells)
+    const exp = Math.round((Math.max(0, Math.min(100, meter.expected)) / 100) * cells)
+    return optCells((i) => (i < exp ? BURN.lime : i < used ? BURN.warn : BURN.text4))
+  }
+  if (meter.type === 'bloat') {
+    // warn-lit bar showing how heavy the per-message setup is (vs a 40K ceiling)
+    const lit = Math.round((Math.max(0, Math.min(100, meter.filled)) / 100) * cells)
+    return optCells((i) => (i < lit ? BURN.warn : BURN.text4))
+  }
   if (meter.type === 'dormant') {
     return (
       `<div style="${bstyle({ position: 'relative', height: 2, width: '100%', background: BURN.text4 })}">` +

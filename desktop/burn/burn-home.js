@@ -49,7 +49,7 @@ function burnProviderRow(p, expanded) {
       letterSpacing: 0.4,
       fontVariantNumeric: 'tabular-nums',
     })}">` +
-    `<span>5H ${p.s5h}% · 7D ${p.w7d}%</span>` +
+    `<span>${burnEsc(p.windowSummary || '')}</span>` +
     `<span>RESET ${burnEsc(p.reset.toUpperCase())}</span>` +
     `</div>`
 
@@ -73,17 +73,20 @@ function burnProviderRow(p, expanded) {
 }
 
 // Window bar block (SESSION · 5H / WEEKLY · 7D).
-function burnWindowBar(label, pct, reset, burning) {
+function burnWindowBar(label, pct, reset, burning, value) {
+  const pctNum = Number(pct)
+  const hasPct = Number.isFinite(pctNum)
+  const valueText = value || (hasPct ? `${pctNum}%` : '—')
   const head =
     `<div style="${bstyle({ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 })}">` +
     `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9.5, color: BURN.text2, letterSpacing: 0.7 })}">${burnEsc(label)}</span>` +
     `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 14, fontWeight: 700, color: burning ? BURN.warnText : BURN.text, fontVariantNumeric: 'tabular-nums' })}">` +
-    `${pct}<span style="${bstyle({ fontSize: 9, color: BURN.text2 })}">%</span></span>` +
+    `${burnEsc(valueText)}</span>` +
     `</div>`
   const caption =
     `<div style="${bstyle({ marginTop: 5, fontFamily: BURN_FONT.mono, fontSize: 9, color: BURN.text2, letterSpacing: 0.5, textAlign: 'right', fontVariantNumeric: 'tabular-nums' })}">` +
     `RESETS IN ${burnEsc(reset.toUpperCase())}</div>`
-  return `<div>${head}${burnSegBar({ pct, burning })}${caption}</div>`
+  return `<div>${head}${burnSegBar({ pct: hasPct ? pctNum : 0, burning })}${caption}</div>`
 }
 
 function burnCostRow(label, tok, usd) {
@@ -123,32 +126,32 @@ function burnProviderExpanded(p) {
   const burning = p.status === 'warn'
   const x = burnAdaptExpanded(p._raw || {})
 
-  const windows =
-    burnWindowBar('SESSION · 5H', p.s5h, p.sessionReset || p.reset, burning) +
-    burnWindowBar('WEEKLY · 7D', p.w7d, p.weeklyReset || p.reset, burning)
+  const windows = Array.isArray(p.windows) && p.windows.length
+    ? p.windows.map((w) => burnWindowBar(w.label, w.pct, w.reset, burning, w.value)).join('')
+    : ''
 
-  const cost =
-    burnSectionHead('COST', x.costMeta) +
-    `<div style="${bstyle({ display: 'flex', flexDirection: 'column', gap: 6 })}">` +
-    burnCostRow('Today', x.tokens.today.tok, x.tokens.today.usd) +
-    burnCostRow('Yesterday', x.tokens.yest.tok, x.tokens.yest.usd) +
-    burnCostRow('Last 30d', x.tokens.last30.tok, x.tokens.last30.usd) +
-    `</div>`
+  const cost = x.hasTokenSource && x.hasDailyUsage
+    ? burnSectionHead('COST', x.costMeta) +
+      `<div style="${bstyle({ display: 'flex', flexDirection: 'column', gap: 6 })}">` +
+      burnCostRow('Today', x.tokens.today.tok, x.tokens.today.usd) +
+      burnCostRow('Yesterday', x.tokens.yest.tok, x.tokens.yest.usd) +
+      burnCostRow('Last 30d', x.tokens.last30.tok, x.tokens.last30.usd) +
+      `</div>`
+    : ''
 
-  const tokens =
-    burnSectionHead('TOKENS', x.hasTokenSource ? `${x.inOut.events.toLocaleString()} EVENTS` : 'NOT AVAILABLE') +
-    `<div style="${bstyle({ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 })}">` +
-    burnStat('IN', burnFormatTokensM(x.inOut.in)) +
-    burnStat('CACHED', burnFormatTokensM(x.inOut.cached)) +
-    burnStat('OUT', burnFormatTokensM(x.inOut.out)) +
-    `</div>`
+  const tokens = x.hasTokenSource
+    ? burnSectionHead('TOKENS', `${x.inOut.events.toLocaleString()} EVENTS`) +
+      `<div style="${bstyle({ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 })}">` +
+      burnStat('IN', burnFormatTokensM(x.inOut.in)) +
+      burnStat('CACHED', burnFormatTokensM(x.inOut.cached)) +
+      burnStat('OUT', burnFormatTokensM(x.inOut.out)) +
+      `</div>`
+    : ''
 
-  const modelsBody = x.models.length
-    ? x.models.map((m) => burnModelRow(m, burning)).join('')
-    : `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10, color: BURN.text2, letterSpacing: 0.4 })}">${x.hasTokenSource ? 'NO MODEL DATA' : 'TOKEN DATA NOT EXPOSED'}</div>`
-  const models =
-    burnSectionHead('MODEL BURN', x.hasTokenSource ? `${x.models.length} ACTIVE` : 'USAGE ONLY') +
-    `<div style="${bstyle({ display: 'flex', flexDirection: 'column', gap: 8 })}">${modelsBody}</div>`
+  const models = x.models.length
+    ? burnSectionHead('MODEL BURN', `${x.models.length} ACTIVE`) +
+      `<div style="${bstyle({ display: 'flex', flexDirection: 'column', gap: 8 })}">${x.models.map((m) => burnModelRow(m, burning)).join('')}</div>`
+    : ''
 
   return (
     `<div style="${bstyle({
