@@ -16,17 +16,38 @@ const path = require('path')
 const crypto = require('crypto')
 const { execFileSync } = require('child_process')
 
-// macOS Keychain "Safe Storage" service name per Chromium browser.
-const CHROMIUM_KEYCHAIN = {
-  Chrome: 'Chrome Safe Storage',
-  'Chrome Beta': 'Chrome Safe Storage',
-  'Chrome Canary': 'Chromium Safe Storage',
-  Brave: 'Brave Safe Storage',
-  'Microsoft Edge': 'Microsoft Edge Safe Storage',
-  Arc: 'Arc Safe Storage',
-  Dia: 'Dia Safe Storage',
-  Vivaldi: 'Vivaldi Safe Storage',
-}
+// Every Chromium-family browser uses the same cookie store format and the same
+// "<Product> Safe Storage" macOS Keychain item for the AES key — so supporting a
+// new one is just another row here: [label, AppSupport-relative root, services].
+// `services` is an ordered list of candidate Keychain service names; we try each
+// until one returns a password (a wrong guess fast-fails as "item not found"
+// with no prompt, so listing extras for browsers whose exact name we can't
+// verify, e.g. ChatGPT Atlas, degrades gracefully instead of breaking).
+const CHROMIUM_BROWSERS = [
+  ['Chrome', 'Google/Chrome', ['Chrome Safe Storage']],
+  ['Chrome Beta', 'Google/Chrome Beta', ['Chrome Safe Storage']],
+  ['Chrome Dev', 'Google/Chrome Dev', ['Chrome Safe Storage']],
+  ['Chrome Canary', 'Google/Chrome Canary', ['Chromium Safe Storage']],
+  ['Chromium', 'Chromium', ['Chromium Safe Storage']],
+  ['Brave', 'BraveSoftware/Brave-Browser', ['Brave Safe Storage']],
+  ['Brave Beta', 'BraveSoftware/Brave-Browser-Beta', ['Brave Safe Storage']],
+  ['Brave Nightly', 'BraveSoftware/Brave-Browser-Nightly', ['Brave Safe Storage']],
+  ['Microsoft Edge', 'Microsoft Edge', ['Microsoft Edge Safe Storage']],
+  ['Edge Beta', 'Microsoft Edge Beta', ['Microsoft Edge Safe Storage']],
+  ['Edge Dev', 'Microsoft Edge Dev', ['Microsoft Edge Safe Storage']],
+  ['Arc', 'Arc/User Data', ['Arc Safe Storage']],
+  ['Dia', 'Dia/User Data', ['Dia Safe Storage']],
+  ['Vivaldi', 'Vivaldi', ['Vivaldi Safe Storage']],
+  ['Opera', 'com.operasoftware.Opera', ['Opera Safe Storage']],
+  ['Opera GX', 'com.operasoftware.OperaGX', ['Opera Safe Storage']],
+  ['Opera Neon', 'com.operasoftware.OperaNeon', ['Opera Safe Storage']],
+  ['Comet', 'Comet', ['Comet Safe Storage']],
+  // ChatGPT Atlas (OpenAI) — exact bundle dir / Keychain name unverified, so we
+  // probe the likely roots and service names; the misses cost nothing.
+  ['ChatGPT Atlas', 'Atlas', ['Atlas Safe Storage', 'ChatGPT Safe Storage']],
+  ['ChatGPT Atlas', 'com.openai.atlas', ['Atlas Safe Storage', 'ChatGPT Safe Storage']],
+  ['ChatGPT Atlas', 'ChatGPT/Atlas', ['Atlas Safe Storage', 'ChatGPT Safe Storage']],
+]
 
 // Cache derived AES keys per Keychain service (and remember failures as null so
 // a declined prompt isn't re-triggered on every cookie row).
@@ -42,6 +63,14 @@ let injectedServices = {}
 // can persist them (holds the derived key so a future run skips the Keychain).
 const discoveredKeys = {}
 const DECLINE_TTL_MS = 24 * 60 * 60 * 1000
+// A timed-out Keychain prompt is NOT a decline — the dialog was shown but not
+// answered in time. Back off only briefly so a refresh right after the user
+// grants access retries soon, instead of silently never tracking for a day.
+const RETRY_COOLDOWN_MS = 10 * 60 * 1000
+// Long enough for a human to answer a surprise "Safe Storage" password dialog
+// (the 4s we used before killed `security` before they could type → ETIMEDOUT
+// → no key → cookie-auth providers like OpenCode Go never connected).
+const KEYCHAIN_TIMEOUT_MS = 15000
 
 // Seed the cache with persisted keys/declines (called in the worker on startup).
 function setBrowserKeyStore(map) {
@@ -53,9 +82,22 @@ function takeDiscoveredKeys() {
   return { ...discoveredKeys }
 }
 
+// A browser may carry several candidate Keychain service names (we can't always
+// know the exact one). Try each in order and return the first key found; a wrong
+// candidate fast-fails as "item not found" without prompting. Accepts a single
+// string too, so existing callers/tests keep working.
+function chromiumKey(serviceOrList) {
+  const services = Array.isArray(serviceOrList) ? serviceOrList : [serviceOrList]
+  for (const service of services) {
+    const key = chromiumKeyOne(service)
+    if (key) return key
+  }
+  return null
+}
+
 // Derive the AES key for a browser's encrypted cookies from its Keychain
 // "Safe Storage" password: PBKDF2-HMAC-SHA1(password, "saltysalt", 1003, 16).
-function chromiumKey(service) {
+function chromiumKeyOne(service) {
   if (!service) return null
   if (chromiumKeyCache.has(service)) return chromiumKeyCache.get(service)
 
@@ -77,7 +119,7 @@ function chromiumKey(service) {
     const password = execFileSync('security', ['find-generic-password', '-ws', service], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 4000,
+      timeout: KEYCHAIN_TIMEOUT_MS,
     }).trim()
     if (password) {
       key = crypto.pbkdf2Sync(password, 'saltysalt', 1003, 16, 'sha1')
@@ -86,10 +128,13 @@ function chromiumKey(service) {
       // Item exists but empty — treat as a decline so we don't loop.
       discoveredKeys[service] = { declinedUntil: Date.now() + DECLINE_TTL_MS }
     }
-  } catch {
-    // Keychain item missing or access declined — remember so we don't re-prompt
-    // on every refresh for the next day.
-    discoveredKeys[service] = { declinedUntil: Date.now() + DECLINE_TTL_MS }
+  } catch (err) {
+    // ETIMEDOUT means the prompt was shown but unanswered — transient, retry
+    // soon. A real "missing item / access denied" backs off for the full day.
+    const timedOut = err && (err.code === 'ETIMEDOUT' || err.killed)
+    discoveredKeys[service] = {
+      declinedUntil: Date.now() + (timedOut ? RETRY_COOLDOWN_MS : DECLINE_TTL_MS),
+    }
   }
   chromiumKeyCache.set(service, key)
   return key
@@ -118,27 +163,19 @@ function decryptChromiumValue(encHex, key, host) {
 }
 
 function browserCookieFiles(home = os.homedir()) {
-  const roots = [
-    ['Chrome', path.join(home, 'Library/Application Support/Google/Chrome')],
-    ['Chrome Beta', path.join(home, 'Library/Application Support/Google/Chrome Beta')],
-    ['Chrome Canary', path.join(home, 'Library/Application Support/Google/Chrome Canary')],
-    ['Brave', path.join(home, 'Library/Application Support/BraveSoftware/Brave-Browser')],
-    ['Microsoft Edge', path.join(home, 'Library/Application Support/Microsoft Edge')],
-    ['Arc', path.join(home, 'Library/Application Support/Arc/User Data')],
-    ['Dia', path.join(home, 'Library/Application Support/Dia/User Data')],
-    ['Vivaldi', path.join(home, 'Library/Application Support/Vivaldi')],
-  ]
+  const appSupport = path.join(home, 'Library/Application Support')
   const files = []
-  for (const [label, root] of roots) {
+  for (const [label, rel, services] of CHROMIUM_BROWSERS) {
+    const root = path.join(appSupport, rel)
     try {
       for (const profile of fs.readdirSync(root)) {
-        for (const rel of ['Cookies', 'Network/Cookies']) {
-          const file = path.join(root, profile, rel)
-          if (fs.existsSync(file)) files.push({ file, label: `${label} ${profile}`, keychainService: CHROMIUM_KEYCHAIN[label] || null })
+        for (const sub of ['Cookies', 'Network/Cookies']) {
+          const file = path.join(root, profile, sub)
+          if (fs.existsSync(file)) files.push({ file, label: `${label} ${profile}`, keychainService: services })
         }
       }
     } catch {
-      /* best effort */
+      /* best effort — browser not installed */
     }
   }
 
