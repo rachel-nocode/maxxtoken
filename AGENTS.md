@@ -23,3 +23,19 @@ rg -n --hidden --glob '!node_modules/**' --glob '!desktop/node_modules/**' --glo
 Known fake test fixtures may still trigger these scans. Verify they are obvious fixtures like `abc`, `fake`, or `*-token` test strings before proceeding.
 
 Prefer storing user credentials only through the app's Keychain-backed `safeStorage` path. Do not add plaintext credential fallbacks, JSON env dumps, or debug output that serializes all saved keys.
+
+## Releases can silently break auto-update — follow the checklist EVERY time
+
+A release is not "done" when the DMG builds. The auto-updater can break in ways that only surface on a *user's already-installed copy*, never on the build machine. This already happened: **0.2.4 shipped DMG-only because the build used `electron-builder --mac dmg`, which overrides the `["dmg","zip"]` target in `desktop/package.json` and drops the mac `.zip`. macOS auto-update (electron-updater) downloads the ZIP, not the DMG, so every existing user got `ERROR: ZIP file not provided` on "Check for updates."** The app itself was fine; the update path was dead.
+
+Treat every release as able to break the update for all existing users. Verify ALL of these before publishing — do not skip any:
+
+1. **Version bumped** in `desktop/package.json` and committed. Reusing a version the updater already saw is a no-op.
+2. **Mac builds BOTH targets:** `electron-builder --mac dmg zip --publish never` (or bare `electron-builder --mac`). NEVER `--mac dmg` alone — it silently drops the zip the updater needs.
+3. **DMG signed + notarized + stapled.** Sign = Developer ID Application: Rachel Larralde (5U92RP4C5J). Notarize via `bash ~/.claude/scripts/notarize.sh <path-to.dmg>` (keychain profile `maxxtoken-notary`). The notarization ticket binds to the `.app`, so it covers the same app inside the zip.
+4. **Windows EXE builds + runs on x64:** `electron-builder --win nsis --x64 --publish never`. Pass `--x64` explicitly — bare `--win` packages arm64, which won't run on x64 Windows machines (payload must be PE32+ x86-64).
+5. **Auto-update manifests are correct — the step that actually prevents the regression.** After building, open `dist/latest-mac.yml` and confirm the `*-mac.zip` appears BOTH under `files:` and as the top-level `path:`. Confirm `dist/latest.yml` (Windows) points at the `.exe`. If `latest-mac.yml` `path:` is a `.dmg`, the build is broken — rebuild with the zip target.
+6. **Upload the COMPLETE asset set** to the GitHub release (tag `vX.Y.Z`, repo `rachel-nocode/maxxtoken`): dmg, **mac zip**, exe, all three `.blockmap` files, `latest-mac.yml`, `latest.yml`. A missing mac zip or stale yml breaks Mac auto-update even though the release looks populated.
+7. **Verify the published release end-to-end:** `gh release view vX.Y.Z --repo rachel-nocode/maxxtoken --json assets --jq '.assets[].name'` — confirm the mac `.zip` is listed; download `latest-mac.yml` and confirm its `path:` is the zip. Ideally test "Check for updates" from a copy of the previous version before announcing.
+
+This repo is release-only (source stays private; the public repo hosts releases). Installers are also distributed on Polar (updated manually).
