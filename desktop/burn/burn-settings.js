@@ -25,7 +25,8 @@ const BURN_COOKIE_IDS = new Set([
 const BURN_OPT_THRESHOLD = [['50,20', '50% + 20% left'], ['40,15', '40% + 15% left'], ['25,10', '25% + 10% left'], ['20,0', '20% + depleted']]
 const BURN_OPT_ALERT_HOURS = [['6', '6h before reset'], ['12', '12h before reset'], ['24', '24h before reset'], ['48', '48h before reset'], ['72', '72h before reset']]
 const BURN_OPT_RESERVE = [['15', '15% unused'], ['25', '25% unused'], ['40', '40% unused'], ['60', '60% unused']]
-const BURN_OPT_TRAY = [['left', 'Value left'], ['spent', 'Spent value'], ['percent', 'Used percent'], ['target', 'Next maxx'], ['reset', 'Next reset'], ['tokens', 'Tokens']]
+const BURN_OPT_TRAY = [['burnbar', 'BURN bars'], ['left', 'Value left'], ['spent', 'Spent value'], ['percent', 'Used percent'], ['target', 'Next maxx'], ['reset', 'Next reset'], ['tokens', 'Tokens']]
+const BURN_OPT_METER = [['used', 'Usage used'], ['left', 'Usage left']]
 const BURN_OPT_HISTORY = [['1', 'Today'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', '365 days']]
 const BURN_OPT_WARN = [['inherit', 'Warn auto'], ['off', 'Warn off'], ['15', 'Warn 15%'], ['25', 'Warn 25%'], ['40', 'Warn 40%'], ['60', 'Warn 60%']]
 
@@ -169,6 +170,8 @@ function burnRenderSettings(state) {
   const notifs = state.notifs
   const app = state.app
   const cfg = state.cfg || {}
+  const traySummary = BURN_OPT_TRAY.find(([value]) => value === cfg.trayMetric)?.[1] || 'BURN bars'
+  const meterSummary = BURN_OPT_METER.find(([value]) => value === cfg.usageMeterMode)?.[1] || 'Usage used'
 
   const banner =
     `<div style="${bstyle({
@@ -209,10 +212,11 @@ function burnRenderSettings(state) {
 
   const appGroup =
     `<div style="${bstyle({ padding: '14px 14px 0' })}">` +
-    burnCollapsibleHead('APP', 'DARK · VALUE LEFT', state.appOpen, 'app') +
+    burnCollapsibleHead('APP', `${app.lightMode ? 'LIGHT' : 'DARK'} · ${traySummary.toUpperCase()} · ${meterSummary.toUpperCase()}`, state.appOpen, 'app') +
     (state.appOpen
       ? `<div style="${bstyle({ padding: '8px 0 0', display: 'flex', flexDirection: 'column', gap: 2 })}">` +
         burnDropdownRow('Menu bar', 'trayMetric', cfg.trayMetric, BURN_OPT_TRAY) +
+        burnDropdownRow('Usage bars', 'usageMeterMode', cfg.usageMeterMode || 'used', BURN_OPT_METER) +
         burnDropdownRow('Token history', 'tokenHistoryDays', cfg.tokenHistoryDays, BURN_OPT_HISTORY) +
         burnToggleRow('Light mode', app.lightMode, 'app:lightMode') +
         burnToggleRow('Open at login', app.openAtLogin, 'app:openAtLogin') +
@@ -222,7 +226,7 @@ function burnRenderSettings(state) {
 
   const updatesGroup =
     `<div style="${bstyle({ padding: 14 })}">` +
-    burnCollapsibleHead('UPDATES', (state.version || 'v0.2.3-beta.1').toUpperCase(), state.updatesOpen, 'updates') +
+    burnCollapsibleHead('UPDATES', (state.version || 'v0.2.4').toUpperCase(), state.updatesOpen, 'updates') +
     (state.updatesOpen ? burnUpdatesBody(state) : '') +
     `</div>`
 

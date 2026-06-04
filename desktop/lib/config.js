@@ -5,7 +5,8 @@ const { canonicalProviderId } = require('./provider-ids')
 
 const DIR = path.join(os.homedir(), '.maxxtoken')
 const FILE = path.join(DIR, 'config.json')
-const TRAY_METRICS = new Set(['left', 'spent', 'percent', 'target', 'reset', 'tokens'])
+const TRAY_METRICS = new Set(['burnbar', 'left', 'spent', 'percent', 'target', 'reset', 'tokens'])
+const USAGE_METER_MODES = new Set(['used', 'left'])
 
 // Default subscriptions. Costs are what people typically overspend on.
 const DEFAULT_CONFIG = {
@@ -21,7 +22,8 @@ const DEFAULT_CONFIG = {
   quotaWarningWeeklyThresholds: [50, 20],
   quotaWarningSessionEnabled: true,
   quotaWarningWeeklyEnabled: true,
-  trayMetric: 'left',
+  trayMetric: 'burnbar',
+  usageMeterMode: 'used',
   // Local read-only HTTP API (loopback only) for statuslines/scripts/tmux.
   localApiPort: 7878,
   tokenHistoryDays: 30,
@@ -106,6 +108,7 @@ function loadConfig(file = FILE) {
       quotaWarningSessionEnabled: raw.quotaWarningSessionEnabled ?? DEFAULT_CONFIG.quotaWarningSessionEnabled,
       quotaWarningWeeklyEnabled: raw.quotaWarningWeeklyEnabled ?? DEFAULT_CONFIG.quotaWarningWeeklyEnabled,
       trayMetric: normalizeTrayMetric(raw.trayMetric),
+      usageMeterMode: normalizeUsageMeterMode(raw.usageMeterMode),
       tokenHistoryDays: normalizeTokenHistoryDays(raw.tokenHistoryDays),
       saveModeSuggestions: raw.saveModeSuggestions === true,
       onboardingComplete: raw.onboardingComplete === true,
@@ -177,6 +180,7 @@ function saveConfig(config, file = FILE) {
   const normalized = {
     ...config,
     trayMetric: normalizeTrayMetric(config.trayMetric),
+    usageMeterMode: normalizeUsageMeterMode(config.usageMeterMode),
     tokenHistoryDays: normalizeTokenHistoryDays(config.tokenHistoryDays),
     quotaWarningThresholds: normalizeQuotaWarningThresholds(config.quotaWarningThresholds),
     quotaWarningSessionThresholds: normalizeQuotaWarningThresholds(config.quotaWarningSessionThresholds || config.quotaWarningThresholds),
@@ -219,6 +223,11 @@ function normalizeTrayMetric(value) {
   return TRAY_METRICS.has(value) ? value : DEFAULT_CONFIG.trayMetric
 }
 
+function normalizeUsageMeterMode(value) {
+  const normalized = value === 'remaining' ? 'left' : value
+  return USAGE_METER_MODES.has(normalized) ? normalized : DEFAULT_CONFIG.usageMeterMode
+}
+
 function normalizeTokenHistoryDays(value) {
   return clampNumber(value, 1, 365, DEFAULT_CONFIG.tokenHistoryDays)
 }
@@ -243,5 +252,5 @@ module.exports = {
   saveConfig,
   billingCycle,
   FILE,
-  _private: { normalizeProviders, normalizeTrayMetric, normalizeTokenHistoryDays, normalizeQuotaWarningThresholds, normalizeProviderConfig, normalizeMissionHistory },
+  _private: { normalizeProviders, normalizeTrayMetric, normalizeUsageMeterMode, normalizeTokenHistoryDays, normalizeQuotaWarningThresholds, normalizeProviderConfig, normalizeMissionHistory },
 }

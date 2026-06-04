@@ -304,11 +304,30 @@ function quotaWarningThresholdsFor(kind) {
   return Array.isArray(raw) ? raw : [50, 20]
 }
 
+function usageMeterMode() {
+  return config?.usageMeterMode === 'left' ? 'left' : 'used'
+}
+
+function meterDisplay(usedPct, remainingPct = null) {
+  const used = Math.max(0, Math.min(100, Math.round(Number(usedPct) || 0)))
+  if (usageMeterMode() === 'left') {
+    const explicit = Number(remainingPct)
+    const left = Number.isFinite(explicit)
+      ? Math.max(0, Math.min(100, Math.round(explicit)))
+      : 100 - used
+    return { pct: left, value: `${left}%`, label: 'left', title: `${left}% left` }
+  }
+  return { pct: used, value: `${used}%`, label: 'used', title: `${used}% used` }
+}
+
 function quotaWarningMarkers(kind) {
   return quotaWarningThresholdsFor(kind)
     .map((threshold) => Number(threshold))
     .filter((threshold) => Number.isFinite(threshold) && threshold > 0)
-    .map((threshold) => 100 - Math.max(0, Math.min(99, Math.round(threshold))))
+    .map((threshold) => {
+      const t = Math.max(0, Math.min(99, Math.round(threshold)))
+      return usageMeterMode() === 'left' ? t : 100 - t
+    })
     .filter((pct) => pct > 0 && pct < 100)
     .sort((a, b) => a - b)
     .map((pct) => `<i class="quota-marker" style="left:${pct}%" aria-hidden="true"></i>`)
@@ -327,10 +346,11 @@ function compactWindowLabel(w) {
   return String(w?.label || w?.kind || 'usage').slice(0, 4).toUpperCase()
 }
 
-function compactMeterFill(pct, kind) {
+function compactMeterFill(pct, kind, remainingPct = null) {
   const usedPct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)))
+  const meter = meterDisplay(usedPct, remainingPct)
   const tone = usageTone(usedPct)
-  return `<div class="prov-meter prov-meter-compact"><span class="${tone}" style="width:${usedPct}%"></span>${quotaWarningMarkers(kind)}</div>`
+  return `<div class="prov-meter prov-meter-compact"><span class="${tone}" style="width:${meter.pct}%"></span>${quotaWarningMarkers(kind)}</div>`
 }
 
 function compactPaceRail(w, usedPct) {
@@ -347,13 +367,14 @@ function compactPaceRail(w, usedPct) {
 
 function collapsedFallbackLine(pct, kind) {
   const usedPct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)))
+  const meter = meterDisplay(usedPct)
   const label = kind === 'weekly' ? '7D' : '5H'
   return `
     <div class="prov-window-bars">
-      <div class="prov-window-line" title="Usage · ${usedPct}% used">
+      <div class="prov-window-line" title="Usage · ${h(meter.title)}">
         <span class="prov-window-label mono">${label}</span>
         ${compactMeterFill(usedPct, kind)}
-        <span class="prov-window-pct mono">${usedPct}%</span>
+        <span class="prov-window-pct mono">${h(meter.value)}</span>
       </div>
     </div>`
 }
@@ -375,6 +396,7 @@ function pickCollapsedWindows(windows = []) {
 
 function fallbackUsageRow(pct, kind) {
   const usedPct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)))
+  const meter = meterDisplay(usedPct)
   const tierLabel = kind === 'weekly' ? 'WEEKLY · 7D' : 'SESSION · 5H'
   return `
     <div class="usage-window onpace">
@@ -382,9 +404,9 @@ function fallbackUsageRow(pct, kind) {
         <span class="usage-window-name">Usage</span>
         <span class="usage-window-tier mono">${tierLabel}</span>
       </div>
-      ${meterWithMarkers(usedPct, usageTone(usedPct), kind)}
+      ${meterWithMarkers(meter.pct, usageTone(usedPct), kind)}
       <div class="usage-window-foot">
-        <span class="usage-window-pct mono">${usedPct}<i>%</i></span>
+        <span class="usage-window-pct mono">${h(meter.value).replace('%', '<i>%</i>')} ${h(meter.label)}</span>
         <span class="usage-window-reset mono">—</span>
       </div>
     </div>`
@@ -398,11 +420,12 @@ function collapsedWindowBars(p, fallbackPct, fallbackKind) {
       ${windows
         .map((w) => {
           const pct = Math.max(0, Math.min(100, Math.round(Number(w.usedPct) || 0)))
+          const meter = meterDisplay(pct, w.remainingPct)
           return `
-            <div class="prov-window-line" title="${h(w.label || 'Usage')} · ${pct}% used">
+            <div class="prov-window-line" title="${h(w.label || 'Usage')} · ${h(meter.title)}">
               <span class="prov-window-label mono">${h(compactWindowLabel(w))}</span>
-              ${compactPaceRail(w, pct)}
-              <span class="prov-window-pct mono">${pct}%</span>
+              ${usageMeterMode() === 'left' ? compactMeterFill(pct, quotaWarningKind(w), w.remainingPct) : compactPaceRail(w, pct)}
+              <span class="prov-window-pct mono">${h(meter.value)}</span>
             </div>`
         })
         .join('')}
@@ -459,6 +482,7 @@ function windowHistoryMini(w) {
 
 function windowRow(w) {
   const usedPct = Math.max(0, Math.min(100, Math.round(w.usedPct || 0)))
+  const meter = meterDisplay(usedPct, w.remainingPct)
   const expectedPct =
     w.pace && Number.isFinite(Number(w.pace.expectedUsedPercent))
       ? Math.max(0, Math.min(100, Math.round(Number(w.pace.expectedUsedPercent))))
@@ -481,9 +505,9 @@ function windowRow(w) {
         <span class="usage-window-name">${h(w.label)}</span>
         <span class="usage-window-tier mono">${h(tierLabel)}</span>
       </div>
-      ${paceRailSvg(usedPct, expectedPct, projectedPct)}
+      ${usageMeterMode() === 'left' ? meterWithMarkers(meter.pct, usageTone(usedPct), quotaWarningKind(w)) : paceRailSvg(usedPct, expectedPct, projectedPct)}
       <div class="usage-window-foot">
-        <span class="usage-window-pct mono">${usedPct}<i>%</i></span>
+        <span class="usage-window-pct mono">${h(meter.value).replace('%', '<i>%</i>')} ${h(meter.label)}</span>
         <span class="usage-window-reset mono ${urgent ? 'urgent' : ''}" data-reset="${w.resetAt || ''}">${countdown(w.resetAt)}</span>
       </div>
     </div>`
@@ -1463,11 +1487,12 @@ function updatePrefMetas() {
   const notif = $('pref-meta-notifications')
   if (notif) notif.textContent = onCount === 0 ? 'all off' : `${onCount} on`
   const trayLabel = {
-    left: 'value left', spent: 'spent', percent: 'used %', target: 'next maxx', reset: 'next reset', tokens: 'tokens',
-  }[($('tray-metric') && $('tray-metric').value) || 'left'] || 'value left'
+    burnbar: 'burn bars', left: 'value left', spent: 'spent', percent: 'used %', target: 'next maxx', reset: 'next reset', tokens: 'tokens',
+  }[($('tray-metric') && $('tray-metric').value) || 'burnbar'] || 'burn bars'
+  const meterLabel = (($('usage-meter-mode') && $('usage-meter-mode').value) || config?.usageMeterMode) === 'left' ? 'left bars' : 'used bars'
   const themeLabel = currentTheme() === 'light' ? 'light' : 'dark'
   const app = $('pref-meta-app')
-  if (app) app.textContent = `${themeLabel} · ${trayLabel}`
+  if (app) app.textContent = `${themeLabel} · ${trayLabel} · ${meterLabel}`
   const upd = $('pref-meta-updates')
   if (upd && updateState && updateState.version) upd.textContent = `v${updateState.version}`
 }
@@ -1534,7 +1559,8 @@ function renderSettings() {
   $('maxx-alert-reserve').value = String(config.maxxAlertReservePct || 25)
   $('quota-warning-session').value = thresholdValue(config.quotaWarningSessionThresholds || config.quotaWarningThresholds)
   $('quota-warning-weekly').value = thresholdValue(config.quotaWarningWeeklyThresholds || config.quotaWarningThresholds)
-  $('tray-metric').value = config.trayMetric || 'left'
+  $('tray-metric').value = config.trayMetric || 'burnbar'
+  $('usage-meter-mode').value = config.usageMeterMode || 'used'
   $('token-history-days').value = String(config.tokenHistoryDays || 30)
   $('missions-toggle').onclick = () => { $('missions-toggle').classList.toggle('on'); updatePrefMetas() }
   $('maxx-alerts-toggle').onclick = () => { $('maxx-alerts-toggle').classList.toggle('on'); updatePrefMetas() }
@@ -1654,7 +1680,8 @@ function collectSettings() {
     quotaWarningThresholds: thresholdsFromSelect('quota-warning-session'),
     quotaWarningSessionThresholds: thresholdsFromSelect('quota-warning-session'),
     quotaWarningWeeklyThresholds: thresholdsFromSelect('quota-warning-weekly'),
-    trayMetric: $('tray-metric').value || 'left',
+    trayMetric: $('tray-metric').value || 'burnbar',
+    usageMeterMode: $('usage-meter-mode').value || 'used',
     tokenHistoryDays: Number($('token-history-days').value) || 30,
     saveModeSuggestions: $('save-mode-toggle').classList.contains('on'),
     onboardingComplete: config.onboardingComplete === true,

@@ -477,11 +477,19 @@ test('provider detection can use extra CodexBar provider CLI binaries', () => {
 })
 
 test('config normalizes menu bar metric', () => {
+  assert.equal(config._private.normalizeTrayMetric('burnbar'), 'burnbar')
   assert.equal(config._private.normalizeTrayMetric('target'), 'target')
   assert.equal(config._private.normalizeTrayMetric('reset'), 'reset')
   assert.equal(config._private.normalizeTrayMetric('left'), 'left')
   assert.equal(config._private.normalizeTrayMetric('spent'), 'spent')
-  assert.equal(config._private.normalizeTrayMetric('nope'), 'left')
+  assert.equal(config._private.normalizeTrayMetric('nope'), 'burnbar')
+})
+
+test('config normalizes usage meter mode', () => {
+  assert.equal(config._private.normalizeUsageMeterMode('used'), 'used')
+  assert.equal(config._private.normalizeUsageMeterMode('left'), 'left')
+  assert.equal(config._private.normalizeUsageMeterMode('remaining'), 'left')
+  assert.equal(config._private.normalizeUsageMeterMode('nope'), 'used')
 })
 
 test('tray title formats configured menu bar metric', () => {
@@ -921,6 +929,35 @@ test('burn adapter only renders primary provider windows plus Claude Agent SDK c
     ['AGENT SDK', '$200/MO'],
   ])
   assert.equal(adapted.windowSummary, '5H 2% · 7D 3% · AGENT SDK $200/MO')
+})
+
+test('burn adapter can show quota left without changing raw usage sorting fields', () => {
+  const { burnAdaptProvider } = loadBurnAdaptForTest()
+  const resetAt = Date.now() + 5 * 3600e3
+  const adapted = burnAdaptProvider({
+    id: 'claude',
+    name: 'Claude',
+    plan: 'Max 20x',
+    connected: true,
+    capturedPct: 75,
+    remainingPct: 25,
+    resetAt,
+    windows: [
+      { label: 'Session', kind: '5h', usedPct: 80, remainingPct: 20, resetAt },
+      { label: 'Weekly', kind: '7d', usedPct: 30, resetAt },
+    ],
+  }, { usageMeterMode: 'left' })
+
+  assert.equal(adapted.used, 75)
+  assert.equal(adapted.meterPct, 25)
+  assert.equal(adapted.meterLabel, 'LEFT')
+  assert.equal(adapted.meterValue, '25%')
+  const visible = JSON.parse(JSON.stringify(adapted.windows.map((w) => [w.label, w.pct, w.value])))
+  assert.deepEqual(visible, [
+    ['5H', 20, '20% LEFT'],
+    ['7D', 70, '70% LEFT'],
+  ])
+  assert.equal(adapted.windowSummary, '5H 20% LEFT · 7D 70% LEFT')
 })
 
 test('Claude Agent SDK credit amount follows official paid plan tiers', () => {

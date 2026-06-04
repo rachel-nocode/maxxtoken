@@ -62,6 +62,38 @@ function burnPct(v) {
   return Math.max(0, Math.min(100, Math.round(Number(v) || 0)))
 }
 
+function burnLeftPct(usedPct, remainingPct) {
+  const explicit = burnFiniteNumber(remainingPct)
+  if (explicit != null) return burnPct(explicit)
+  const used = burnFiniteNumber(usedPct)
+  return used == null ? null : burnPct(100 - used)
+}
+
+function burnMeterMode(options) {
+  return options?.usageMeterMode === 'left' ? 'left' : 'used'
+}
+
+function burnMeterForPct(usedPct, remainingPct, options) {
+  const mode = burnMeterMode(options)
+  if (mode === 'left') {
+    const left = burnLeftPct(usedPct, remainingPct)
+    return {
+      pct: left == null ? 0 : left,
+      value: left == null ? '—' : `${left}%`,
+      label: 'LEFT',
+      summary: left == null ? '—' : `${left}% LEFT`,
+    }
+  }
+  const used = burnFiniteNumber(usedPct)
+  const pct = used == null ? 0 : burnPct(used)
+  return {
+    pct,
+    value: used == null ? '—' : `${pct}%`,
+    label: 'USED',
+    summary: used == null ? '—' : `${pct}%`,
+  }
+}
+
 // 9-tick history for the sparkline. Prefer a window's historySeries; fall back
 // to a flat line at the headline used%.
 function burnSpark(windows, used) {
@@ -87,11 +119,12 @@ function burnStatus(provider, windows) {
   return 'ok'
 }
 
-function burnAdaptProvider(provider) {
+function burnAdaptProvider(provider, options = {}) {
   const windows = Array.isArray(provider.windows) ? provider.windows : []
   const session = burnFindWindow(windows, '5h')
   const weekly = burnFindWindow(windows, 'weekly')
   const used = burnPct(provider.capturedPct)
+  const meter = burnMeterForPct(provider.capturedPct, provider.remainingPct, options)
   const status = burnStatus(provider, windows)
   // Reset shown on the collapsed row: prefer the soonest window reset.
   const resets = [...windows.map((w) => w.resetAt), provider.resetAt].filter(Boolean)
@@ -100,8 +133,8 @@ function burnAdaptProvider(provider) {
     .filter((w) => w && (w.kind !== 'cycle' ? true : w?.label))
     .map((w) => ({
       label: burnWindowCaption(w),
-      pct: burnFiniteNumber(w.usedPct) == null ? null : burnPct(w.usedPct),
-      value: burnWindowValue(w),
+      pct: w.valueLabel ? null : burnMeterForPct(w.usedPct, w.remainingPct, options).pct,
+      value: w.valueLabel ? burnWindowValue(w) : burnMeterForPct(w.usedPct, w.remainingPct, options).summary,
       reset: burnFormatReset(w.resetAt),
     }))
 
@@ -110,6 +143,9 @@ function burnAdaptProvider(provider) {
     name: provider.name || provider.id,
     plan: provider.plan || '',
     used,
+    meterPct: meter.pct,
+    meterValue: meter.value,
+    meterLabel: meter.label,
     s5h: session ? burnPct(session.usedPct) : 0,
     w7d: weekly ? burnPct(weekly.usedPct) : used,
     windowSummary: displayWindows.map((w) => `${w.label} ${w.value}`).join(' · '),
@@ -123,9 +159,9 @@ function burnAdaptProvider(provider) {
   }
 }
 
-function burnAdaptProviders(snap) {
+function burnAdaptProviders(snap, options = {}) {
   const providers = Array.isArray(snap?.providers) ? snap.providers : []
-  return providers.map(burnAdaptProvider)
+  return providers.map((provider) => burnAdaptProvider(provider, options))
 }
 
 function burnFormatUsd(n) {

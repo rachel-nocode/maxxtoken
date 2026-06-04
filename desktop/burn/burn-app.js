@@ -48,11 +48,11 @@ const burnState = {
   cookieSaved: {}, // providerId -> true briefly after a successful key save
   // Scalar settings backed by the config file (populated from getConfig in
   // burnInit). Dropdowns read/write these; Save persists them.
-  cfg: { trayMetric: 'left', tokenHistoryDays: '30', sessionThreshold: '50,20', weeklyThreshold: '50,20', alertHours: '48', alertReservePct: '25' },
+  cfg: { trayMetric: 'burnbar', usageMeterMode: 'used', tokenHistoryDays: '30', sessionThreshold: '50,20', weeklyThreshold: '50,20', alertHours: '48', alertReservePct: '25' },
   provAlert: {}, // providerId -> 'inherit' | 'off' | '15' | '25' | '40' | '60'
   justSaved: false,
   justExported: false,
-  version: 'v0.2.3-beta.1',
+  version: 'v0.2.4',
   updatesOpen: false,
   update: { status: 'idle', percent: 0, error: '' }, // mirrors main's updateState
 }
@@ -170,7 +170,7 @@ async function burnStartBacklog(index) {
 }
 
 function burnApplySnapshot(snap) {
-  burnState.providers = burnAdaptProviders(snap)
+  burnState.providers = burnAdaptProviders(snap, { usageMeterMode: burnState.cfg?.usageMeterMode || 'used' })
   burnState.footer = burnAdaptFooter(snap)
   burnComputeOptimize(snap)
   burnRender()
@@ -539,7 +539,8 @@ async function burnSaveSettings() {
     quotaWarningThresholds: sessionThr,
     quotaWarningSessionThresholds: sessionThr,
     quotaWarningWeeklyThresholds: weeklyThr,
-    trayMetric: cfg.trayMetric || 'left',
+    trayMetric: cfg.trayMetric || 'burnbar',
+    usageMeterMode: cfg.usageMeterMode || 'used',
     tokenHistoryDays: Number(cfg.tokenHistoryDays) || 30,
     providerOrder: order,
     providers,
@@ -708,7 +709,8 @@ async function burnInit() {
         return ['50,20', '40,15', '25,10', '20,0'].includes(key) ? key : '50,20'
       }
       burnState.cfg = {
-        trayMetric: c.trayMetric || 'left',
+        trayMetric: c.trayMetric || 'burnbar',
+        usageMeterMode: c.usageMeterMode || 'used',
         tokenHistoryDays: String(c.tokenHistoryDays || 30),
         sessionThreshold: thr(c.quotaWarningSessionThresholds || c.quotaWarningThresholds),
         weeklyThreshold: thr(c.quotaWarningWeeklyThresholds || c.quotaWarningThresholds),
@@ -722,6 +724,7 @@ async function burnInit() {
         quota: c.quotaWarningNotificationsEnabled === true,
       }
       burnState.app.openAtLogin = c.openAtLogin !== false
+      if (burnState.lastSnap) burnState.providers = burnAdaptProviders(burnState.lastSnap, { usageMeterMode: burnState.cfg.usageMeterMode })
       if (burnState.screen === 'settings') burnRender()
     } catch (err) {
       console.error('[burn] getConfig failed', err)
