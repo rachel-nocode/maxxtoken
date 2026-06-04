@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="660" height="420" viewBox="0 0 660 420">
   <rect width="660" height="420" fill="#ffffff"/>
-  <!-- minimal right arrow, centered between the app icon (x:170) and Applications (x:490), at the icon row (y:210) -->
+  <!-- minimal right arrow, centered between the app icon (x:170) and Applications (x:490), at the icon row (y:255) -->
   <g fill="none" stroke="#8c8c8c" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
-    <line x1="300" y1="210" x2="360" y2="210"/>
-    <polyline points="346,198 360,210 346,222"/>
+    <line x1="300" y1="255" x2="360" y2="255"/>
+    <polyline points="346,243 360,255 346,267"/>
   </g>
 </svg>
