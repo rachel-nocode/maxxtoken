@@ -1,4 +1,7 @@
 const crypto = require('crypto')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 const { getKey } = require('../secrets')
 const { fetchWithTimeout } = require('../http')
 const { readCookieHeader } = require('../browser-cookies')
@@ -7,6 +10,7 @@ const COOKIE_HOSTS = ['opencode.ai']
 
 const BASE = 'https://opencode.ai'
 const SERVER_URL = `${BASE}/_server`
+const MODELS_URL = `${BASE}/zen/go/v1/models`
 const WORKSPACES_ID = 'def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f'
 const COOKIE_NAMES = new Set(['auth', '__Host-auth'])
 const USER_AGENT =
@@ -72,6 +76,76 @@ function normalizeWorkspaceID(raw) {
   if (text.startsWith('wrk_') && text.length > 4) return text
   const match = text.match(/wrk_[A-Za-z0-9]+/)
   return match ? match[0] : null
+}
+
+function authFileCandidates(home = os.homedir(), env = process.env) {
+  return [
+    env.OPENCODE_GO_AUTH_FILE || env.OPENCODE_AUTH_FILE || null,
+    env.XDG_DATA_HOME ? path.join(env.XDG_DATA_HOME, 'opencode', 'auth.json') : null,
+    path.join(home, '.local', 'share', 'opencode', 'auth.json'),
+    path.join(home, 'Library', 'Application Support', 'opencode', 'auth.json'),
+  ].filter(Boolean)
+}
+
+function configFileCandidates(home = os.homedir(), env = process.env) {
+  const xdg = env.XDG_CONFIG_HOME || path.join(home, '.config')
+  return [
+    env.OPENCODE_GO_CONFIG_FILE || null,
+    path.join(xdg, 'opencode-bar', 'opencode-go.json'),
+    path.join(xdg, 'opencode-quota', 'opencode-go.json'),
+    path.join(home, 'Library', 'Application Support', 'opencode-bar', 'opencode-go.json'),
+    path.join(home, 'Library', 'Application Support', 'opencode-quota', 'opencode-go.json'),
+  ].filter(Boolean)
+}
+
+function readJsonFile(file, fsImpl = fs) {
+  try {
+    return JSON.parse(fsImpl.readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function resolveApiKey(options = {}) {
+  const env = options.env || process.env
+  const direct = clean(env.OPENCODE_GO_API_KEY || env.OPENCODE_API_KEY)
+  if (direct) return { key: direct, source: 'environment' }
+
+  const fsImpl = options.fs || fs
+  for (const file of authFileCandidates(options.home, env)) {
+    const json = readJsonFile(file, fsImpl)
+    const key = clean(json && json['opencode-go'] && json['opencode-go'].key)
+    if (key) return { key, source: file }
+  }
+  return null
+}
+
+function clean(value) {
+  const text = String(value || '').trim()
+  return text || null
+}
+
+function dashboardCookieHeader(raw) {
+  const text = String(raw || '').replace(/^Cookie:\s*/i, '').trim()
+  if (!text) return null
+  if (!text.includes('=')) return `auth=${text}`
+  return cookieHeader(text)
+}
+
+function readDashboardConfig(options = {}) {
+  const env = options.env || process.env
+  const envWorkspace = normalizeWorkspaceID(env.OPENCODE_GO_WORKSPACE_ID)
+  const envCookie = dashboardCookieHeader(env.OPENCODE_GO_AUTH_COOKIE)
+  if (envWorkspace && envCookie) return { workspaceID: envWorkspace, cookie: envCookie, source: 'environment' }
+
+  const fsImpl = options.fs || fs
+  for (const file of configFileCandidates(options.home, env)) {
+    const json = readJsonFile(file, fsImpl)
+    const workspaceID = normalizeWorkspaceID(json && (json.workspaceId || json.workspaceID || json.workspace_id))
+    const cookie = dashboardCookieHeader(json && (json.authCookie || json.auth_cookie || json.cookie))
+    if (workspaceID && cookie) return { workspaceID, cookie, source: file }
+  }
+  return null
 }
 
 function serverURL(serverID, args, method) {
@@ -140,6 +214,32 @@ async function fetchPageText(url, cookie, timeout = 15000) {
   }
   if (!res.ok) throw new Error(`OpenCode Go HTTP ${res.status}`)
   return text
+}
+
+async function validateApiKey(apiKey, timeout = 10000) {
+  if (!apiKey) return null
+  const res = await fetchWithTimeout(
+    MODELS_URL,
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'application/json',
+        'User-Agent': USER_AGENT,
+      },
+      redirect: 'manual',
+    },
+    timeout,
+  )
+  const text = await res.text()
+  if (res.status === 401 || res.status === 403) throw new Error('OpenCode Go API key is invalid or expired.')
+  if (!res.ok) throw new Error(`OpenCode Go models HTTP ${res.status}`)
+  try {
+    const json = JSON.parse(text)
+    const models = json.data || json.models || []
+    return { modelCount: Array.isArray(models) ? models.length : null }
+  } catch {
+    return { modelCount: null }
+  }
 }
 
 function parseWorkspaceIDs(text) {
@@ -370,6 +470,8 @@ async function fetchWorkspaceID(cookie) {
 function resolveCookie(options = {}) {
   const saved = cookieHeader(options.savedKey ?? getKey('opencodego'))
   if (saved) return saved
+  const legacySaved = cookieHeader(getKey('opencode'))
+  if (legacySaved) return legacySaved
   const env = cookieHeader(process.env.OPENCODE_COOKIE || process.env.OPENCODE_GO_COOKIE)
   if (env) return env
   const browser = cookieHeader(readCookieHeader({
@@ -381,18 +483,41 @@ function resolveCookie(options = {}) {
   return browser || null
 }
 
-async function read(options = {}) {
+function resolveDashboardCredentials(options = {}) {
+  const configured = readDashboardConfig(options)
+  if (configured) return configured
   const cookie = resolveCookie(options)
-  if (!cookie) return { connected: false, needsKey: true }
+  return cookie ? { cookie, workspaceID: null, source: 'browser/session' } : null
+}
+
+async function read(options = {}) {
+  const apiKey = resolveApiKey(options)
+  const dashboard = resolveDashboardCredentials(options)
+  if (!dashboard?.cookie) {
+    if (apiKey?.key) {
+      try {
+        await validateApiKey(apiKey.key, options.timeout || 10000)
+      } catch (err) {
+        return { connected: false, needsKey: true, error: err && err.message ? err.message : String(err), apiKeySource: apiKey.source }
+      }
+      return {
+        connected: false,
+        needsKey: false,
+        error: 'OpenCode Go usage needs a dashboard login, OPENCODE_GO_WORKSPACE_ID plus OPENCODE_GO_AUTH_COOKIE, or ~/.config/opencode-bar/opencode-go.json.',
+        apiKeySource: apiKey.source,
+      }
+    }
+    return { connected: false, needsKey: true }
+  }
 
   try {
-    const workspaceID = await fetchWorkspaceID(cookie)
-    const usagePage = await fetchPageText(`${BASE}/workspace/${workspaceID}/go`, cookie)
+    const workspaceID = dashboard.workspaceID || await fetchWorkspaceID(dashboard.cookie)
+    const usagePage = await fetchPageText(`${BASE}/workspace/${workspaceID}/go`, dashboard.cookie)
     const usage = parseSubscription(usagePage)
-    const zenBalanceUSD = usage.zenBalanceUSD ?? parseZenBalance(await fetchPageText(`${BASE}/workspace/${workspaceID}`, cookie, 5000))
-    return { ...usage, zenBalanceUSD, workspaceID }
+    const zenBalanceUSD = usage.zenBalanceUSD ?? parseZenBalance(await fetchPageText(`${BASE}/workspace/${workspaceID}`, dashboard.cookie, 5000))
+    return { ...usage, zenBalanceUSD, workspaceID, apiKeySource: apiKey?.source || null, usageSource: dashboard.source }
   } catch (err) {
-    return { connected: false, needsKey: true, error: err && err.message ? err.message : String(err) }
+    return { connected: false, needsKey: !apiKey?.key, error: err && err.message ? err.message : String(err), apiKeySource: apiKey?.source || null }
   }
 }
 
@@ -401,6 +526,11 @@ module.exports = {
   _private: {
     cookieHeader,
     resolveCookie,
+    resolveApiKey,
+    resolveDashboardCredentials,
+    authFileCandidates,
+    configFileCandidates,
+    dashboardCookieHeader,
     normalizeWorkspaceID,
     parseWorkspaceIDs,
     parseSubscription,

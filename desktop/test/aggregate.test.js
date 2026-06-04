@@ -52,6 +52,7 @@ const storageFootprint = require('../lib/storage-footprint')
 const providerStatus = require('../lib/provider-status')
 const providerLinks = require('../lib/provider-links')
 const providerIds = require('../lib/provider-ids')
+const secrets = require('../lib/secrets')
 const config = require('../lib/config')
 const maxxAlerts = require('../lib/maxx-alerts')
 const widgetSnapshot = require('../lib/widget-snapshot')
@@ -3507,6 +3508,53 @@ test('opencode go parser maps rolling, weekly, monthly, and zen balance', () => 
 
 test('opencode go zen parser handles page text fallback', () => {
   assert.equal(opencodego._private.parseZenBalance('<div>Zen balance</div><strong>$1,234.56</strong>'), 1234.56)
+})
+
+test('opencode go accepts legacy saved OpenCode cookie', () => {
+  secrets.setProcessOverride({ opencode: 'Cookie: theme=dark; auth=legacy; __Host-auth=host; other=nope' })
+  try {
+    assert.equal(opencodego._private.resolveCookie(), 'auth=legacy; __Host-auth=host')
+  } finally {
+    secrets.setProcessOverride(null)
+  }
+})
+
+test('opencode go reads API key from OpenCode auth.json candidates', () => {
+  const home = '/tmp/maxx-home'
+  const authFile = `${home}/.local/share/opencode/auth.json`
+  const files = {
+    [authFile]: JSON.stringify({ 'opencode-go': { type: 'api', key: 'go-key' } }),
+  }
+  const fsImpl = { readFileSync(file) { return files[file] } }
+
+  const found = opencodego._private.resolveApiKey({ home, fs: fsImpl, env: {} })
+
+  assert.equal(found.key, 'go-key')
+  assert.equal(found.source, authFile)
+})
+
+test('opencode go reads dashboard credentials from env and config files', () => {
+  const envCreds = opencodego._private.resolveDashboardCredentials({
+    env: {
+      OPENCODE_GO_WORKSPACE_ID: 'wrk_ABC123',
+      OPENCODE_GO_AUTH_COOKIE: 'bare-cookie',
+    },
+  })
+  assert.equal(envCreds.workspaceID, 'wrk_ABC123')
+  assert.equal(envCreds.cookie, 'auth=bare-cookie')
+  assert.equal(envCreds.source, 'environment')
+
+  const home = '/tmp/maxx-home'
+  const configFile = `${home}/.config/opencode-bar/opencode-go.json`
+  const files = {
+    [configFile]: JSON.stringify({ workspaceId: 'wrk_FROMFILE', authCookie: 'auth=file-cookie; theme=nope' }),
+  }
+  const fsImpl = { readFileSync(file) { return files[file] } }
+  const configCreds = opencodego._private.resolveDashboardCredentials({ home, fs: fsImpl, env: {} })
+
+  assert.equal(configCreds.workspaceID, 'wrk_FROMFILE')
+  assert.equal(configCreds.cookie, 'auth=file-cookie')
+  assert.equal(configCreds.source, configFile)
 })
 
 test('alibaba parser maps quota payload windows', () => {

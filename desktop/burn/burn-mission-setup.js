@@ -83,6 +83,54 @@ function burnModelOptions(state) {
   }))
 }
 
+function burnPreflightPanel(state) {
+  const pf = state.missionPreflight
+  const loading = state.missionPreflightLoading
+  let tone = BURN.text2
+  let title = loading ? 'Estimating…' : 'Preflight estimate'
+  let body = 'Pick a folder, model, and goal to estimate token burn before launch.'
+  let meta = 'SAVE MODE'
+
+  if (pf && pf.ok) {
+    const risky = pf.window && Number(pf.window.reserveAfterPct) < 40
+    tone = risky ? BURN.warnText : BURN.limeText
+    title = `${pf.estimate.lowLabel}-${pf.estimate.highLabel} tokens`
+    body = pf.summary
+    meta = pf.window
+      ? `${pf.providerName || 'MODEL'} · ${pf.window.freePct}% FREE · RESETS ${String(pf.window.resetLabel || '').toUpperCase()}`
+      : `${pf.providerName || 'MODEL'} · ESTIMATE`
+  } else if (pf && pf.missing) {
+    meta = `NEEDS ${pf.missing.join(' + ').toUpperCase()}`
+  } else if (pf && pf.error) {
+    tone = BURN.warnText
+    body = pf.error
+    meta = 'CHECK FAILED'
+  }
+
+  const reasons = pf && pf.ok && Array.isArray(pf.reasons)
+    ? pf.reasons.slice(0, 2).map((r) => (
+      `<div style="${bstyle({ display: 'flex', gap: 7, alignItems: 'baseline', fontFamily: BURN_FONT.sans, fontSize: 11.5, color: BURN.text2, lineHeight: 1.4 })}">` +
+      `<span style="${bstyle({ width: 3, height: 3, background: r.kind === 'short-window' ? BURN.warn : BURN.lime, flex: '0 0 auto' })}"></span>` +
+      `<span>${burnEsc(r.text)}</span>` +
+      `</div>`
+    )).join('')
+    : ''
+
+  return (
+    `<div style="${bstyle({ border: `1px solid ${BURN.borderHi}`, background: BURN.surface2, borderRadius: 2 })}">` +
+    `<div style="${bstyle({ display: 'flex', alignItems: 'baseline', gap: 8, padding: '9px 10px', borderBottom: `1px solid ${BURN.border}` })}">` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 11, fontWeight: 700, color: tone, letterSpacing: 0.4, textTransform: 'uppercase' })}">${burnEsc(title)}</span>` +
+    `<span style="${bstyle({ flex: 1 })}"></span>` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8.5, color: BURN.text3, letterSpacing: 0.5, textTransform: 'uppercase' })}">${burnEsc(meta)}</span>` +
+    `</div>` +
+    `<div style="${bstyle({ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 7 })}">` +
+    `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 12, color: BURN.text2, lineHeight: 1.45 })}">${burnEsc(body)}</div>` +
+    reasons +
+    `</div>` +
+    `</div>`
+  )
+}
+
 function burnRenderMissionSetup(state) {
   const selected = state.missionModels || {}
   const models = burnModelOptions(state)
@@ -144,7 +192,7 @@ function burnRenderMissionSetup(state) {
 
   const body =
     `<div class="burn-body" style="${bstyle({ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 14 })}">` +
-    folderSection + modelsSection + goalSection +
+    folderSection + modelsSection + goalSection + burnPreflightPanel(state) +
     `</div>`
 
   const note = state.missionNote || ''
