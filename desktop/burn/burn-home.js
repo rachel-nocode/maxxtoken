@@ -5,6 +5,9 @@
 function burnProviderRow(p, expanded) {
   const burning = p.status === 'warn'
   const rowBg = burning ? BURN.warnRowBg : BURN.surface2
+  const meterPct = Number.isFinite(Number(p.meterPct)) ? Number(p.meterPct) : p.used
+  const meterValue = p.meterValue || `${meterPct}%`
+  const meterLabel = p.meterLabel || 'USED'
 
   const topRow =
     `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 7 })}">` +
@@ -22,7 +25,7 @@ function burnProviderRow(p, expanded) {
       letterSpacing: -0.3,
       minWidth: 36,
       textAlign: 'right',
-    })}">${p.used}%</span>` +
+    })}">${burnEsc(meterValue)}</span>` +
     `<button type="button" data-burn-chevron="${burnEsc(p.id)}" aria-label="Toggle detail" style="${bstyle({
       width: 22,
       height: 22,
@@ -49,14 +52,14 @@ function burnProviderRow(p, expanded) {
       letterSpacing: 0.4,
       fontVariantNumeric: 'tabular-nums',
     })}">` +
-    `<span>${burnEsc(p.windowSummary || '')}</span>` +
+    `<span>${burnEsc(meterLabel)} · ${burnEsc(p.windowSummary || '')}</span>` +
     `<span>RESET ${burnEsc(p.reset.toUpperCase())}</span>` +
     `</div>`
 
   const collapsed =
     `<div data-burn-row="${burnEsc(p.id)}" style="${bstyle({ padding: '11px 14px', cursor: 'pointer' })}">` +
     topRow +
-    burnSegBar({ pct: p.used, burning }) +
+    burnSegBar({ pct: meterPct, burning }) +
     caption +
     `</div>`
 

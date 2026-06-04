@@ -2,6 +2,7 @@ const { app, Tray, BrowserWindow, Menu, nativeImage, ipcMain, shell, dialog, scr
 const { autoUpdater } = require('electron-updater')
 const fs = require('fs')
 const path = require('path')
+const zlib = require('zlib')
 const { fork } = require('child_process')
 const { loadConfig, saveConfig, FILE } = require('./lib/config')
 const { generateIdeas, generateBurnIdeas, recordIdeaFeedback } = require('./lib/ideas')
@@ -118,6 +119,7 @@ let refreshTimer = null
 let heavyRefreshTimer = null
 let lastSnapshot = null
 let snapshotInFlight = null
+let snapshotInFlightCancel = null
 const activeSnapshotWorkers = new Set()
 const copilotLoginSessions = new Map()
 
@@ -134,6 +136,13 @@ const HEAVY_REFRESH_INTERVAL_MS = 60 * 60 * 1000
 const OPEN_REFRESH_THROTTLE_MS = 30 * 1000
 const SNAPSHOT_WORKER_TIMEOUT_MS = 90 * 1000
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
+const TRAY_BURN = {
+  lime: '#B6FF3C',
+  coral: '#FF6B5C',
+  empty: '#2E2E2E',
+  white: '#F5F5F5',
+  black: '#000000',
+}
 
 function fullSnapshotFromWidgetCache(cache) {
   if (!cache || typeof cache !== 'object') return null
@@ -209,7 +218,7 @@ function setTraySnapshot(snap) {
   } catch {
     /* widget/automation snapshot is best-effort */
   }
-  setTrayStatus(trayTitleFromSnapshot(snap, loadConfig().trayMetric))
+  updateTrayAppearance(snap, loadConfig())
   maybePostMaxxAlert(snap)
   maybePostQuotaNotifications(snap)
 }
@@ -221,7 +230,8 @@ function snapshotViaWorker(heavy = true) {
   const start = Date.now()
   logger.info('snapshot-worker', 'starting', { requestId, heavy })
 
-  return new Promise((resolve, reject) => {
+  let cancel = null
+  const promise = new Promise((resolve, reject) => {
     let timer = null
     const child = fork(path.join(__dirname, 'lib', 'snapshot-worker.js'), [], {
       env: {
@@ -242,12 +252,18 @@ function snapshotViaWorker(heavy = true) {
       activeSnapshotWorkers.delete(child)
       const ms = Date.now() - start
       if (err) {
-        logger.error('snapshot-worker', 'failed', { requestId, ms, error: err.message || String(err) })
+        const log = err.cancelled ? logger.info : logger.error
+        log('snapshot-worker', err.cancelled ? 'cancelled' : 'failed', { requestId, ms, error: err.message || String(err) })
         reject(err)
       } else {
         logger.info('snapshot-worker', 'done', { requestId, ms })
         resolve(snap)
       }
+    }
+    cancel = (reason = 'snapshot worker superseded') => {
+      const err = new Error(reason)
+      err.cancelled = true
+      finish(err)
     }
     timer = setTimeout(() => {
       finish(new Error(`snapshot worker timed out after ${SNAPSHOT_WORKER_TIMEOUT_MS}ms`))
@@ -264,6 +280,10 @@ function snapshotViaWorker(heavy = true) {
     })
     child.send({ type: 'snapshot', requestId, heavy, secrets: allKeys() })
   })
+  promise.cancel = (reason) => {
+    if (cancel) cancel(reason)
+  }
+  return promise
 }
 
 function maybePostMaxxAlert(snap) {
@@ -311,11 +331,234 @@ function trayIcon() {
   return image
 }
 
+function trayPctForProvider(provider, config) {
+  const used = Number(provider?.capturedPct)
+  const left = Number(provider?.remainingPct)
+  if (config?.usageMeterMode === 'left') {
+    if (Number.isFinite(left)) return Math.max(0, Math.min(100, left))
+    if (Number.isFinite(used)) return Math.max(0, Math.min(100, 100 - used))
+    return 100
+  }
+  if (Number.isFinite(used)) return Math.max(0, Math.min(100, used))
+  if (Number.isFinite(left)) return Math.max(0, Math.min(100, 100 - left))
+  return 0
+}
+
+function trayProviderWarning(provider, config) {
+  const remaining = Number(provider?.remainingPct)
+  const used = Number(provider?.capturedPct)
+  const reserve = Number(config?.maxxAlertReservePct) || 25
+  if (Number.isFinite(remaining) && remaining <= reserve) return true
+  return Number.isFinite(used) && used >= 100 - reserve
+}
+
+function trayActiveProviders(snap, config) {
+  const providers = Array.isArray(snap?.providers) ? snap.providers : []
+  const byId = new Map(providers.filter((provider) => provider?.id).map((provider) => [provider.id, provider]))
+  const snapshotEnabledIds = Array.isArray(snap?.enabledProviderIds) ? snap.enabledProviderIds : []
+  const configuredIds = [
+    ...(Array.isArray(config?.providerOrder) ? config.providerOrder : []),
+    ...Object.keys(config?.providers || {}),
+  ]
+  const enabledIds = []
+  const seen = new Set()
+  for (const id of [...snapshotEnabledIds, ...configuredIds]) {
+    if (seen.has(id)) continue
+    seen.add(id)
+    if (snapshotEnabledIds.includes(id) || config?.providers?.[id]?.enabled) enabledIds.push(id)
+  }
+  if (enabledIds.length) {
+    return enabledIds.map((id) => byId.get(id) || {
+      id,
+      name: config?.providers?.[id]?.name || id,
+      capturedPct: 0,
+      remainingPct: 100,
+      connected: false,
+    })
+  }
+  const active = providers.filter((provider) => {
+    if (!provider?.id) return false
+    return provider.connected !== false || provider.capturedPct != null || provider.remainingPct != null
+  })
+  return active.length ? active : providers.slice(0, 1)
+}
+
+function pngCrcTable() {
+  const table = []
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    table[n] = c >>> 0
+  }
+  return table
+}
+
+const PNG_CRC = pngCrcTable()
+
+function pngCrc(type, data) {
+  let c = 0xffffffff
+  const bytes = Buffer.concat([Buffer.from(type), data])
+  for (const byte of bytes) c = PNG_CRC[(c ^ byte) & 0xff] ^ (c >>> 8)
+  return (c ^ 0xffffffff) >>> 0
+}
+
+function pngChunk(type, data) {
+  const out = Buffer.alloc(12 + data.length)
+  out.writeUInt32BE(data.length, 0)
+  out.write(type, 4, 4, 'ascii')
+  data.copy(out, 8)
+  out.writeUInt32BE(pngCrc(type, data), 8 + data.length)
+  return out
+}
+
+function rgba(hex) {
+  const s = hex.replace('#', '')
+  return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16), 255]
+}
+
+function createPng(width, height, draw) {
+  const pixels = Buffer.alloc(width * height * 4)
+  const set = (x, y, color) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return
+    const i = (y * width + x) * 4
+    pixels[i] = color[0]
+    pixels[i + 1] = color[1]
+    pixels[i + 2] = color[2]
+    pixels[i + 3] = color[3]
+  }
+  draw(set)
+
+  const raw = Buffer.alloc((width * 4 + 1) * height)
+  for (let y = 0; y < height; y++) {
+    raw[y * (width * 4 + 1)] = 0
+    pixels.copy(raw, y * (width * 4 + 1) + 1, y * width * 4, (y + 1) * width * 4)
+  }
+
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(width, 0)
+  ihdr.writeUInt32BE(height, 4)
+  ihdr[8] = 8
+  ihdr[9] = 6
+  ihdr[10] = 0
+  ihdr[11] = 0
+  ihdr[12] = 0
+
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+function drawRect(set, scale, x, y, w, h, color) {
+  const xx = Math.round(x * scale)
+  const yy = Math.round(y * scale)
+  const ww = Math.round(w * scale)
+  const hh = Math.round(h * scale)
+  for (let py = yy; py < yy + hh; py++) {
+    for (let px = xx; px < xx + ww; px++) set(px, py, color)
+  }
+}
+
+function pointInPolygon(x, y, points) {
+  let inside = false
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const xi = points[i][0]
+    const yi = points[i][1]
+    const xj = points[j][0]
+    const yj = points[j][1]
+    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi
+    if (intersect) inside = !inside
+  }
+  return inside
+}
+
+function drawPolygon(set, scale, points, color) {
+  const scaled = points.map(([x, y]) => [x * scale, y * scale])
+  const xs = scaled.map(([x]) => x)
+  const ys = scaled.map(([, y]) => y)
+  const minX = Math.floor(Math.min(...xs))
+  const maxX = Math.ceil(Math.max(...xs))
+  const minY = Math.floor(Math.min(...ys))
+  const maxY = Math.ceil(Math.max(...ys))
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      if (pointInPolygon(x + 0.5, y + 0.5, scaled)) set(x, y, color)
+    }
+  }
+}
+
+function drawTrayCells(set, scale, { x, y, cells, filled, cellW, cellH, gap, color }) {
+  const empty = rgba(TRAY_BURN.empty)
+  for (let i = 0; i < cells; i++) {
+    drawRect(set, scale, x + i * (cellW + gap), y, cellW, cellH, i < filled ? color : empty)
+  }
+}
+
+function drawTrayReceipt(set, scale, x, y) {
+  const white = rgba(TRAY_BURN.white)
+  const black = rgba(TRAY_BURN.black)
+  drawPolygon(set, scale, [
+    [x, y], [x + 14, y], [x + 14, y + 15], [x + 12, y + 13.2],
+    [x + 10, y + 15], [x + 8, y + 13.2], [x + 6, y + 15],
+    [x + 4, y + 13.2], [x + 2, y + 15], [x, y + 13.2],
+  ], white)
+  drawRect(set, scale, x + 2, y + 2, 10, 10.5, black)
+  drawPolygon(set, scale, [
+    [x + 7.6, y + 3.1], [x + 3.6, y + 10.1], [x + 6.6, y + 10.1],
+    [x + 5.4, y + 15.2], [x + 10.4, y + 8], [x + 7.3, y + 8],
+  ], white)
+}
+
+function trayBurnbarImage(snap, config) {
+  const providers = trayActiveProviders(snap, config).slice(0, 3)
+  const multi = providers.length > 1
+  const width = multi ? 45 : 22
+  const height = 22
+  const provider = providers[0] || {}
+  const scale = 2
+
+  const png = createPng(width * scale, height * scale, (set) => {
+    drawTrayReceipt(set, scale, multi ? 0 : 3, multi ? 3 : 1)
+    if (multi) {
+      providers.forEach((item, index) => {
+        const cells = 4
+        const pct = trayPctForProvider(item, config)
+        const filled = Math.max(0, Math.min(cells, Math.round((pct / 100) * cells)))
+        const color = rgba(trayProviderWarning(item, config) ? TRAY_BURN.coral : TRAY_BURN.lime)
+        drawTrayCells(set, scale, { x: 20, y: 3 + index * 6, cells, filled, cellW: 5, cellH: 4, gap: 2, color })
+      })
+    } else {
+      const cells = 6
+      const pct = trayPctForProvider(provider, config)
+      const filled = Math.max(0, Math.min(cells, Math.round((pct / 100) * cells)))
+      const color = rgba(trayProviderWarning(provider, config) ? TRAY_BURN.coral : TRAY_BURN.lime)
+      drawTrayCells(set, scale, { x: 0, y: 18, cells, filled, cellW: 3, cellH: 4, gap: 1, color })
+    }
+  })
+  const image = nativeImage.createFromBuffer(png, { scaleFactor: scale })
+  image.setTemplateImage(false)
+  return image
+}
+
 function setTrayStatus(title) {
   if (!tray) return
   const status = String(title || '').trim()
   tray.setToolTip(status ? `MaxxToken - ${status}` : 'MaxxToken - use what you pay for')
+  tray.setImage(trayIcon())
   if (process.platform === 'darwin') tray.setTitle(title || ' Maxx')
+}
+
+function updateTrayAppearance(snap, config = loadConfig()) {
+  if (!tray) return
+  if (process.platform === 'darwin' && config.trayMetric === 'burnbar') {
+    tray.setImage(trayBurnbarImage(snap, config))
+    tray.setTitle('')
+    tray.setToolTip('MaxxToken - BURN bars')
+    return
+  }
+  setTrayStatus(trayTitleFromSnapshot(snap, config.trayMetric))
 }
 
 function createPopover() {
@@ -430,25 +673,41 @@ async function showPopover() {
   refreshOnOpen()
 }
 
-async function readSnapshot({ staleOk = false, force = false, heavy = true } = {}) {
+async function readSnapshot({ staleOk = false, force = false, heavy = true, restart = false } = {}) {
   if (staleOk && lastSnapshot) {
     return lastSnapshot
   }
 
   if (snapshotInFlight) {
-    if (force) logger.info('snapshot-worker', 'force refresh joined in-flight snapshot')
-    return snapshotInFlight
+    if (force && restart && typeof snapshotInFlightCancel === 'function') {
+      const old = snapshotInFlight
+      const cancel = snapshotInFlightCancel
+      snapshotInFlight = null
+      snapshotInFlightCancel = null
+      old.catch(() => {})
+      cancel('snapshot worker restarted after settings change')
+    } else {
+      if (force) logger.info('snapshot-worker', 'force refresh joined in-flight snapshot')
+      return snapshotInFlight
+    }
   }
 
   if (!snapshotInFlight) {
-    snapshotInFlight = snapshotViaWorker(heavy)
+    const worker = snapshotViaWorker(heavy)
+    snapshotInFlightCancel = worker.cancel
+    let wrapped = null
+    wrapped = worker
       .then((snap) => {
         setTraySnapshot(snap)
         return snap
       })
       .finally(() => {
-        snapshotInFlight = null
+        if (snapshotInFlight === wrapped) {
+          snapshotInFlight = null
+          snapshotInFlightCancel = null
+        }
       })
+    snapshotInFlight = wrapped
   }
   return snapshotInFlight
 }
@@ -459,8 +718,8 @@ function sendSnapshotToPopover(snap) {
   }
 }
 
-async function syncSnapshot({ force = true, heavy = true } = {}) {
-  const snap = await readSnapshot({ force, heavy })
+async function syncSnapshot({ force = true, heavy = true, restart = false } = {}) {
+  const snap = await readSnapshot({ force, heavy, restart })
   updateTray().catch(() => {})
   sendSnapshotToPopover(snap)
   return snap
@@ -505,7 +764,8 @@ async function updateTray() {
   }
   try {
     const snap = await readSnapshot({ staleOk: true })
-    title = trayTitleFromSnapshot(snap, config.trayMetric)
+    updateTrayAppearance(snap, config)
+    return
   } catch {
     /* keep default */
   }
@@ -557,12 +817,12 @@ ipcMain.handle('export-usage', async () => {
   logger.info('export-usage', 'wrote', { filePath: picked.filePath, providers: payload.providers.length })
   return { ok: true, filePath: picked.filePath, providers: payload.providers.length }
 })
-ipcMain.handle('sync-now', () => syncSnapshot({ force: true }))
+ipcMain.handle('sync-now', () => syncSnapshot({ force: true, restart: true }))
 ipcMain.handle('refresh-provider', async (_e, id) => {
   id = canonicalProviderId(id)
   const config = loadConfig()
   if (!config.providers[id]) throw new Error('Unknown provider')
-  return syncSnapshot({ force: true })
+  return syncSnapshot({ force: true, restart: true })
 })
 ipcMain.handle('get-config', () => loadConfig())
 ipcMain.handle('detect-providers', () => {
@@ -583,7 +843,7 @@ ipcMain.handle('set-api-key', async (_e, payload) => {
   const id = canonicalProviderId(payload && payload.id)
   if (!KEY_PROVIDERS.has(id)) throw new Error('Unknown provider')
   setKey(id, payload.key || '')
-  const snap = await readSnapshot({ force: true })
+  const snap = await syncSnapshot({ force: true, heavy: false, restart: true })
   updateTray()
   if (popover && popover.isVisible()) popover.webContents.send('snapshot', snap)
   return { ok: true, hasKey: hasKey(id) }
@@ -607,7 +867,7 @@ ipcMain.handle('complete-copilot-login', async (_e, id) => {
   try {
     const token = await pollForToken(session)
     setKey('copilot', token)
-    const snap = await readSnapshot({ force: true })
+    const snap = await syncSnapshot({ force: true, heavy: false, restart: true })
     updateTray()
     if (popover && popover.isVisible()) popover.webContents.send('snapshot', snap)
     return { ok: true, hasKey: hasKey('copilot'), snap }
@@ -621,11 +881,10 @@ ipcMain.handle('set-missions', (_e, enabled) => {
   saveConfig(cfg)
   return cfg
 })
-ipcMain.handle('save-config', (_e, config) => {
-  saveConfig(config)
-  applyLoginItemSettings(config)
-  updateTray()
-  return readSnapshot({ force: true })
+ipcMain.handle('save-config', async (_e, config) => {
+  const saved = saveConfig(config)
+  applyLoginItemSettings(saved)
+  return syncSnapshot({ force: true, heavy: false, restart: true })
 })
 ipcMain.on('close-popover', () => popover && popover.hide())
 ipcMain.handle('set-popover-mode', (_e, mode) => setPopoverMode(mode))
