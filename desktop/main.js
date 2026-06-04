@@ -6,7 +6,6 @@ const zlib = require('zlib')
 const { fork } = require('child_process')
 const { loadConfig, saveConfig, FILE } = require('./lib/config')
 const { generateIdeas, generateBurnIdeas, recordIdeaFeedback } = require('./lib/ideas')
-const { canGenerateWith } = require('./lib/llm')
 const { scanBacklogMissions, backlogPrompt } = require('./lib/backlog')
 const { openBuild } = require('./lib/launch')
 const { setKey, hasKey, allKeys } = require('./lib/secrets')
@@ -1221,24 +1220,11 @@ function formatResetCountdown(resetAt) {
   return `${m}M`
 }
 
-// Underused providers (most room first) that we hold a generation key for —
-// the ordered fallback list for the self-eating idea engine.
-function burnFallbackCandidates(snap) {
-  const providers = Array.isArray(snap?.providers) ? snap.providers : []
-  return providers
-    .filter((p) => p.connected && canGenerateWith(p.id))
-    .map((p) => ({ id: p.id, left: Number(p.leftValue ?? p.burnValue ?? p.remainingValue) }))
-    .sort((a, b) => (Number.isFinite(b.left) ? b.left : -1) - (Number.isFinite(a.left) ? a.left : -1))
-    .map((p) => p.id)
-}
-
 ipcMain.handle('burn-ideas', async () => {
   const snap = await readSnapshot({ staleOk: true })
   const target = mostLeftProvider(snap)
   target.resetText = formatResetCountdown(target.resetAt)
-  const candidates = burnFallbackCandidates(snap)
   const { signals, ideas, generation } = await generateBurnIdeas(target, {
-    candidates,
     log: (meta) =>
       logger.info('burn-ideas', 'generated', {
         mode: meta.mode,

@@ -147,11 +147,12 @@ function burnRenderMissionSetup(state) {
     folderSection + modelsSection + goalSection +
     `</div>`
 
+  const note = state.missionNote || ''
   const footer =
-    `<div style="${bstyle({ display: 'flex', gap: 6, padding: 10, borderTop: `1px solid ${BURN.border}`, background: BURN.surface })}">` +
+    `<div style="${bstyle({ display: 'flex', gap: 6, padding: 10, borderTop: `1px solid ${BURN.border}`, background: BURN.surface, alignItems: 'center' })}">` +
     `<button type="button" data-burn-nav="back" style="${burnGhostBtn()}">BACK</button>` +
     `<button type="button" data-burn-action="copy-goal" style="${burnGhostBtn()}">COPY GOAL</button>` +
-    `<span style="${bstyle({ flex: 1 })}"></span>` +
+    `<span style="${bstyle({ flex: 1, fontFamily: BURN_FONT.mono, fontSize: 10, color: BURN.text2, paddingLeft: 6 })}">${burnEsc(note)}</span>` +
     `<button type="button" data-burn-action="start-mission" style="${burnPrimaryBtn()}">Start mission →</button>` +
     `</div>`
 

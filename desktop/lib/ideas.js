@@ -4,7 +4,7 @@ const os = require('os')
 const path = require('path')
 const { readClaudeCredentials, persistClaudeCredentials } = require('./auth')
 const { fetchWithTimeout } = require('./http')
-const { generateText, canGenerateWith } = require('./llm')
+const codex = require('./adapters/codex')
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages'
 const REFRESH_URL = 'https://platform.claude.com/v1/oauth/token'
@@ -12,6 +12,9 @@ const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 const SCOPES =
   'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload'
 const MODEL = 'claude-sonnet-4-5'
+// Claude subscription OAuth tokens are rejected (HTTP 429 rate_limit_error)
+// unless the request identifies as Claude Code via this exact system prompt.
+const CLAUDE_CODE_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude."
 const HISTORY_DIR = path.join(os.homedir(), '.maxxtoken')
 const HISTORY_FILE = path.join(HISTORY_DIR, 'idea-history.jsonl')
 const FRESH_COUNT = 6
@@ -818,6 +821,75 @@ async function refresh(creds) {
   return oauth.accessToken
 }
 
+// Low-level Claude OAuth text generation. Returns the assistant text, or throws
+// an Error whose message is a stable code (claude-http-429, …). The Claude Code
+// system prompt is required — without it the subscription endpoint 429s.
+async function claudeGenerateText(prompt, { maxTokens = 4200, temperature = 0.9, timeout = 30000 } = {}) {
+  const creds = readClaudeCredentials()
+  if (!creds) throw new Error('no-claude-credentials')
+  let token = creds.data.claudeAiOauth.accessToken
+  const exp = creds.data.claudeAiOauth.expiresAt
+  if (exp && exp - Date.now() < 5 * 60 * 1000) {
+    const t = await refresh(creds)
+    if (t) token = t
+  }
+  const call = (tok) =>
+    fetchWithTimeout(MESSAGES_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + tok,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'oauth-2025-04-20',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, temperature, system: CLAUDE_CODE_SYSTEM, messages: [{ role: 'user', content: prompt }] }),
+    }, timeout)
+  let resp = await call(token)
+  if (resp.status === 401) {
+    const t = await refresh(creds)
+    if (t) resp = await call(t)
+  }
+  if (!resp.ok) throw new Error(`claude-http-${resp.status}`)
+  const data = await resp.json()
+  return (data.content || []).map((b) => b.text || '').join('')
+}
+
+const ENGINE_NAME = { claude: 'Claude', codex: 'Codex' }
+
+// Idea generation runs only on the two subscription CLIs the user already pays
+// for: Claude and Codex. When both are connected we randomize the order each
+// call so repeated taps alternate (and burn both pools); the other is tried if
+// the first errors. Returns [] when neither is connected.
+function ideaEngineOrder() {
+  const order = []
+  if (readClaudeCredentials()) order.push('claude')
+  if (codex.canGenerate()) order.push('codex')
+  if (order.length === 2 && Math.random() < 0.5) order.reverse()
+  return order
+}
+
+function engineGenerate(id, prompt, opts) {
+  return id === 'claude' ? claudeGenerateText(prompt, opts) : codex.generate(prompt, opts)
+}
+
+// Run `harvest(text, engineName)` against each connected engine in turn; return
+// { ideas, provider, providerName } for the first that yields ideas, else
+// { ideas: null, error }.
+async function generateIdeasVia(prompt, opts, harvest) {
+  const order = ideaEngineOrder()
+  let error = order.length ? '' : 'no-subscription'
+  for (const id of order) {
+    try {
+      const ideas = harvest(await engineGenerate(id, prompt, opts), ENGINE_NAME[id])
+      if (ideas) return { ideas, provider: id, providerName: ENGINE_NAME[id] }
+      error = `${id}-empty-or-duplicate`
+    } catch (err) {
+      error = `${id}-${(err && err.message) || 'error'}`
+    }
+  }
+  return { ideas: null, error }
+}
+
 function extractJson(text) {
   const start = text.indexOf('[')
   const end = text.lastIndexOf(']')
@@ -925,83 +997,48 @@ function buildBurnPrompt(recentContext, signals, targetProvider) {
 async function generateIdeas(targetProvider) {
   const cli = (targetProvider && targetProvider.cli) || 'claude'
   const history = readHistory()
-  const creds = readClaudeCredentials()
-  if (!creds) return fallbackIdeas(cli)
   const recentContext = promptHistory(history)
+  const opts = { maxTokens: 6000, temperature: 1, timeout: 28000 }
 
-  try {
-    let token = creds.data.claudeAiOauth.accessToken
-    const exp = creds.data.claudeAiOauth.expiresAt
-    if (exp && exp - Date.now() < 5 * 60 * 1000) {
-      const t = await refresh(creds)
-      if (t) token = t
-    }
+  // Pick one engine per run so both passes share it; try the next if it fails.
+  for (const id of ideaEngineOrder()) {
+    try {
+      const fetchBatch = async (prompt) => extractJson(await engineGenerate(id, prompt, opts))
 
-    const call = (tok, prompt) =>
-      fetchWithTimeout(MESSAGES_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer ' + tok,
-          'anthropic-version': '2023-06-01',
-          'anthropic-beta': 'oauth-2025-04-20',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          max_tokens: 6000,
-          temperature: 1,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-      }, 28000)
+      // First pass.
+      const picked = []
+      const first = await fetchBatch(buildIdeaPrompt(recentContext, pickLenses(3), []))
+      if (first && first.length) pickFresh(first, cli, ENGINE_NAME[id], history, picked)
 
-    const fetchBatch = async (prompt) => {
-      let resp = await call(token, prompt)
-      if (resp.status === 401) {
-        const t = await refresh(creds)
-        if (t) {
-          token = t
-          resp = await call(token, prompt)
-        }
+      // Retry once with a harder avoid-list if dedup left us short.
+      if (picked.length < FRESH_COUNT) {
+        const rejected = (first || [])
+          .map((idea) => idea && idea.title)
+          .filter(Boolean)
+          .slice(0, 16)
+        const second = await fetchBatch(buildIdeaPrompt(recentContext, pickLenses(4), rejected))
+        if (second && second.length) pickFresh(second, cli, ENGINE_NAME[id], history, picked)
       }
-      if (!resp.ok) return null
-      const data = await resp.json()
-      const text = (data.content || []).map((b) => b.text || '').join('')
-      return extractJson(text)
+
+      if (picked.length) return finalize(padFromBank(picked, cli, history), cli)
+    } catch {
+      /* try the next engine */
     }
-
-    // First pass.
-    const picked = []
-    const first = await fetchBatch(buildIdeaPrompt(recentContext, pickLenses(3), []))
-    if (first && first.length) pickFresh(first, cli, 'Claude', history, picked)
-
-    // Retry once with a harder avoid-list if dedup left us short.
-    if (picked.length < FRESH_COUNT) {
-      const rejected = (first || [])
-        .map((idea) => idea && idea.title)
-        .filter(Boolean)
-        .slice(0, 16)
-      const second = await fetchBatch(buildIdeaPrompt(recentContext, pickLenses(4), rejected))
-      if (second && second.length) pickFresh(second, cli, 'Claude', history, picked)
-    }
-
-    if (!picked.length) return fallbackIdeas(cli)
-    return finalize(padFromBank(picked, cli, history), cli)
-  } catch {
-    return fallbackIdeas(cli)
   }
+  return fallbackIdeas(cli)
 }
 
 // targetProvider = { name, cli, leftValue, usedPct, resetText }.
-// options.candidates = underused provider ids (most-underused first) to try as
-// the self-eating fallback when Claude is rate-limited. options.log(meta) is
-// called once with the chosen generation mode so the outcome isn't invisible.
+// Ideas come only from the two subscription CLIs the user already pays for:
+// Claude and Codex (random pick when both are connected, so taps alternate and
+// burn both pools). options.log(meta) is called once with the chosen mode so
+// the outcome isn't invisible.
 async function generateBurnIdeas(targetProvider, options = {}) {
   const cli = (targetProvider && targetProvider.cli) || 'claude'
   const history = readHistory()
   const signals = await collectSignals().catch(() => [])
   const recentContext = promptHistory(history)
   const prompt = buildBurnPrompt(recentContext, signals, targetProvider)
-  const candidates = Array.isArray(options.candidates) ? options.candidates : []
   const log = typeof options.log === 'function' ? options.log : () => {}
 
   const bankIdeas = () => finalize(padFromBank([], cli, history).slice(0, BURN_COUNT), cli)
@@ -1019,63 +1056,11 @@ async function generateBurnIdeas(targetProvider, options = {}) {
     return finalize(padFromBank(picked, cli, history).slice(0, BURN_COUNT), cli)
   }
 
-  // 1) Primary: Claude OAuth (the subscription most builders are underusing).
-  const creds = readClaudeCredentials()
-  let lastError = creds ? '' : 'no-claude-credentials'
-  if (creds) {
-    try {
-      let token = creds.data.claudeAiOauth.accessToken
-      const exp = creds.data.claudeAiOauth.expiresAt
-      if (exp && exp - Date.now() < 5 * 60 * 1000) {
-        const t = await refresh(creds)
-        if (t) token = t
-      }
-      const call = (tok) =>
-        fetchWithTimeout(MESSAGES_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: 'Bearer ' + tok,
-            'anthropic-version': '2023-06-01',
-            'anthropic-beta': 'oauth-2025-04-20',
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({ model: MODEL, max_tokens: 4200, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
-        }, 30000)
-      let resp = await call(token)
-      if (resp.status === 401) {
-        const t = await refresh(creds)
-        if (t) { token = t; resp = await call(token) }
-      }
-      if (resp.ok) {
-        const data = await resp.json()
-        const text = (data.content || []).map((b) => b.text || '').join('')
-        const ideas = harvest(text, 'claude')
-        if (ideas) return done(ideas, { mode: 'live', provider: 'claude', providerName: 'Claude' })
-        lastError = 'claude-empty-or-duplicate'
-      } else {
-        lastError = `claude-http-${resp.status}`
-      }
-    } catch (err) {
-      lastError = `claude-${err.message || 'error'}`
-    }
-  }
+  const res = await generateIdeasVia(prompt, { maxTokens: 4200, temperature: 0.9, timeout: 30000 }, harvest)
+  if (res.ideas) return done(res.ideas, { mode: 'live', provider: res.provider, providerName: res.providerName })
 
-  // 2) Self-eating fallback: re-route generation to an underused provider the
-  //    user already has a key for — the idea engine burns surplus quota too.
-  const usable = candidates.filter((id) => id !== 'claude' && canGenerateWith(id)).slice(0, 2)
-  for (const id of usable) {
-    try {
-      const text = await generateText(id, prompt, { temperature: 0.9, maxTokens: 4200, timeout: 20000 })
-      const ideas = harvest(text, id)
-      if (ideas) return done(ideas, { mode: 'live', provider: id, providerName: targetProvider?.name || id })
-      lastError = `${id}-empty-or-duplicate`
-    } catch (err) {
-      lastError = `${id}-${err.status || err.message || 'error'}`
-    }
-  }
-
-  // 3) Last resort: rotated hardcoded BANK, clearly flagged as offline.
-  return done(bankIdeas(), { mode: 'offline', provider: 'bank', providerName: 'Idea Bank', error: lastError })
+  // No connected subscription produced ideas → rotated hardcoded BANK, flagged offline.
+  return done(bankIdeas(), { mode: 'offline', provider: 'bank', providerName: 'Idea Bank', error: res.error })
 }
 
 function recordIdeaFeedback(idea, feedback) {

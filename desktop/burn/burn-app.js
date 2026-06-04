@@ -25,6 +25,7 @@ const burnState = {
   missionFolder: null, // display basename
   missionFolderPath: null, // full path for IPC
   missionGoal: '',
+  missionNote: '', // status/error surfaced under the start button
   // missions (real burn ideas from window.maxx.burnIdeas)
   ideas: [],
   ideaTarget: null,
@@ -253,6 +254,7 @@ function burnOpenMissionSetup(index) {
     burnState.missionModels[rec] = true
   }
   burnState.missionGoal = idea ? `${idea.title}\n\n${idea.pitch || ''}`.trim() : ''
+  burnState.missionNote = ''
   burnGo('mission-setup')
 }
 
@@ -260,10 +262,11 @@ async function burnPickFolder() {
   if (!window.maxx?.missionPickFolder) return
   try {
     const res = await window.maxx.missionPickFolder()
-    const path = typeof res === 'string' ? res : res?.path || res?.folder
+    const path = typeof res === 'string' ? res : res?.dir || res?.path || res?.folder
     if (!path || res?.canceled) return
     burnState.missionFolderPath = path
     burnState.missionFolder = String(path).replace(/\/+$/, '').split('/').pop()
+    burnState.missionNote = ''
     burnRender()
   } catch (err) {
     console.error('[burn] pick folder failed', err)
@@ -272,13 +275,29 @@ async function burnPickFolder() {
 
 function burnStartMission() {
   const models = Object.keys(burnState.missionModels).filter((id) => burnState.missionModels[id])
-  if (!burnState.missionFolderPath || !models.length) return // validation: folder + >=1 model
-  if (window.maxx?.missionStartProject) {
-    window.maxx
-      .missionStartProject({ folder: burnState.missionFolderPath, models, goal: burnState.missionGoal })
-      .catch((err) => console.error('[burn] start mission failed', err))
+  if (!burnState.missionFolderPath || !models.length) {
+    burnState.missionNote = !burnState.missionFolderPath ? 'Pick a folder first.' : 'Pick at least one model.'
+    burnRender()
+    return
   }
-  burnGo('home')
+  if (!window.maxx?.missionStartProject) return
+  burnState.missionNote = 'Starting mission…'
+  burnRender()
+  window.maxx
+    .missionStartProject({ dir: burnState.missionFolderPath, models, goal: burnState.missionGoal })
+    .then((res) => {
+      if (res && res.ok) {
+        burnState.missionNote = ''
+        burnGo('home')
+      } else {
+        burnState.missionNote = 'Could not start: ' + ((res && res.error) || 'unknown')
+        burnRender()
+      }
+    })
+    .catch((err) => {
+      burnState.missionNote = err && err.message ? err.message : 'Could not start mission.'
+      burnRender()
+    })
 }
 
 function burnHandleClick(e) {

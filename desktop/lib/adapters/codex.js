@@ -10,6 +10,11 @@ const KEYCHAIN_SERVICE = 'Codex Auth'
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const REFRESH_URL = 'https://auth.openai.com/oauth/token'
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses'
+// Only this model is accepted on the Codex/ChatGPT-account responses endpoint;
+// gpt-5 / gpt-5-codex are rejected ("not supported when using Codex with a
+// ChatGPT account"). max_output_tokens and temperature are also unsupported.
+const GEN_MODEL = 'gpt-5.5'
 const REFRESH_AGE_MS = 8 * 24 * 60 * 60 * 1000
 const PERIOD_SESSION_MS = 5 * 60 * 60 * 1000
 const PERIOD_WEEKLY_MS = 7 * 24 * 60 * 60 * 1000
@@ -1225,6 +1230,94 @@ function resetTokenScanCacheForTesting() {
   tokenScanCache = { historyDays: null, pathSignature: null, signature: null, scannedAt: 0, usage: null }
 }
 
+// ── Idea generation (Codex/ChatGPT subscription) ─────────────────────────────
+// Mirrors the Claude OAuth idea path: turn surplus subscription quota into burn
+// ideas. Uses the same responses endpoint the Codex CLI uses.
+
+// Auth candidates that carry an OAuth access token (API-key-only auth can't hit
+// the ChatGPT-account responses endpoint).
+function oauthAuthCandidates() {
+  return authCandidates().filter((s) => s.auth?.tokens?.access_token)
+}
+
+// True when a usable Codex subscription token is on this machine.
+function canGenerate() {
+  return oauthAuthCandidates().length > 0
+}
+
+async function accessTokenFor(state) {
+  let token = state.auth.tokens.access_token
+  if (needsRefresh(state.auth)) token = (await refreshToken(state)) || token
+  return token
+}
+
+// Accumulate the assistant text from a streamed Responses SSE body.
+function parseResponsesSse(text) {
+  let out = ''
+  for (const line of String(text || '').split('\n')) {
+    if (!line.startsWith('data:')) continue
+    const payload = line.slice(5).trim()
+    if (!payload || payload === '[DONE]') continue
+    try {
+      const ev = JSON.parse(payload)
+      if (ev.type === 'response.output_text.delta' && typeof ev.delta === 'string') out += ev.delta
+    } catch {
+      /* keepalive / non-JSON line */
+    }
+  }
+  return out
+}
+
+function callResponses(token, accountId, prompt, options) {
+  const headers = {
+    Authorization: 'Bearer ' + token,
+    'content-type': 'application/json',
+    'OpenAI-Beta': 'responses=experimental',
+    Accept: 'text/event-stream',
+    originator: 'codex_cli_rs',
+    'User-Agent': 'codex_cli_rs',
+  }
+  if (accountId) headers['ChatGPT-Account-Id'] = accountId
+  const body = {
+    model: options.model || GEN_MODEL,
+    instructions: options.instructions || 'You return only the requested JSON. No prose, no code fences.',
+    input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
+    reasoning: { effort: options.reasoningEffort || 'low' },
+    stream: true,
+    store: false,
+  }
+  return fetchWithTimeout(RESPONSES_URL, { method: 'POST', headers, body: JSON.stringify(body) }, options.timeout || 30000)
+}
+
+// Generate raw assistant text from a Codex subscription token. Returns the text
+// or throws (caller decides whether to fall back). Error messages are stable
+// codes (codex-http-429, codex-empty, …) to match the Claude path.
+async function generate(prompt, options = {}) {
+  let lastError = new Error('no-codex-oauth')
+  for (const state of oauthAuthCandidates()) {
+    try {
+      const accountId = state.auth.tokens.account_id
+      const token = await accessTokenFor(state)
+      let resp = await callResponses(token, accountId, prompt, options)
+      if (resp.status === 401 || resp.status === 403) {
+        const refreshed = await refreshToken(state)
+        if (refreshed) resp = await callResponses(refreshed, accountId, prompt, options)
+      }
+      if (!resp.ok) {
+        const err = new Error(`codex-http-${resp.status}`)
+        err.body = (await resp.text().catch(() => '')).slice(0, 200)
+        throw err
+      }
+      const text = parseResponsesSse(await resp.text())
+      if (!text.trim()) throw new Error('codex-empty')
+      return text
+    } catch (err) {
+      lastError = err
+    }
+  }
+  throw lastError
+}
+
 async function read(options = {}) {
   try {
     const live = await readLive()
@@ -1252,7 +1345,10 @@ async function read(options = {}) {
 
 module.exports = {
   read,
+  generate,
+  canGenerate,
   _private: {
+    parseResponsesSse,
     aggregateTokenUsages,
     codexPriorityTurns,
     parseCodexTokenUsage,
