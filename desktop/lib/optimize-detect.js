@@ -84,6 +84,11 @@ const CONFIG = {
     weekDays: 7, // weekly window length, for the "locked out" estimate
     weeksPerMonth: 4.345,
   },
+  saveMode: {
+    reservePct: 40, // keep this much of a short window available for important work
+    heavyUsedPct: 55,
+    maxActions: 4,
+  },
   // Coding-agent providers are input-heavy BY DESIGN (read codebase, write small
   // edit) — a 30d ratio always looks "wasteful" and would cry wolf. So ratio
   // does NOT auto-fire for these; instead the UI offers an opt-in per-day
@@ -219,6 +224,15 @@ function weeklyWindow(provider) {
   )
 }
 
+function sessionWindow(provider) {
+  const windows = Array.isArray(provider.windows) ? provider.windows : []
+  return (
+    windows.find((w) => w.kind === '5h') ||
+    windows.find((w) => /5\s*[- ]?\s*hour|session/i.test(`${w.kind || ''} ${w.label || ''}`)) ||
+    null
+  )
+}
+
 function soonestResetAt(provider) {
   const windows = Array.isArray(provider.windows) ? provider.windows : []
   const resets = windows.map((w) => w.resetAt).filter(Boolean)
@@ -303,33 +317,33 @@ function detectCache(provider) {
     providerName: providerName(provider),
     plan: planLabel(provider),
     severity,
-    title: 'PAYING TWICE FOR SAME TEXT',
+    title: 'REUSE REPEATED TEXT',
     metric: `${hitPct}%`,
     metricValue: hitPct, // raw number for re-trigger comparison
     metricUnit: 'REUSED',
     signal: flat
-      ? 'Plan allowance spent re-sending text that could be free.'
-      : 'You keep re-sending the same text and paying each time.',
+      ? 'Repeated text is using your limit.'
+      : 'Repeated text is costing extra.',
     saving,
     savingNote: flat ? 'ROOM LEFT' : '/MO',
     softSaving: flat, // flat-plan caching buys quota, not a smaller bill
-    fix: 'Keep the start of your prompts identical so it gets reused free.',
+    fix: 'Keep repeated instructions at the top.',
     source: 'reused text · new text',
     action: { type: 'external', url: cacheDocFor(provider.id) },
     meter: { type: 'split', good: hitPct },
     detail: {
       rows: [
-        { l: 'Text sent · 30d', v: `${fmtTokRaw(totalIn)} tok` },
-        { l: 'Reused free', v: `${fmtTokRaw(cached)} · ${hitPct}%`, tone: 'lime' },
-        { l: 'Paid again', v: `${fmtTokRaw(input)} · ${100 - hitPct}%`, tone: 'warn' },
+        { l: 'Sent · 30d', v: `${fmtTokRaw(totalIn)} tok` },
+        { l: 'Reused', v: `${fmtTokRaw(cached)} · ${hitPct}%`, tone: 'lime' },
+        { l: 'Not reused', v: `${fmtTokRaw(input)} · ${100 - hitPct}%`, tone: 'warn' },
         { l: valueLabel, v: `${fmtUSD(saving)} / mo`, tone: flat ? 'lime' : 'warn', strong: true },
       ],
       barsTitle: bars ? 'REUSED BY MODEL' : null,
       bars,
       note: flat
-        ? 'On a flat plan this is room you get back, not a smaller bill — reusing text lets you do more before hitting your limit.'
+        ? 'Reuse repeated text to keep more room in your limit.'
         : null,
-      primary: 'How to reuse text →',
+      primary: 'Set up reuse →',
     },
   }
 }
@@ -374,35 +388,35 @@ function detectRatio(provider) {
     providerName: providerName(provider),
     plan: planLabel(provider),
     severity,
-    title: 'SENDING MORE THAN YOU GET BACK',
+    title: 'SEND LESS CONTEXT',
     metric: ratio < 0.1 ? ratio.toFixed(3) : ratio.toFixed(2),
     metricValue: ratio,
-    metricUnit: 'REPLY ÷ SENT',
+    metricUnit: 'REPLY / SENT',
     signal: inputHeavy
-      ? `You send ${mult ? mult + '×' : 'far'} more text than the AI writes back.`
-      : 'The AI is writing far more than you send it.',
+      ? `You send ${mult ? mult + 'x' : 'far'} more than you get back.`
+      : 'Replies are much longer than prompts.',
     saving,
     savingNote: flat ? 'ROOM LEFT' : '/MO',
     softSaving: flat, // flat-plan trimming buys quota, not a smaller bill
     fix: inputHeavy
-      ? 'Send a short summary instead of the whole history.'
-      : 'Set a reply length limit — something is over-generating.',
+      ? 'Send a short summary, not the whole thread.'
+      : 'Set a shorter reply limit.',
     source: 'text sent · text received',
     action: { type: 'providerLink', kind: 'dashboard' },
     meter: { type: 'ratio', value: clampNum(ratio, 0.001, 999), lo: CONFIG.ratio.lo, hi: CONFIG.ratio.hi },
     detail: {
       rows: [
-        { l: 'Text sent · 30d', v: `${fmtTokRaw(totalIn)} tok` },
-        { l: 'AI replies · 30d', v: `${fmtTokRaw(output)} tok` },
+        { l: 'Sent · 30d', v: `${fmtTokRaw(totalIn)} tok` },
+        { l: 'Replies · 30d', v: `${fmtTokRaw(output)} tok` },
         { l: 'Good range', v: `${CONFIG.ratio.lo} – ${CONFIG.ratio.hi}`, tone: 'lime' },
         { l: valueLabel, v: `${fmtUSD(saving)} / mo`, tone: 'lime', strong: true },
       ],
       barsTitle: null,
       bars: null,
       note: inputHeavy
-        ? 'You are paying to re-send text, not to get answers. Sending a short summary instead of the whole thread cuts the bill.'
-        : 'The AI is writing far more than you send — check for runaway replies or a missing length limit.',
-      primary: 'See biggest jobs →',
+        ? 'Short summaries usually cost less than long chat history.'
+        : 'Shorter reply limits stop runaway output.',
+      primary: 'Review usage →',
     },
   }
 }
@@ -474,16 +488,16 @@ function detectRatioDaily(provider, dayKey) {
     plan: planLabel(provider),
     severity: 'nudge', // drill-down is informational, never an auto-alert
     onDemand: true,
-    title: 'HEAVY-DAY CHECK',
+    title: 'HEAVY DAY',
     metric: row.ratio < 0.1 ? row.ratio.toFixed(3) : row.ratio.toFixed(2),
-    metricUnit: `REPLY ÷ SENT · ${dayKey}`,
+    metricUnit: `REPLY / SENT · ${dayKey}`,
     signal: inputHeavy
-      ? `On ${dayKey} you sent ${mult ? mult + '×' : 'far'} more text than the AI wrote back.`
-      : `The AI wrote far more than you sent on ${dayKey}.`,
+      ? `On ${dayKey}, you sent ${mult ? mult + 'x' : 'far'} more than you got back.`
+      : `Replies were unusually long on ${dayKey}.`,
     saving,
     savingNote: '/DAY',
     softSaving: true, // never counted in the headline recoverable total
-    fix: 'Send a short summary to cut re-sent text on heavy days.',
+    fix: 'Use a short summary for days like this.',
     source: `daily text in/out · ${dayKey}`,
     meter: { type: 'ratio', value: clampNum(row.ratio, 0.001, 999), lo: CONFIG.ratio.lo, hi: CONFIG.ratio.hi },
     detail: {
@@ -495,8 +509,8 @@ function detectRatioDaily(provider, dayKey) {
       ],
       barsTitle: null,
       bars: null,
-      note: 'Coding agents send a lot of text by nature — this is for spotting one unusually wasteful day, not a constant alarm.',
-      primary: 'See biggest jobs →',
+      note: 'Use this to spot one unusually heavy day.',
+      primary: 'Review usage →',
     },
   }
 }
@@ -528,15 +542,15 @@ function detectReset(provider, now) {
     providerName: providerName(provider),
     plan: planLabel(provider),
     severity: 'nudge', // reset is opportunity, never alert
-    title: 'PAID CREDIT ABOUT TO EXPIRE',
+    title: 'USE IT BEFORE RESET',
     metric: `${expiring}%`,
     metricValue: expiring,
-    metricUnit: 'GOING UNUSED',
-    signal: "Most of what you paid for this week will vanish unused.",
+    metricUnit: 'UNUSED',
+    signal: 'Most of this week will reset unused.',
     saving,
     savingNote: 'WORTH',
     softSaving: true, // excluded from the headline recoverable total
-    fix: `Run big jobs before it resets in ${resetLabel(resetAt, now)}.`,
+    fix: `Run big jobs before reset: ${resetLabel(resetAt, now)}.`,
     source: 'reset time · weekly use %',
     action: { type: 'providerLink', kind: 'dashboard' },
     meter: { type: 'reset', used },
@@ -544,12 +558,12 @@ function detectReset(provider, now) {
       rows: [
         { l: 'Used this week', v: `${used}%` },
         { l: 'Resets in', v: resetLabel(resetAt, now), tone: 'lime' },
-        { l: 'Vanishing unused', v: `${expiring}% · ≈${fmtUSD(saving)}`, tone: 'lime', strong: true },
+        { l: 'Unused', v: `${expiring}% · ≈${fmtUSD(saving)}`, tone: 'lime', strong: true },
       ],
       barsTitle: null,
       bars: null,
-      note: 'You already paid for this. Running big jobs before the reset turns it from waste into work.',
-      primary: 'Remind me before reset →',
+      note: 'Use this before it resets.',
+      primary: 'Set reminder →',
     },
   }
 }
@@ -582,18 +596,18 @@ function detectDormant(provider, now) {
     providerName: providerName(provider),
     plan: planLabel(provider),
     severity,
-    title: 'PAYING FOR SOMETHING UNUSED',
+    title: 'CANCEL UNUSED PLAN',
     metric: `${idleDays}d`,
     metricValue: idleDays,
     metricUnit: 'UNUSED',
     signal:
       cycles >= 1
-        ? `Paid plan untouched ${idleDays} days — ${cycles} full month${cycles > 1 ? 's' : ''} wasted.`
+        ? `Unused for ${idleDays} days.`
         : `Paid plan untouched for ${idleDays} days.`,
     saving,
     savingNote: '/MO',
     softSaving: false, // real recoverable: cancelling cuts the bill in full
-    fix: 'Cancel or pause this plan if you no longer use it.',
+    fix: 'Cancel or pause it if you no longer use it.',
     source: 'last used · monthly cost',
     action: { type: 'providerLink', kind: 'dashboard' },
     meter: { type: 'dormant' },
@@ -605,8 +619,8 @@ function detectDormant(provider, now) {
       ],
       barsTitle: null,
       bars: null,
-      note: 'This plan has sat unused for weeks. If you no longer need it, cancelling or pausing takes the full monthly cost straight off your bill.',
-      primary: 'Manage subscription →',
+      note: 'If you no longer need it, cancel or pause it.',
+      primary: 'Manage plan →',
     },
   }
 }
@@ -678,36 +692,36 @@ function detectConfigBloat(provider) {
     providerName: providerName(provider),
     plan: planLabel(provider),
     severity,
-    title: 'CARRYING DEAD WEIGHT EVERY MESSAGE',
+    title: 'TRIM PER-MESSAGE CONTEXT',
     metric: fmtTokRaw(perTurn),
     metricValue: perTurn,
     metricUnit: 'EXTRA / MSG',
     signal:
       reasons.length > 0
-        ? `Every message re-sends ${reasons.join(' + ')} before you type.`
-        : `Every message re-sends ${fmtTokRaw(perTurn)} tokens of setup before you type.`,
+        ? `Every message includes ${reasons.join(' + ')}.`
+        : `Every message includes ${fmtTokRaw(perTurn)} setup tokens.`,
     saving,
     savingNote: flat ? 'ROOM' : '/MO',
     softSaving: flat, // flat agent plan → headroom (more usage), not a bill cut
     fix:
       overLines && manyMcp
-        ? `Trim ${instr} under ${C.instrLineTarget} lines and turn off idle MCP servers.`
+        ? `Shorten ${instr} and turn off idle MCP servers.`
         : overLines
-          ? `Trim ${instr} under ${C.instrLineTarget} lines — move details into skills.`
+          ? `Shorten ${instr}. Move details into skills.`
           : manyMcp
-            ? 'Turn off MCP servers you are not using right now.'
-            : 'Slim your setup files so each message carries less.',
+            ? 'Turn off MCP servers you are not using.'
+            : 'Shorten setup files.',
     source: scan.instrFile ? `${scan.instrFile} + MCP config` : 'MCP config',
-    action: { type: 'external', url: bloatDocFor(provider.id) },
+    action: { type: 'contextScan' },
     meter: { type: 'bloat', filled: meterPct },
     detail: {
       rows: detailRows,
       barsTitle: null,
       bars: null,
       note: flat
-        ? 'On a flat plan this is headroom, not a smaller bill — every token your setup re-sends is a token you can’t spend on real work before you hit your limit. Keeping instruction files lean and turning off idle MCP servers lets you do more per session. ($ is a rough estimate at ~30 messages/day.)'
-        : 'These setup files reload on every message. Trimming them cuts what you pay on every single turn. ($ is a rough estimate at ~30 messages/day.)',
-      primary: 'How to trim →',
+        ? 'Less setup context leaves more room for real work.'
+        : 'Less setup context lowers each turn.',
+      primary: 'Trim context →',
     },
   }
 }
@@ -755,15 +769,15 @@ function detectOverdrive(provider) {
     providerName: providerName(provider),
     plan: planLabel(provider),
     severity: 'nudge', // a setting nudge, never a hard alert
-    title: 'THINKING AT MAX ON EVERY TASK',
+    title: 'LOWER DEFAULT EFFORT',
     metric: effort.toUpperCase(),
     metricValue: EFFORT_INTENSITY[effort] != null ? EFFORT_INTENSITY[effort] : 3,
-    metricUnit: 'DEFAULT EFFORT',
-    signal: `Every task reasons at ${effort} effort — most jobs don't need it.`,
+    metricUnit: 'EFFORT',
+    signal: `Default effort is ${effort}. Most tasks need less.`,
     saving,
     savingNote: flat ? 'ROOM' : '/MO',
     softSaving: flat, // flat plan → headroom (more usage), not a smaller bill
-    fix: `Set medium as your default; switch to ${effort} only for hard jobs.`,
+    fix: `Use medium by default. Raise it only for hard jobs.`,
     source: 'config.toml effort setting',
     action: { type: 'external', url: 'https://developers.openai.com/codex/config-reference' },
     meter: { type: 'bloat', filled: effort === 'xhigh' ? 100 : 78 },
@@ -772,9 +786,9 @@ function detectOverdrive(provider) {
       barsTitle: null,
       bars: null,
       note: flat
-        ? 'Reasoning tokens are billed as output — the priciest kind — and high effort can use several times more of them. On a flat plan that burns your weekly limit faster for no quality gain on routine work. Set medium as the default and bump to high only for genuinely hard tasks (or use /effort per task). ($ is a rough estimate of reclaimable output.)'
-        : 'Reasoning bills as output — the priciest tokens — and high effort uses several times more on every task. Drop the default to medium and reserve high for hard jobs to cut what you pay each turn. ($ is a rough estimate of reclaimable output.)',
-      primary: 'How to set effort →',
+        ? 'High effort burns your limit faster. Use it only when needed.'
+        : 'High effort costs more. Use it only when needed.',
+      primary: 'Change effort →',
     },
   }
 }
@@ -822,15 +836,15 @@ function detectPace(provider, now) {
     providerName: providerName(provider),
     plan: planLabel(provider),
     severity,
-    title: 'ON TRACK TO RUN OUT EARLY',
+    title: 'SLOW DOWN THIS WINDOW',
     metric: `+${overshoot}%`,
     metricValue: proj, // for re-trigger comparison
     metricUnit: 'OVER PACE',
-    signal: `At this rate you hit your weekly limit in ${resetLabel(pace.exhaustsAt, now)} — about ${daysEarlyLabel} before it resets.`,
+    signal: `At this rate, you run out in ${resetLabel(pace.exhaustsAt, now)}.`,
     saving,
     savingNote: 'AT RISK',
     softSaving: true, // lost capacity / headroom, never a hard recoverable bill
-    fix: 'Save heavy jobs for after reset, or switch to a cheaper model now.',
+    fix: 'Save heavy jobs for later or switch models.',
     source: 'weekly use % · time to reset',
     action: { type: 'providerLink', kind: 'dashboard' },
     meter: { type: 'pace', used: actual, expected },
@@ -846,8 +860,8 @@ function detectPace(provider, now) {
       ],
       barsTitle: null,
       bars: null,
-      note: 'This reads your provider’s reported weekly usage, so it counts every device — not just this one. You are burning faster than the week allows; easing off now or saving the big jobs for after the reset keeps you from hitting the wall mid-task.',
-      primary: 'See my usage →',
+      note: 'Slow down now to avoid hitting the limit mid-task.',
+      primary: 'Review usage →',
     },
   }
 }
@@ -856,6 +870,103 @@ function detectPace(provider, now) {
 // public API
 // ---------------------------------------------------------------------------
 const DETECTORS = [detectCache, detectRatio, detectReset, detectDormant, detectConfigBloat, detectOverdrive, detectPace]
+
+function saveModeAction(kind, title, detail, provider, priority) {
+  return {
+    kind,
+    title,
+    detail,
+    provider: provider ? provider.id : null,
+    providerName: provider ? providerName(provider) : null,
+    priority,
+  }
+}
+
+function buildSaveMode(snapshot, signals, opts = {}) {
+  const enabled = opts.saveModeEnabled === true
+  const reservePct = CONFIG.saveMode.reservePct
+  const actions = []
+  if (!enabled) return { enabled: false, reservePct, actions }
+
+  const providers = Array.isArray(snapshot && snapshot.providers) ? snapshot.providers : []
+  const byId = new Map(providers.map((p) => [p.id, p]))
+  const sessionCandidates = providers
+    .map((p) => {
+      const w = sessionWindow(p)
+      if (!w) return null
+      const used = pct(w.usedPct)
+      const free = Math.max(0, 100 - used)
+      return { provider: p, window: w, used, free }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.free - b.free)
+
+  const tight = sessionCandidates.find((item) => item.free < reservePct) ||
+    sessionCandidates.find((item) => item.used >= CONFIG.saveMode.heavyUsedPct)
+  if (tight) {
+    const reset = resetLabel(tight.window.resetAt || soonestResetAt(tight.provider), opts.now || Date.now())
+    actions.push(saveModeAction(
+      'window-guard',
+      `Protect ${providerName(tight.provider)} reserve`,
+      `${tight.free}% free. Hold heavy jobs until ${reset}.`,
+      tight.provider,
+      100,
+    ))
+  }
+
+  const bloat = signals.find((s) => s.kind === 'configBloat')
+  if (bloat) {
+    actions.push(saveModeAction(
+      'context-bloat',
+      'Trim per-message context',
+      `${bloat.metric} extra each message. ${bloat.fix}`,
+      byId.get(bloat.provider),
+      90,
+    ))
+  }
+
+  const cache = signals.find((s) => s.kind === 'cache')
+  if (cache) {
+    actions.push(saveModeAction(
+      'cache-prefix',
+      'Reuse prompt text',
+      `${cache.metric} reused. Keep repeated instructions at the top.`,
+      byId.get(cache.provider),
+      80,
+    ))
+  }
+
+  const overdrive = signals.find((s) => s.kind === 'overdrive')
+  if (overdrive) {
+    actions.push(saveModeAction(
+      'right-size-effort',
+      'Lower default effort',
+      `${overdrive.metric} is the default. Use high effort only for hard tasks.`,
+      byId.get(overdrive.provider),
+      70,
+    ))
+  }
+
+  const roomier = sessionCandidates
+    .filter((item) => item.free >= reservePct)
+    .sort((a, b) => b.free - a.free)[0]
+  if (tight && roomier && roomier.provider.id !== tight.provider.id) {
+    actions.push(saveModeAction(
+      'route-provider',
+      `Route light work to ${providerName(roomier.provider)}`,
+      `${roomier.free}% free. Use it for research, copy, or review.`,
+      roomier.provider,
+      60,
+    ))
+  }
+
+  actions.sort((a, b) => b.priority - a.priority)
+  return {
+    enabled: true,
+    reservePct,
+    actions: actions.slice(0, CONFIG.saveMode.maxActions),
+  }
+}
 
 // detectSignals(snapshot, { now }) → Signal[] sorted by saving desc.
 function detectSignals(snapshot, opts = {}) {
@@ -921,6 +1032,7 @@ function buildOptimizeModel(snapshot, opts = {}) {
     signals,
     providers,
     drillable, // agentic providers the UI can offer a "session check" on
+    saveMode: buildSaveMode(snapshot, signals, { ...opts, now }),
     counts: { total: signals.length, alerts },
     recoverable,
     headroom,
@@ -970,6 +1082,7 @@ const OPTIMIZE_API = {
   // agentic drill-down (opt-in, per-day)
   dailyRatioSeries,
   detectRatioDaily,
+  buildSaveMode,
   isAgentic,
   // exposed for tests / tuning
   CONFIG,

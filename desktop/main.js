@@ -19,6 +19,8 @@ const { canonicalProviderId } = require('./lib/provider-ids')
 const widgetSnapshot = require('./lib/widget-snapshot')
 const { trayTitleFromSnapshot } = require('./lib/tray-title')
 const { buildUsageExport } = require('./lib/usage-export')
+const { estimateMissionPreflight } = require('./lib/preflight-estimate')
+const { scanContextBloat } = require('./lib/context-bloat-fixer')
 const localApi = require('./lib/local-api')
 const logger = require('./lib/logger')
 logger.init(app.getPath('userData'))
@@ -910,6 +912,22 @@ ipcMain.handle('open-external', (_e, url) => {
   shell.openExternal(url)
   return { ok: true }
 })
+ipcMain.handle('reveal-path', async (_e, targetPath) => {
+  const filePath = String(targetPath || '')
+  if (!filePath || !path.isAbsolute(filePath)) return { ok: false, error: 'Invalid path.' }
+  if (!fs.existsSync(filePath)) return { ok: false, error: 'Path not found.' }
+  try {
+    const stat = fs.statSync(filePath)
+    if (stat.isDirectory()) {
+      const err = await shell.openPath(filePath)
+      return err ? { ok: false, error: err } : { ok: true }
+    }
+    shell.showItemInFolder(filePath)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : 'Could not open path.' }
+  }
+})
 ipcMain.handle('open-provider-link', (_e, payload) => {
   const url = providerLinks.linkForProvider(payload && payload.id, payload && payload.kind)
   if (!url) throw new Error('Unknown provider link')
@@ -1135,7 +1153,7 @@ function ideaGoalHtml(idea, prompt) {
 }
 
 function buildProjectMission(payload, snap) {
-  const dir = String(payload?.dir || '').trim()
+  const dir = String(payload?.dir || payload?.folder || '').trim()
   const goal = String(payload?.goal || '').trim()
   if (!dir) throw new Error('Pick a folder first.')
   if (!goal) throw new Error('Write the goal first.')
@@ -1334,74 +1352,6 @@ ipcMain.handle('backlog-start', async (_e, payload) => {
   return { ok: result.ok, terminal: result.terminal, dir, copied: true, cli, error: result.error }
 })
 
-function scanProjectBloat(dir) {
-  const noisyNames = new Set([
-    'node_modules',
-    'dist',
-    'build',
-    'coverage',
-    '.next',
-    '.nuxt',
-    '.turbo',
-    '.cache',
-    '.parcel-cache',
-    '.vercel',
-    '.expo',
-    'screenshots',
-    'screenshot',
-    'debug',
-    'logs',
-    'tmp',
-    'temp',
-  ])
-  const noisyExts = new Set(['.log', '.mp4', '.mov', '.webm', '.zip', '.gz', '.tar', '.png', '.jpg', '.jpeg', '.gif', '.sqlite', '.db'])
-  const findings = []
-  const maxFiles = 2500
-  let scanned = 0
-
-  function add(label, detail, itemPath, bytes = 0) {
-    findings.push({ label, detail, path: itemPath, bytes })
-  }
-
-  function walk(current, depth = 0) {
-    if (scanned >= maxFiles || depth > 5) return
-    let stat
-    try {
-      stat = fs.lstatSync(current)
-    } catch {
-      return
-    }
-    if (stat.isSymbolicLink()) return
-    const name = path.basename(current)
-    const rel = path.relative(dir, current) || name
-    if (stat.isDirectory()) {
-      if (noisyNames.has(name)) {
-        add('Ignore folder', rel, current, 0)
-        return
-      }
-      let entries = []
-      try {
-        entries = fs.readdirSync(current)
-      } catch {
-        return
-      }
-      for (const entry of entries) walk(path.join(current, entry), depth + 1)
-      return
-    }
-    if (!stat.isFile()) return
-    scanned++
-    const ext = path.extname(name).toLowerCase()
-    const bytes = Number(stat.size) || 0
-    if (noisyExts.has(ext)) add('Ignore generated/media', rel, current, bytes)
-    else if (bytes >= 750000) add('Large file', rel, current, bytes)
-  }
-
-  walk(dir)
-  return findings
-    .sort((a, b) => b.bytes - a.bytes || a.detail.localeCompare(b.detail))
-    .slice(0, 12)
-}
-
 ipcMain.handle('scan-context-bloat', async (_e, providerId) => {
   const picked = await dialog.showOpenDialog(popover, {
     title: 'Scan a project folder for context bloat',
@@ -1410,17 +1360,9 @@ ipcMain.handle('scan-context-bloat', async (_e, providerId) => {
   })
   if (picked.canceled || !picked.filePaths.length) return { ok: false, canceled: true, providerId }
   const dir = picked.filePaths[0]
-  const findings = scanProjectBloat(dir).map((item) => ({
-    label: item.label,
-    detail: item.detail,
-    bytes: item.bytes,
-  }))
   return {
-    ok: true,
+    ...scanContextBloat(dir),
     providerId,
-    folderName: path.basename(dir) || dir,
-    dir,
-    findings,
   }
 })
 
@@ -1445,6 +1387,18 @@ ipcMain.handle('mission-copy-goal', async (_e, payload) => {
   const mission = buildProjectMission(payload, snap)
   clipboard.writeText(mission.prompt)
   return { ok: true, dir: mission.dir, goalPath: mission.goalPath }
+})
+
+ipcMain.handle('mission-preflight', async (_e, payload) => {
+  const snap = await readSnapshot({ staleOk: true })
+  const selectedIds = new Set(Array.isArray(payload?.models) ? payload.models.map((m) => String(m)) : [])
+  return estimateMissionPreflight({
+    dir: payload?.dir || payload?.folder,
+    goal: payload?.goal,
+    modelIds: payload?.models,
+    models: projectMissionModels(snap, selectedIds),
+    snapshot: snap,
+  })
 })
 
 ipcMain.handle('mission-start-project', async (_e, payload) => {

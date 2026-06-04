@@ -20,11 +20,15 @@ const burnState = {
   optStore: {}, // signalId -> { snoozedUntil?, dismissedAt?, metricValue? } (persisted)
   optDrillOpen: {}, // providerId -> true (agentic session drill-down expanded)
   optDrillDay: {}, // providerId -> dayKey (which day's detail is open)
+  optContextScan: {}, // providerId -> scan result for context bloat fixer
+  optContextScanLoading: {}, // providerId -> true while folder picker/scan runs
   // mission-setup form
   missionModels: {},
   missionFolder: null, // display basename
   missionFolderPath: null, // full path for IPC
   missionGoal: '',
+  missionPreflight: null,
+  missionPreflightLoading: false,
   // missions (real burn ideas from window.maxx.burnIdeas)
   ideas: [],
   ideaTarget: null,
@@ -43,7 +47,7 @@ const burnState = {
   notifsOpen: true,
   appOpen: false,
   notifs: { ideas: true, alerts: true, restored: true, quota: true },
-  app: { lightMode: false, openAtLogin: true },
+  app: { lightMode: false, openAtLogin: true, saveMode: false },
   cookies: {},
   cookieSaved: {}, // providerId -> true briefly after a successful key save
   // Scalar settings backed by the config file (populated from getConfig in
@@ -181,7 +185,11 @@ function burnApplySnapshot(snap) {
 function burnComputeOptimize(snap) {
   burnState.lastSnap = snap
   try {
-    if (window.OptimizeDetect) burnState.optimizeModel = window.OptimizeDetect.buildOptimizeModel(snap)
+    if (window.OptimizeDetect) {
+      burnState.optimizeModel = window.OptimizeDetect.buildOptimizeModel(snap, {
+        saveModeEnabled: burnState.app.saveMode === true,
+      })
+    }
   } catch (err) {
     console.error('[burn] optimize detect failed', err)
     burnState.optimizeModel = null
@@ -213,14 +221,24 @@ function burnOptFindSignal(id) {
 
 // Primary card action → open the relevant external page (caching docs or the
 // provider dashboard). Spec'd per-kind in optimize-detect (signal.action).
-function burnOptPrimaryAction(sig) {
+async function burnOptPrimaryAction(sig) {
   const a = sig && sig.action
   if (!a) return
   try {
     if (a.type === 'external' && a.url) window.maxx?.openExternal?.(a.url)
     else if (a.type === 'providerLink') window.maxx?.openProviderLink?.(sig.provider, a.kind || 'dashboard')
+    else if (a.type === 'contextScan' && window.maxx?.scanContextBloat) {
+      burnState.optContextScanLoading[sig.provider] = true
+      burnRender()
+      const res = await window.maxx.scanContextBloat(sig.provider)
+      if (res && !res.canceled) burnState.optContextScan[sig.provider] = res
+      burnState.optContextScanLoading[sig.provider] = false
+      if (burnState.screen === 'optimize') burnRender()
+    }
   } catch (err) {
+    if (sig && sig.provider) burnState.optContextScanLoading[sig.provider] = false
     console.error('[burn] optimize primary action failed', err)
+    if (burnState.screen === 'optimize') burnRender()
   }
 }
 
@@ -254,28 +272,66 @@ function burnOpenMissionSetup(index) {
   }
   burnState.missionGoal = idea ? `${idea.title}\n\n${idea.pitch || ''}`.trim() : ''
   burnGo('mission-setup')
+  burnScheduleMissionPreflight(50)
 }
 
 async function burnPickFolder() {
   if (!window.maxx?.missionPickFolder) return
   try {
     const res = await window.maxx.missionPickFolder()
-    const path = typeof res === 'string' ? res : res?.path || res?.folder
+    const path = typeof res === 'string' ? res : res?.dir || res?.path || res?.folder
     if (!path || res?.canceled) return
     burnState.missionFolderPath = path
     burnState.missionFolder = String(path).replace(/\/+$/, '').split('/').pop()
+    burnScheduleMissionPreflight(50)
     burnRender()
   } catch (err) {
     console.error('[burn] pick folder failed', err)
   }
 }
 
-function burnStartMission() {
+function burnMissionPayload() {
   const models = Object.keys(burnState.missionModels).filter((id) => burnState.missionModels[id])
-  if (!burnState.missionFolderPath || !models.length) return // validation: folder + >=1 model
+  return {
+    dir: burnState.missionFolderPath,
+    folder: burnState.missionFolderPath,
+    models,
+    goal: burnState.missionGoal,
+  }
+}
+
+function burnScheduleMissionPreflight(delay = 350) {
+  if (burnState._preflightTimer) clearTimeout(burnState._preflightTimer)
+  burnState._preflightTimer = setTimeout(() => burnLoadMissionPreflight(), delay)
+}
+
+async function burnLoadMissionPreflight() {
+  if (!window.maxx?.missionPreflight) return
+  const payload = burnMissionPayload()
+  burnState.missionPreflightLoading = true
+  const requestId = Date.now()
+  burnState._preflightRequest = requestId
+  try {
+    const res = await window.maxx.missionPreflight(payload)
+    if (burnState._preflightRequest !== requestId) return
+    burnState.missionPreflight = res || null
+  } catch (err) {
+    if (burnState._preflightRequest !== requestId) return
+    burnState.missionPreflight = { ok: false, error: err && err.message ? err.message : 'Preflight failed.' }
+  } finally {
+    if (burnState._preflightRequest === requestId) {
+      burnState.missionPreflightLoading = false
+      if (burnState.screen === 'mission-setup') burnRender()
+    }
+  }
+}
+
+function burnStartMission() {
+  const payload = burnMissionPayload()
+  if (!burnState.missionFolderPath || !payload.models.length) return // validation: folder + >=1 model
   if (window.maxx?.missionStartProject) {
     window.maxx
-      .missionStartProject({ folder: burnState.missionFolderPath, models, goal: burnState.missionGoal })
+      .missionStartProject(payload)
       .catch((err) => console.error('[burn] start mission failed', err))
   }
   burnGo('home')
@@ -309,6 +365,7 @@ function burnHandleClick(e) {
   if (model) {
     const id = model.getAttribute('data-burn-model')
     burnState.missionModels[id] = !burnState.missionModels[id]
+    burnScheduleMissionPreflight(50)
     burnRender()
     return
   }
@@ -326,6 +383,9 @@ function burnHandleClick(e) {
         // theme survives relaunch even before the user hits Save.
         try { localStorage.setItem('maxxtoken-theme', burnState.app.lightMode ? 'light' : 'dark') } catch (e) {}
       }
+    } else if (scope === 'opt' && key === 'saveMode') {
+      burnToggleSaveMode()
+      return
     }
     burnRender()
     return
@@ -383,6 +443,19 @@ function burnHandleClick(e) {
       if (burnState.lastSnap) burnComputeOptimize(burnState.lastSnap)
       burnRender()
     }
+    return
+  }
+
+  // Optimize: provider filter chip.
+  const optReveal = e.target.closest('[data-burn-opt-reveal]')
+  if (optReveal) {
+    const raw = optReveal.getAttribute('data-burn-opt-reveal')
+    const idx = raw.lastIndexOf(':')
+    const pid = raw.slice(0, idx)
+    const itemIndex = Number(raw.slice(idx + 1))
+    const scan = burnState.optContextScan && burnState.optContextScan[pid]
+    const finding = scan && Array.isArray(scan.findings) ? scan.findings[itemIndex] : null
+    if (finding && finding.path) window.maxx?.revealPath?.(finding.path).catch((err) => console.error('[burn] reveal path failed', err))
     return
   }
 
@@ -471,6 +544,32 @@ function burnHandleClick(e) {
   }
 }
 
+async function burnToggleSaveMode() {
+  burnState.app.saveMode = !burnState.app.saveMode
+  if (burnState.lastSnap) burnComputeOptimize(burnState.lastSnap)
+  burnRender()
+  if (!window.maxx?.saveConfig) return
+  if (!burnState.config && window.maxx.getConfig) {
+    try { burnState.config = await window.maxx.getConfig() } catch (e) {}
+  }
+  if (!burnState.config) return
+  const merged = {
+    ...(burnState.config || {}),
+    saveModeSuggestions: burnState.app.saveMode === true,
+  }
+  try {
+    const snap = await window.maxx.saveConfig(merged)
+    if (window.maxx.getConfig) {
+      try { burnState.config = await window.maxx.getConfig() } catch (e) {}
+    } else {
+      burnState.config = merged
+    }
+    if (snap && snap.providers) burnApplySnapshot(snap)
+  } catch (err) {
+    console.error('[burn] saveMode save failed', err)
+  }
+}
+
 // Goal textarea: update state + char-count meta in place (no re-render, keeps
 // focus and caret).
 function burnHandleInput(e) {
@@ -479,6 +578,7 @@ function burnHandleInput(e) {
     burnState.missionGoal = goal.value
     const meta = document.getElementById('burn-goal-meta')
     if (meta) meta.textContent = goal.value.length ? `${goal.value.length} CHAR` : 'OPTIONAL'
+    burnScheduleMissionPreflight()
     return
   }
   const cookie = e.target.closest('[data-burn-cookie]')
@@ -542,6 +642,7 @@ async function burnSaveSettings() {
     trayMetric: cfg.trayMetric || 'burnbar',
     usageMeterMode: cfg.usageMeterMode || 'used',
     tokenHistoryDays: Number(cfg.tokenHistoryDays) || 30,
+    saveModeSuggestions: burnState.app.saveMode === true,
     providerOrder: order,
     providers,
   }
@@ -724,8 +825,10 @@ async function burnInit() {
         quota: c.quotaWarningNotificationsEnabled === true,
       }
       burnState.app.openAtLogin = c.openAtLogin !== false
+      burnState.app.saveMode = c.saveModeSuggestions === true
       if (burnState.lastSnap) burnState.providers = burnAdaptProviders(burnState.lastSnap, { usageMeterMode: burnState.cfg.usageMeterMode })
-      if (burnState.screen === 'settings') burnRender()
+      if (burnState.lastSnap) burnComputeOptimize(burnState.lastSnap)
+      if (burnState.screen === 'settings' || burnState.screen === 'optimize') burnRender()
     } catch (err) {
       console.error('[burn] getConfig failed', err)
     }

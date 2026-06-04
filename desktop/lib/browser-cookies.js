@@ -3,17 +3,15 @@
 // providers (OpenCode Go, Perplexity, …) work zero-paste — the user is already
 // logged into the site in a browser, so there is nothing to copy.
 //
-// Note on encryption: modern Chromium browsers (Chrome/Brave/Edge/Arc) store
-// the cookie body in `encrypted_value` (AES, key in the login Keychain) and
-// leave the `value` column empty. We read `value` only — so this resolves real
-// headers from Firefox and any browser keeping plaintext values, and quietly
-// yields nothing for encrypted Chromium stores. Same behaviour as the existing
-// Cursor adapter; saved-key / env paste remain the fallback.
-
+const crypto = require('crypto')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { execFileSync } = require('child_process')
+
+const MAC_CHROMIUM_SALT = Buffer.from('saltysalt')
+const MAC_CHROMIUM_IV = Buffer.from(' '.repeat(16))
+const keychainCache = new Map()
 
 function browserCookieFiles(home = os.homedir()) {
   const roots = [
@@ -70,13 +68,67 @@ function sqliteQuery(file, query) {
   }
 }
 
-function parseCookieRows(output, label = 'Browser') {
+function macSafeStorageService(label = '') {
+  if (label.startsWith('Dia')) return 'Dia Safe Storage'
+  if (label.startsWith('Arc')) return 'Arc Safe Storage'
+  if (label.startsWith('Brave')) return 'Brave Safe Storage'
+  if (label.startsWith('Microsoft Edge')) return 'Microsoft Edge Safe Storage'
+  if (label.startsWith('Vivaldi')) return 'Vivaldi Safe Storage'
+  if (label.startsWith('Chrome')) return 'Chrome Safe Storage'
+  return null
+}
+
+function macSafeStoragePassword(service) {
+  if (!service || process.platform !== 'darwin') return null
+  if (keychainCache.has(service)) return keychainCache.get(service)
+  let password = null
+  try {
+    password = execFileSync('security', ['find-generic-password', '-w', '-s', service], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1000,
+    }).trim()
+  } catch {
+    password = null
+  }
+  keychainCache.set(service, password)
+  return password
+}
+
+function decryptMacChromiumCookie(hexValue, password, host = '') {
+  if (!hexValue || !password || process.platform !== 'darwin') return ''
+  let encrypted
+  try {
+    encrypted = Buffer.from(String(hexValue), 'hex')
+  } catch {
+    return ''
+  }
+  if (!encrypted.length) return ''
+  const payload = encrypted.subarray(0, 3).toString() === 'v10' || encrypted.subarray(0, 3).toString() === 'v11'
+    ? encrypted.subarray(3)
+    : encrypted
+  try {
+    const key = crypto.pbkdf2Sync(password, MAC_CHROMIUM_SALT, 1003, 16, 'sha1')
+    const decipher = crypto.createDecipheriv('aes-128-cbc', key, MAC_CHROMIUM_IV)
+    let decrypted = Buffer.concat([decipher.update(payload), decipher.final()])
+    const hostHash = host ? crypto.createHash('sha256').update(String(host)).digest() : null
+    if (hostHash && decrypted.length > hostHash.length && decrypted.subarray(0, hostHash.length).equals(hostHash)) {
+      decrypted = decrypted.subarray(hostHash.length)
+    }
+    return decrypted.toString('utf8')
+  } catch {
+    return ''
+  }
+}
+
+function parseCookieRows(output, label = 'Browser', decryptValue = null) {
   const rows = []
   for (const line of String(output || '').split(/\r?\n/)) {
     if (!line.trim()) continue
-    const [host, cookiePath, name, value] = line.split('\t')
-    if (!host || !name || !value) continue
-    rows.push({ host, path: cookiePath || '/', name, value, label })
+    const [host, cookiePath, name, value, encryptedHex] = line.split('\t')
+    const cookieValue = value || (typeof decryptValue === 'function' ? decryptValue(encryptedHex, host) : '')
+    if (!host || !name || !cookieValue) continue
+    rows.push({ host, path: cookiePath || '/', name, value: cookieValue, label })
   }
   return rows
 }
@@ -108,10 +160,15 @@ function cookieSessionsForHosts({ hosts, cookieNames = null, home = os.homedir()
     const file = typeof entry === 'string' ? entry : entry.file
     const label = typeof entry === 'string' ? 'Browser' : entry.label
     const firefox = file.endsWith('cookies.sqlite')
+    const password = firefox ? null : macSafeStoragePassword(macSafeStorageService(label))
     const query = firefox
       ? `select host, path, name, value from moz_cookies where (${firefoxClause}) and value != '';`
-      : `select host_key, path, name, value from cookies where (${chromiumClause}) and value != '';`
-    const rows = parseCookieRows(sqliteQuery(file, query), label)
+      : `select host_key, path, name, value, hex(encrypted_value) from cookies where (${chromiumClause}) and (value != '' or length(encrypted_value) > 0);`
+    const rows = parseCookieRows(
+      sqliteQuery(file, query),
+      label,
+      password ? (encryptedHex, host) => decryptMacChromiumCookie(encryptedHex, password, host) : null,
+    )
     if (!rows.length) continue
     if (nameSet && !rows.some((row) => nameSet.has(row.name.toLowerCase()))) continue
     const header = cookieHeaderFromRecords(rows)
@@ -132,5 +189,5 @@ module.exports = {
   browserCookieFiles,
   cookieSessionsForHosts,
   readCookieHeader,
-  _private: { sqliteQuery, parseCookieRows, cookieHeaderFromRecords },
+  _private: { sqliteQuery, parseCookieRows, cookieHeaderFromRecords, decryptMacChromiumCookie, macSafeStorageService },
 }
