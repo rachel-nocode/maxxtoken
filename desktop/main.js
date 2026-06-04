@@ -504,11 +504,10 @@ function drawTrayReceipt(set, scale, x, y) {
     [x + 10, y + 15], [x + 8, y + 13.2], [x + 6, y + 15],
     [x + 4, y + 13.2], [x + 2, y + 15], [x, y + 13.2],
   ], white)
-  drawRect(set, scale, x + 2, y + 2, 10, 10.5, black)
   drawPolygon(set, scale, [
-    [x + 7.6, y + 3.1], [x + 3.6, y + 10.1], [x + 6.6, y + 10.1],
-    [x + 5.4, y + 15.2], [x + 10.4, y + 8], [x + 7.3, y + 8],
-  ], white)
+    [x + 7.7, y + 2.8], [x + 3.8, y + 9.4], [x + 6.7, y + 9.4],
+    [x + 5.6, y + 14], [x + 10.3, y + 7.2], [x + 7.4, y + 7.2],
+  ], black)
 }
 
 function trayBurnbarImage(snap, config) {
