@@ -32,11 +32,46 @@ const CHROMIUM_KEYCHAIN = {
 // a declined prompt isn't re-triggered on every cookie row).
 const chromiumKeyCache = new Map()
 
+// Keys/declines injected by the main process from its persistent encrypted
+// store. The snapshot worker is a short-lived fork, so without this it would
+// re-run `security` (and re-trigger the macOS Keychain prompt) on every refresh.
+// With it, the worker only ever hits the Keychain for a service it has never
+// successfully read — once, then the main process persists the result.
+let injectedServices = {}
+// Keys/declines discovered during THIS process run, reported back to main so it
+// can persist them (holds the derived key so a future run skips the Keychain).
+const discoveredKeys = {}
+const DECLINE_TTL_MS = 24 * 60 * 60 * 1000
+
+// Seed the cache with persisted keys/declines (called in the worker on startup).
+function setBrowserKeyStore(map) {
+  injectedServices = map && typeof map === 'object' ? map : {}
+}
+
+// Hand back anything derived this run (called after a snapshot to persist).
+function takeDiscoveredKeys() {
+  return { ...discoveredKeys }
+}
+
 // Derive the AES key for a browser's encrypted cookies from its Keychain
 // "Safe Storage" password: PBKDF2-HMAC-SHA1(password, "saltysalt", 1003, 16).
 function chromiumKey(service) {
   if (!service) return null
   if (chromiumKeyCache.has(service)) return chromiumKeyCache.get(service)
+
+  // Prefer a persisted key/decline before ever touching the Keychain — this is
+  // what stops the repeated "Safe Storage" prompt across worker restarts.
+  const persisted = injectedServices[service]
+  if (persisted && persisted.key) {
+    const key = Buffer.from(persisted.key, 'base64')
+    chromiumKeyCache.set(service, key)
+    return key
+  }
+  if (persisted && persisted.declinedUntil && persisted.declinedUntil > Date.now()) {
+    chromiumKeyCache.set(service, null)
+    return null
+  }
+
   let key = null
   try {
     const password = execFileSync('security', ['find-generic-password', '-ws', service], {
@@ -44,9 +79,17 @@ function chromiumKey(service) {
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 4000,
     }).trim()
-    if (password) key = crypto.pbkdf2Sync(password, 'saltysalt', 1003, 16, 'sha1')
+    if (password) {
+      key = crypto.pbkdf2Sync(password, 'saltysalt', 1003, 16, 'sha1')
+      discoveredKeys[service] = { key: key.toString('base64') }
+    } else {
+      // Item exists but empty — treat as a decline so we don't loop.
+      discoveredKeys[service] = { declinedUntil: Date.now() + DECLINE_TTL_MS }
+    }
   } catch {
-    /* Keychain item missing or access declined */
+    // Keychain item missing or access declined — remember so we don't re-prompt
+    // on every refresh for the next day.
+    discoveredKeys[service] = { declinedUntil: Date.now() + DECLINE_TTL_MS }
   }
   chromiumKeyCache.set(service, key)
   return key
@@ -214,5 +257,7 @@ module.exports = {
   browserCookieFiles,
   cookieSessionsForHosts,
   readCookieHeader,
+  setBrowserKeyStore,
+  takeDiscoveredKeys,
   _private: { sqliteQuery, parseCookieRows, parseChromiumRows, cookieHeaderFromRecords, decryptChromiumValue, chromiumKey },
 }

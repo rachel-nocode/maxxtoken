@@ -9,6 +9,7 @@ const { generateIdeas, generateBurnIdeas, recordIdeaFeedback } = require('./lib/
 const { scanBacklogMissions, backlogPrompt } = require('./lib/backlog')
 const { openBuild } = require('./lib/launch')
 const { setKey, hasKey, allKeys } = require('./lib/secrets')
+const browserKeysStore = require('./lib/browser-keys-store')
 const { requestDeviceCode, pollForToken } = require('./lib/copilot-auth')
 const maxxAlerts = require('./lib/maxx-alerts')
 const quotaNotifications = require('./lib/quota-notifications')
@@ -226,6 +227,21 @@ function setTraySnapshot(snap) {
 
 let workerRequestId = 0
 
+// Persisted browser "Safe Storage" keys, injected into each worker so it never
+// re-prompts the macOS Keychain. Loaded once, kept in memory, updated whenever a
+// worker reports a freshly-derived key (or a decline).
+let browserKeysCache = null
+function getBrowserKeys() {
+  if (!browserKeysCache) browserKeysCache = browserKeysStore.loadAll()
+  return browserKeysCache
+}
+function persistBrowserKeys(discovered) {
+  if (!discovered || !Object.keys(discovered).length) return
+  const merged = browserKeysStore.merge(getBrowserKeys(), discovered)
+  browserKeysCache = merged
+  browserKeysStore.saveAll(merged)
+}
+
 function snapshotViaWorker(heavy = true) {
   const requestId = ++workerRequestId
   const start = Date.now()
@@ -271,6 +287,7 @@ function snapshotViaWorker(heavy = true) {
     }, SNAPSHOT_WORKER_TIMEOUT_MS)
     child.on('message', (message) => {
       if (!message || message.type !== 'snapshot-result' || message.requestId !== requestId) return
+      persistBrowserKeys(message.browserKeys)
       if (message.ok) finish(null, message.snap)
       else finish(new Error(message.error || 'snapshot worker failed'))
     })
@@ -279,7 +296,7 @@ function snapshotViaWorker(heavy = true) {
       activeSnapshotWorkers.delete(child)
       if (!settled) finish(new Error(`snapshot worker exited early (${signal || code})`))
     })
-    child.send({ type: 'snapshot', requestId, heavy, secrets: allKeys() })
+    child.send({ type: 'snapshot', requestId, heavy, secrets: allKeys(), browserKeys: getBrowserKeys() })
   })
   promise.cancel = (reason) => {
     if (cancel) cancel(reason)

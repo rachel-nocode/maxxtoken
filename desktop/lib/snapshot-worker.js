@@ -1,6 +1,7 @@
 const logger = require('./logger')
 const { snapshot } = require('./aggregate')
 const { setProcessOverride } = require('./secrets')
+const { setBrowserKeyStore, takeDiscoveredKeys } = require('./browser-cookies')
 
 if (process.env.MAXXTOKEN_USER_DATA) {
   logger.init(process.env.MAXXTOKEN_USER_DATA)
@@ -10,9 +11,10 @@ process.on('message', async (message) => {
   if (!message || message.type !== 'snapshot') return
   try {
     setProcessOverride(message.secrets)
+    setBrowserKeyStore(message.browserKeys)
     logger.info('worker', 'snapshot requested', { requestId: message.requestId, heavy: message.heavy !== false })
     const snap = await snapshot({ heavy: message.heavy !== false })
-    safeSend({ type: 'snapshot-result', requestId: message.requestId, ok: true, snap })
+    safeSend({ type: 'snapshot-result', requestId: message.requestId, ok: true, snap, browserKeys: takeDiscoveredKeys() })
   } catch (err) {
     logger.error('worker', 'snapshot failed', {
       requestId: message.requestId,
