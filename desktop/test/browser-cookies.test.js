@@ -41,10 +41,10 @@ test('cookieSessionsForHosts reads a Chromium-style cookie DB', (t) => {
   const dbFile = path.join(dir, 'Cookies')
   execFileSync('sqlite3', [
     dbFile,
-    "CREATE TABLE cookies (host_key TEXT, path TEXT, name TEXT, value TEXT);" +
-    "INSERT INTO cookies VALUES ('opencode.ai','/','auth','tok123');" +
-    "INSERT INTO cookies VALUES ('.opencode.ai','/','__Host-auth','host456');" +
-    "INSERT INTO cookies VALUES ('other.com','/','junk','nope');",
+    "CREATE TABLE cookies (host_key TEXT, path TEXT, name TEXT, value TEXT, encrypted_value BLOB);" +
+    "INSERT INTO cookies VALUES ('opencode.ai','/','auth','tok123','');" +
+    "INSERT INTO cookies VALUES ('.opencode.ai','/','__Host-auth','host456','');" +
+    "INSERT INTO cookies VALUES ('other.com','/','junk','nope','');",
   ])
 
   const sessions = cookieSessionsForHosts({
@@ -71,8 +71,8 @@ test('cookieSessionsForHosts honors cookieNames gate', (t) => {
   const dbFile = path.join(dir, 'Cookies')
   execFileSync('sqlite3', [
     dbFile,
-    "CREATE TABLE cookies (host_key TEXT, path TEXT, name TEXT, value TEXT);" +
-    "INSERT INTO cookies VALUES ('opencode.ai','/','marketing','x');",
+    "CREATE TABLE cookies (host_key TEXT, path TEXT, name TEXT, value TEXT, encrypted_value BLOB);" +
+    "INSERT INTO cookies VALUES ('opencode.ai','/','marketing','x','');",
   ])
   const sessions = cookieSessionsForHosts({
     hosts: ['opencode.ai'],

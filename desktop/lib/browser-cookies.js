@@ -3,17 +3,76 @@
 // providers (OpenCode Go, Perplexity, …) work zero-paste — the user is already
 // logged into the site in a browser, so there is nothing to copy.
 //
-// Note on encryption: modern Chromium browsers (Chrome/Brave/Edge/Arc) store
-// the cookie body in `encrypted_value` (AES, key in the login Keychain) and
-// leave the `value` column empty. We read `value` only — so this resolves real
-// headers from Firefox and any browser keeping plaintext values, and quietly
-// yields nothing for encrypted Chromium stores. Same behaviour as the existing
-// Cursor adapter; saved-key / env paste remain the fallback.
+// Encryption: modern Chromium browsers (Chrome/Brave/Edge/Arc) store the cookie
+// body in `encrypted_value` (AES-128-CBC, key derived from a per-browser
+// "Safe Storage" password in the login Keychain) and leave `value` empty. We
+// decrypt those (see decryptChromiumValue) plus read plaintext Firefox values.
+// First Keychain access prompts macOS to allow this app — one-time per browser.
+// Saved-key / env paste remain the fallback if Keychain access is declined.
 
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const crypto = require('crypto')
 const { execFileSync } = require('child_process')
+
+// macOS Keychain "Safe Storage" service name per Chromium browser.
+const CHROMIUM_KEYCHAIN = {
+  Chrome: 'Chrome Safe Storage',
+  'Chrome Beta': 'Chrome Safe Storage',
+  'Chrome Canary': 'Chromium Safe Storage',
+  Brave: 'Brave Safe Storage',
+  'Microsoft Edge': 'Microsoft Edge Safe Storage',
+  Arc: 'Arc Safe Storage',
+  Dia: 'Dia Safe Storage',
+  Vivaldi: 'Vivaldi Safe Storage',
+}
+
+// Cache derived AES keys per Keychain service (and remember failures as null so
+// a declined prompt isn't re-triggered on every cookie row).
+const chromiumKeyCache = new Map()
+
+// Derive the AES key for a browser's encrypted cookies from its Keychain
+// "Safe Storage" password: PBKDF2-HMAC-SHA1(password, "saltysalt", 1003, 16).
+function chromiumKey(service) {
+  if (!service) return null
+  if (chromiumKeyCache.has(service)) return chromiumKeyCache.get(service)
+  let key = null
+  try {
+    const password = execFileSync('security', ['find-generic-password', '-ws', service], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 4000,
+    }).trim()
+    if (password) key = crypto.pbkdf2Sync(password, 'saltysalt', 1003, 16, 'sha1')
+  } catch {
+    /* Keychain item missing or access declined */
+  }
+  chromiumKeyCache.set(service, key)
+  return key
+}
+
+// Decrypt one Chromium `encrypted_value` (hex). Format: "v10"/"v11" prefix +
+// AES-128-CBC ciphertext, IV = 16 spaces. Chrome 130+ prepends the SHA-256 of
+// the cookie host to the plaintext, which we strip when present.
+function decryptChromiumValue(encHex, key, host) {
+  if (!encHex || !key) return null
+  try {
+    const buf = Buffer.from(encHex, 'hex')
+    const prefix = buf.slice(0, 3).toString('latin1')
+    if (prefix !== 'v10' && prefix !== 'v11') return null
+    const decipher = crypto.createDecipheriv('aes-128-cbc', key, Buffer.alloc(16, 0x20))
+    let out = Buffer.concat([decipher.update(buf.slice(3)), decipher.final()])
+    if (host && out.length >= 32) {
+      const hostHash = crypto.createHash('sha256').update(host).digest()
+      if (out.slice(0, 32).equals(hostHash)) out = out.slice(32)
+    }
+    return out.toString('utf8') || null
+  } catch {
+    /* wrong key (declined Keychain) or unsupported scheme */
+    return null
+  }
+}
 
 function browserCookieFiles(home = os.homedir()) {
   const roots = [
@@ -32,7 +91,7 @@ function browserCookieFiles(home = os.homedir()) {
       for (const profile of fs.readdirSync(root)) {
         for (const rel of ['Cookies', 'Network/Cookies']) {
           const file = path.join(root, profile, rel)
-          if (fs.existsSync(file)) files.push({ file, label: `${label} ${profile}` })
+          if (fs.existsSync(file)) files.push({ file, label: `${label} ${profile}`, keychainService: CHROMIUM_KEYCHAIN[label] || null })
         }
       }
     } catch {
@@ -44,7 +103,7 @@ function browserCookieFiles(home = os.homedir()) {
   try {
     for (const profile of fs.readdirSync(firefoxRoot)) {
       const file = path.join(firefoxRoot, profile, 'cookies.sqlite')
-      if (fs.existsSync(file)) files.push({ file, label: `Firefox ${profile}` })
+      if (fs.existsSync(file)) files.push({ file, label: `Firefox ${profile}`, keychainService: null })
     }
   } catch {
     /* best effort */
@@ -81,6 +140,22 @@ function parseCookieRows(output, label = 'Browser') {
   return rows
 }
 
+// Chromium rows carry both `value` (plaintext, usually empty) and
+// `hex(encrypted_value)`; decrypt the latter when the former is empty.
+function parseChromiumRows(output, label, service) {
+  const key = chromiumKey(service)
+  const rows = []
+  for (const line of String(output || '').split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const [host, cookiePath, name, value, encHex] = line.split('\t')
+    if (!host || !name) continue
+    const resolved = value || decryptChromiumValue(encHex, key, host)
+    if (!resolved) continue
+    rows.push({ host, path: cookiePath || '/', name, value: resolved, label })
+  }
+  return rows
+}
+
 function cookieHeaderFromRecords(records) {
   const deduped = new Map()
   for (const row of records) {
@@ -107,11 +182,18 @@ function cookieSessionsForHosts({ hosts, cookieNames = null, home = os.homedir()
   for (const entry of sources) {
     const file = typeof entry === 'string' ? entry : entry.file
     const label = typeof entry === 'string' ? 'Browser' : entry.label
+    const service = typeof entry === 'string' ? null : entry.keychainService
     const firefox = file.endsWith('cookies.sqlite')
-    const query = firefox
-      ? `select host, path, name, value from moz_cookies where (${firefoxClause}) and value != '';`
-      : `select host_key, path, name, value from cookies where (${chromiumClause}) and value != '';`
-    const rows = parseCookieRows(sqliteQuery(file, query), label)
+    const rows = firefox
+      ? parseCookieRows(
+          sqliteQuery(file, `select host, path, name, value from moz_cookies where (${firefoxClause}) and value != '';`),
+          label,
+        )
+      : parseChromiumRows(
+          sqliteQuery(file, `select host_key, path, name, value, hex(encrypted_value) from cookies where (${chromiumClause});`),
+          label,
+          service,
+        )
     if (!rows.length) continue
     if (nameSet && !rows.some((row) => nameSet.has(row.name.toLowerCase()))) continue
     const header = cookieHeaderFromRecords(rows)
@@ -132,5 +214,5 @@ module.exports = {
   browserCookieFiles,
   cookieSessionsForHosts,
   readCookieHeader,
-  _private: { sqliteQuery, parseCookieRows, cookieHeaderFromRecords },
+  _private: { sqliteQuery, parseCookieRows, parseChromiumRows, cookieHeaderFromRecords, decryptChromiumValue, chromiumKey },
 }

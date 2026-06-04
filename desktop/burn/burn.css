@@ -26,6 +26,27 @@
   }
 }
 
+/* Idea/scan loading skeleton — pulsing placeholder bars while generation runs
+   (can take several seconds). Bars stagger per card so it reads as alive. */
+.burn-skel {
+  animation: burnPulse 1.3s ease-in-out infinite;
+}
+.burn-skel-card:nth-child(2) .burn-skel {
+  animation-delay: 0.16s;
+}
+.burn-skel-card:nth-child(3) .burn-skel {
+  animation-delay: 0.32s;
+}
+@keyframes burnPulse {
+  0%,
+  100% {
+    opacity: 0.32;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
 /* Scroll body: allow it to shrink/scroll inside the flex column. */
 .burn-body {
   min-height: 0;

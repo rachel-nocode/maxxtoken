@@ -127,6 +127,53 @@ function burnMissionsNote(text) {
   })}">${burnEsc(text)}</div>`
 }
 
+// A single pulsing placeholder bar (loading skeleton). `.burn-skel` drives the
+// opacity pulse; color/size stay inline so they track the theme.
+function burnSkelBar(opts) {
+  return `<div class="burn-skel" style="${bstyle(Object.assign({ background: BURN.borderHi, borderRadius: 3 }, opts))}"></div>`
+}
+
+// One skeleton shaped like an idea card: number + title, two body lines, a
+// quote line, then dots + stack + a Build-button block.
+function burnSkeletonCard() {
+  const row1 =
+    `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 11 })}">` +
+    burnSkelBar({ width: 16, height: 10 }) +
+    burnSkelBar({ width: 150, height: 12 }) +
+    `<span style="${bstyle({ flex: 1 })}"></span>` +
+    burnSkelBar({ width: 30, height: 9 }) +
+    `</div>`
+  const body =
+    burnSkelBar({ width: '100%', height: 9, marginBottom: 6 }) +
+    burnSkelBar({ width: '82%', height: 9, marginBottom: 11 })
+  const quote = burnSkelBar({ width: '68%', height: 9, marginBottom: 12, marginLeft: 2 })
+  const row4 =
+    `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 8 })}">` +
+    burnSkelBar({ width: 30, height: 6 }) +
+    burnSkelBar({ width: 88, height: 9 }) +
+    `<span style="${bstyle({ flex: 1 })}"></span>` +
+    burnSkelBar({ width: 58, height: 26, borderRadius: 2 }) +
+    `</div>`
+  return `<div class="burn-skel-card" style="${bstyle({ padding: '14px', borderBottom: `1px solid ${BURN.border}` })}">${row1}${body}${quote}${row4}</div>`
+}
+
+// Loading state: a pulsing label over N skeleton cards.
+function burnMissionsLoading(label, n = 3) {
+  const note =
+    `<div class="burn-skel" style="${bstyle({
+      padding: '16px 14px 12px',
+      textAlign: 'center',
+      fontFamily: BURN_FONT.mono,
+      fontSize: 11,
+      color: BURN.text2,
+      letterSpacing: 0.6,
+      textTransform: 'uppercase',
+    })}">${burnEsc(label)}</div>`
+  let cards = ''
+  for (let i = 0; i < n; i++) cards += burnSkeletonCard()
+  return note + cards
+}
+
 // Segmented toggle: generate new app ideas vs burn down an existing repo.
 function burnMissionModeToggle(mode) {
   const seg = (action, label, active) =>
@@ -172,7 +219,7 @@ function burnNewBuildBody(state) {
   const badge = burnMissionsBadge(state.generation)
   let cards
   if (state.ideas && state.ideas.length) cards = state.ideas.map((idea, i) => burnIdeaCard(idea, i)).join('')
-  else if (state.ideasLoading || !state.ideasLoaded) cards = burnMissionsNote('Finding burn ideas…')
+  else if (state.ideasLoading || !state.ideasLoaded) cards = burnMissionsLoading('Finding burn ideas…')
   else cards = burnMissionsNote('No burn ideas found.')
   return strip + badge + cards
 }
@@ -207,7 +254,7 @@ function burnBacklogCard(mission, i) {
 
 // Backlog body: pick-a-repo prompt, or the scanned repo header + mission cards.
 function burnBacklogBody(state) {
-  if (state.backlogLoading) return burnMissionsNote('Scanning project…')
+  if (state.backlogLoading) return burnMissionsLoading('Scanning project…')
   const bl = state.backlog
   if (!bl) {
     return (

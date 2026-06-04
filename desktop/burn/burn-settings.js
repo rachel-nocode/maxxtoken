@@ -198,7 +198,6 @@ function burnRenderSettings(state) {
     burnCollapsibleHead('NOTIFICATIONS', `${notifsCount} ON`, state.notifsOpen, 'notifs') +
     (state.notifsOpen
       ? `<div style="${bstyle({ padding: '8px 0 0', display: 'flex', flexDirection: 'column', gap: 2 })}">` +
-        burnToggleRow('Idea missions', notifs.ideas, 'notif:ideas') +
         burnToggleRow('Maxx alerts', notifs.alerts, 'notif:alerts') +
         burnToggleRow('Session restored', notifs.restored, 'notif:restored') +
         burnToggleRow('Quota warnings', notifs.quota, 'notif:quota') +

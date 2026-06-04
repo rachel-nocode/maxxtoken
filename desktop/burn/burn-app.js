@@ -43,7 +43,7 @@ const burnState = {
   settingsOrder: [],
   notifsOpen: true,
   appOpen: false,
-  notifs: { ideas: true, alerts: true, restored: true, quota: true },
+  notifs: { alerts: true, restored: true, quota: true },
   app: { lightMode: false, openAtLogin: true },
   cookies: {},
   cookieSaved: {}, // providerId -> true briefly after a successful key save
@@ -549,7 +549,6 @@ async function burnSaveSettings() {
   const merged = {
     ...base,
     openAtLogin: burnState.app.openAtLogin !== false,
-    missions: !!burnState.notifs.ideas,
     maxxAlertsEnabled: !!burnState.notifs.alerts,
     sessionQuotaNotificationsEnabled: !!burnState.notifs.restored,
     quotaWarningNotificationsEnabled: !!burnState.notifs.quota,
@@ -737,7 +736,6 @@ async function burnInit() {
         alertReservePct: String(c.maxxAlertReservePct || 25),
       }
       burnState.notifs = {
-        ideas: c.missions === true,
         alerts: c.maxxAlertsEnabled !== false,
         restored: c.sessionQuotaNotificationsEnabled !== false,
         quota: c.quotaWarningNotificationsEnabled === true,

@@ -249,10 +249,35 @@ function parseNestedCandidates(value, now, path = [], out = []) {
   return rolling && weekly ? { rolling, weekly, monthly: monthly || null } : null
 }
 
+// OpenCode streams the live usage objects to the page as React Server Component
+// assignments, e.g. `rollingUsage:$R[34]={status:"ok",resetInSec:..,usagePercent:99}`.
+// The plainly-rendered `usagePercent:0` elsewhere on the page is a pre-hydration
+// placeholder — reading it is why usage showed 0 / mis-rounded. We read the $R
+// assignment (the real integer opencode reports), matching the opencode-go-usage
+// plugin and opencode.ai itself.
+function parseRscUsageWindows(text) {
+  const grab = (kind) => {
+    const m = String(text || '').match(new RegExp(`${kind}Usage:\\$R\\[\\d+\\]=(\\{[^}]+\\})`))
+    if (!m) return null
+    try {
+      const obj = JSON.parse(m[1].replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3'))
+      const usedPct = clampPct(obj.usagePercent)
+      if (usedPct == null) return null
+      return { usedPct, resetInSec: Math.max(0, Math.round(Number(obj.resetInSec) || 0)) }
+    } catch {
+      return null
+    }
+  }
+  const rolling = grab('rolling')
+  const weekly = grab('weekly')
+  const monthly = grab('monthly')
+  return rolling || weekly ? { rolling, weekly, monthly } : null
+}
+
 function parseSubscription(text, now = Date.now()) {
-  let windows = null
+  let windows = parseRscUsageWindows(text)
   try {
-    windows = parseUsageDict(JSON.parse(text), now)
+    if (!windows) windows = parseUsageDict(JSON.parse(text), now)
   } catch {
     const raw = String(text || '')
     const rollingPercent = raw.match(/rollingUsage[^}]*?usagePercent\s*:\s*([0-9]+(?:\.[0-9]+)?)/)
@@ -379,6 +404,7 @@ module.exports = {
     normalizeWorkspaceID,
     parseWorkspaceIDs,
     parseSubscription,
+    parseRscUsageWindows,
     parseWindow,
     parseZenBalance,
   },
