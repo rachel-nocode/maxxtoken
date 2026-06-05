@@ -56,3 +56,18 @@ test('save mode surfaces protective actions for an active five-hour window', () 
   assert.match(model.saveMode.actions[0].title, /protect/i)
   assert.match(model.saveMode.actions[0].detail, /28% free/)
 })
+
+test('flow mode recommends checkpointing when a short window is tight', () => {
+  const model = optimize.buildOptimizeModel(snapshot({
+    id: 'claude',
+    name: 'Claude',
+    connected: true,
+    monthly: 200,
+    windows: [{ label: 'Session', kind: '5h', usedPct: 78, resetAt: Date.parse('2026-06-04T14:00:00Z') }],
+  }), { now: Date.parse('2026-06-04T12:00:00Z') })
+
+  assert.equal(model.flowMode.recommended, true)
+  assert.equal(model.flowMode.providerId, 'claude')
+  assert.equal(model.flowMode.freePct, 22)
+  assert.match(model.flowMode.summary, /22% free/)
+})

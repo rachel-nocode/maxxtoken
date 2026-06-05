@@ -170,6 +170,25 @@ test('config normalizes CodexBar-style quota warning thresholds', () => {
   assert.deepEqual(config._private.normalizeQuotaWarningThresholds([]), [50, 20])
 })
 
+test('config normalizes local flow checkpoints', () => {
+  const checkpoints = Array.from({ length: 22 }, (_, i) => ({
+    id: `cp-${i}`,
+    title: `Checkpoint ${i}`,
+    dir: '/tmp/project',
+    goal: `Goal ${i}`,
+    nextStep: `Step ${i}`,
+    resumePrompt: `Resume ${i}`,
+    createdAt: i + 1,
+  }))
+
+  const normalized = config._private.normalizeFlowCheckpoints(checkpoints)
+
+  assert.equal(normalized.length, 20)
+  assert.equal(normalized[0].goal, 'Goal 21')
+  assert.equal(normalized[19].goal, 'Goal 2')
+  assert.equal(normalized[0].resumePrompt, 'Resume 21')
+})
+
 test('config normalizes provider-specific alert overrides', () => {
   const provider = config._private.normalizeProviderConfig({
     name: 'Claude',

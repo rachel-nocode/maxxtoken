@@ -21,6 +21,7 @@ const { trayTitleFromSnapshot } = require('./lib/tray-title')
 const { buildUsageExport } = require('./lib/usage-export')
 const { estimateMissionPreflight } = require('./lib/preflight-estimate')
 const { scanContextBloat } = require('./lib/context-bloat-fixer')
+const { buildFlowCheckpoint, normalizeFlowCheckpoints, flowRecommendation } = require('./lib/flow-checkpoints')
 const localApi = require('./lib/local-api')
 const logger = require('./lib/logger')
 logger.init(app.getPath('userData'))
@@ -1339,6 +1340,35 @@ ipcMain.handle('mission-context', async () => {
   const snap = await readSnapshot({ staleOk: true })
   const cfg = loadConfig()
   return { models: projectMissionModels(snap), history: Array.isArray(cfg.missionHistory) ? cfg.missionHistory : [] }
+})
+
+ipcMain.handle('flow-context', async () => {
+  const snap = await readSnapshot({ staleOk: true })
+  const cfg = loadConfig()
+  return {
+    checkpoints: normalizeFlowCheckpoints(cfg.flowCheckpoints),
+    missionHistory: Array.isArray(cfg.missionHistory) ? cfg.missionHistory : [],
+    recommendation: flowRecommendation(snap),
+  }
+})
+
+ipcMain.handle('flow-save-checkpoint', async (_e, payload) => {
+  const cfg = loadConfig()
+  const checkpoint = buildFlowCheckpoint(payload || {})
+  cfg.flowCheckpoints = normalizeFlowCheckpoints([checkpoint, ...(cfg.flowCheckpoints || [])])
+  saveConfig(cfg)
+  clipboard.writeText(checkpoint.resumePrompt)
+  return { ok: true, checkpoint, checkpoints: cfg.flowCheckpoints, copied: true }
+})
+
+ipcMain.handle('flow-copy-resume', (_e, payload) => {
+  const cfg = loadConfig()
+  const id = String(payload && payload.id || '')
+  const checkpoints = normalizeFlowCheckpoints(cfg.flowCheckpoints)
+  const checkpoint = checkpoints.find((item) => item.id === id) || checkpoints[0]
+  if (!checkpoint) return { ok: false, error: 'No checkpoint saved yet.' }
+  clipboard.writeText(checkpoint.resumePrompt)
+  return { ok: true, checkpoint, copied: true }
 })
 
 ipcMain.handle('mission-pick-folder', async () => {

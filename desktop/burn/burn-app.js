@@ -7,7 +7,7 @@
 const BURN_UI = true
 
 const burnState = {
-  screen: 'home', // 'home' | 'missions' | 'mission-setup' | 'settings' | 'optimize'
+  screen: 'home', // 'home' | 'missions' | 'mission-setup' | 'settings' | 'optimize' | 'flow'
   expandedId: null,
   providers: [],
   footer: null,
@@ -18,10 +18,18 @@ const burnState = {
   optFilter: 'ALL',
   optExpanded: {}, // signalId -> true (multiple cards open at once)
   optStore: {}, // signalId -> { snoozedUntil?, dismissedAt?, metricValue? } (persisted)
+  optTopOpen: {}, // saveMode / flowMode expanded in the top rail
   optDrillOpen: {}, // providerId -> true (agentic session drill-down expanded)
   optDrillDay: {}, // providerId -> dayKey (which day's detail is open)
   optContextScan: {}, // providerId -> scan result for context bloat fixer
   optContextScanLoading: {}, // providerId -> true while folder picker/scan runs
+  // flow mode checkpointing
+  flowCheckpoints: [],
+  flowRecommendation: null,
+  flowForm: { dir: '', goal: '', changed: '', nextStep: '', notes: '' },
+  flowNote: '',
+  flowSaveNote: '',
+  flowLoading: false,
   // mission-setup form
   missionModels: {},
   missionFolder: null, // display basename
@@ -89,6 +97,8 @@ function burnScreenHtml() {
       return burnRenderSettings(burnState)
     case 'optimize':
       return burnRenderOptimize(burnState)
+    case 'flow':
+      return burnRenderFlow(burnState)
     case 'home':
     default:
       return burnRenderHome(burnState)
@@ -113,6 +123,7 @@ function burnGo(screen) {
   if (screen !== 'home') burnState.expandedId = null
   burnRender()
   if (screen === 'missions' && !burnState.ideasLoaded && !burnState.ideasLoading) burnLoadIdeas()
+  if (screen === 'flow') burnLoadFlowContext()
 }
 
 // Pull real burn ideas (+ target provider) once, then re-render Missions.
@@ -329,6 +340,63 @@ async function burnLoadMissionPreflight() {
   }
 }
 
+async function burnLoadFlowContext() {
+  if (!window.maxx?.flowContext || burnState.flowLoading) return
+  burnState.flowLoading = true
+  try {
+    const res = await window.maxx.flowContext()
+    burnState.flowCheckpoints = Array.isArray(res?.checkpoints) ? res.checkpoints : []
+    burnState.flowRecommendation = res?.recommendation || (burnState.optimizeModel && burnState.optimizeModel.flowMode) || null
+    const latestMission = Array.isArray(res?.missionHistory) ? res.missionHistory[0] : null
+    const form = burnState.flowForm || {}
+    if (!form.dir && latestMission?.dir) form.dir = latestMission.dir
+    if (!form.goal && latestMission?.title) form.goal = latestMission.title
+    if (!form.nextStep) form.nextStep = 'Continue from this checkpoint with the smallest useful next step.'
+    const rec = burnState.flowRecommendation
+    if (rec && rec.recommended && !form.notes) form.notes = `${rec.providerName || 'Model'} window is low. Restart with this short checkpoint instead of pasting long history.`
+    burnState.flowForm = form
+    burnState.flowNote = res?.recommendation?.summary || ''
+  } catch (err) {
+    burnState.flowNote = err && err.message ? err.message : 'Could not load Flow Mode.'
+  } finally {
+    burnState.flowLoading = false
+    if (burnState.screen === 'flow') burnRender()
+  }
+}
+
+function burnFlowPayload() {
+  const rec = burnState.flowRecommendation || (burnState.optimizeModel && burnState.optimizeModel.flowMode) || {}
+  const form = burnState.flowForm || {}
+  return {
+    dir: form.dir || '',
+    goal: form.goal || '',
+    changed: form.changed || '',
+    nextStep: form.nextStep || '',
+    notes: form.notes || '',
+    providerId: rec.providerId || '',
+    providerName: rec.providerName || '',
+    windowResetAt: rec.resetAt || null,
+  }
+}
+
+async function burnSaveFlow() {
+  if (!window.maxx?.flowSaveCheckpoint) return
+  burnState.flowSaveNote = 'Saving...'
+  burnRender()
+  try {
+    const res = await window.maxx.flowSaveCheckpoint(burnFlowPayload())
+    if (res && res.ok) {
+      burnState.flowCheckpoints = Array.isArray(res.checkpoints) ? res.checkpoints : burnState.flowCheckpoints
+      burnState.flowSaveNote = 'Saved + copied'
+    } else {
+      burnState.flowSaveNote = (res && res.error) || 'Could not save.'
+    }
+  } catch (err) {
+    burnState.flowSaveNote = err && err.message ? err.message : 'Could not save.'
+  }
+  if (burnState.screen === 'flow') burnRender()
+}
+
 function burnStartMission() {
   const payload = burnMissionPayload()
   if (!burnState.missionFolderPath || !payload.models.length) {
@@ -363,7 +431,7 @@ function burnHandleClick(e) {
     // Back is deterministic: mission-setup is a child of missions, every other
     // screen is a top-level sibling of home. Returning to home (not prevScreen)
     // avoids the settings⇄missions ping-pong the one-deep memory used to cause.
-    if (dest === 'back') burnGo(burnState.screen === 'mission-setup' ? 'missions' : 'home')
+    if (dest === 'back') burnGo(burnState.screen === 'mission-setup' ? 'missions' : burnState.screen === 'flow' ? 'optimize' : 'home')
     else burnGo(dest)
     return
   }
@@ -427,6 +495,25 @@ function burnHandleClick(e) {
     else if (which === 'pick-folder') burnPickFolder()
     else if (which === 'copy-goal') window.maxx?.copyText?.(burnState.missionGoal)
     else if (which === 'start-mission') burnStartMission()
+    else if (which === 'flow-open') burnGo('flow')
+    else if (which === 'flow-save') burnSaveFlow()
+    else if (which === 'flow-pick-folder') {
+      window.maxx?.missionPickFolder?.().then((res) => {
+        const picked = typeof res === 'string' ? res : res?.dir || res?.path || res?.folder
+        if (!picked || res?.canceled) return
+        burnState.flowForm = { ...(burnState.flowForm || {}), dir: picked }
+        if (burnState.screen === 'flow') burnRender()
+      }).catch((err) => console.error('[burn] flow pick folder failed', err))
+    } else if (which === 'flow-copy') {
+      const id = action.getAttribute('data-flow-id')
+      window.maxx?.flowCopyResume?.({ id }).then(() => {
+        burnState.flowSaveNote = 'Copied'
+        if (burnState.screen === 'flow') burnRender()
+      }).catch((err) => console.error('[burn] flow copy failed', err))
+    } else if (which === 'flow-open-folder') {
+      const dir = burnState.flowCheckpoints && burnState.flowCheckpoints[0] && burnState.flowCheckpoints[0].dir
+      if (dir) window.maxx?.revealPath?.(dir).catch((err) => console.error('[burn] flow open folder failed', err))
+    }
     else if (which === 'reveal-config') window.maxx?.openConfigFile?.()
     else if (which === 'reveal-log') window.maxx?.openDebugLog?.()
     else if (which === 'export-usage') burnExportUsage()
@@ -503,6 +590,14 @@ function burnHandleClick(e) {
     const pid = raw.slice(0, i)
     const day = raw.slice(i + 1)
     burnState.optDrillDay[pid] = burnState.optDrillDay[pid] === day ? null : day
+    burnRender()
+    return
+  }
+
+  const optTop = e.target.closest('[data-burn-opt-top]')
+  if (optTop) {
+    const key = optTop.getAttribute('data-burn-opt-top')
+    burnState.optTopOpen[key] = !burnState.optTopOpen[key]
     burnRender()
     return
   }
@@ -603,6 +698,12 @@ function burnHandleInput(e) {
   const cookie = e.target.closest('[data-burn-cookie]')
   if (cookie) {
     burnState.cookies[cookie.getAttribute('data-burn-cookie')] = cookie.value
+  }
+  const flow = e.target.closest('[data-burn-flow-field]')
+  if (flow) {
+    const key = flow.getAttribute('data-burn-flow-field')
+    burnState.flowForm = { ...(burnState.flowForm || {}), [key]: flow.value }
+    burnState.flowSaveNote = ''
   }
 }
 
