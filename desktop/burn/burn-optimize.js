@@ -332,35 +332,82 @@ function optFilterRow(state, model) {
   )
 }
 
-function optSaveModePanel(model) {
+function optSaveModePanel(state, model) {
   const sm = model.saveMode || { enabled: false, reservePct: 40, actions: [] }
   const enabled = sm.enabled === true
   const actions = Array.isArray(sm.actions) ? sm.actions : []
-  const actionRows = enabled
+  const open = !!(state.optTopOpen && state.optTopOpen.saveMode)
+  const line = enabled
     ? actions.length
-      ? actions.map((a) => (
-        `<div style="${bstyle({ display: 'grid', gridTemplateColumns: '1fr', gap: 3, padding: '8px 11px', borderTop: `1px solid ${BURN.border}` })}">` +
-        `<div style="${bstyle({ display: 'flex', alignItems: 'baseline', gap: 7 })}">` +
-        `<span style="${bstyle({ width: 3, height: 3, background: BURN.lime, flex: '0 0 auto' })}"></span>` +
-        `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10.5, fontWeight: 700, color: BURN.text, letterSpacing: 0.3, textTransform: 'uppercase' })}">${burnEsc(a.title)}</span>` +
-        (a.providerName ? `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9, color: BURN.text3, letterSpacing: 0.3 })}">${burnEsc(a.providerName)}</span>` : '') +
-        `</div>` +
-        `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11.5, color: BURN.text2, lineHeight: 1.45, paddingLeft: 10 })}">${burnEsc(a.detail)}</div>` +
-        `</div>`
-      )).join('')
-      : `<div style="${bstyle({ padding: '8px 11px', borderTop: `1px solid ${BURN.border}`, fontFamily: BURN_FONT.sans, fontSize: 11.5, color: BURN.text2, lineHeight: 1.45 })}">No urgent saves right now.</div>`
-    : `<div style="${bstyle({ padding: '8px 11px', borderTop: `1px solid ${BURN.border}`, fontFamily: BURN_FONT.sans, fontSize: 11.5, color: BURN.text2, lineHeight: 1.45 })}">Shows the best token-saving moves first.</div>`
+      ? `${actions.length} moves ready`
+      : 'No urgent saves'
+    : 'Best token-saving moves'
+  const details = open
+    ? `<div style="${bstyle({ borderTop: `1px solid ${BURN.border}`, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 7 })}">` +
+      (enabled && actions.length
+        ? actions.slice(0, 4).map((a) => (
+          `<div style="${bstyle({ display: 'grid', gridTemplateColumns: '1fr', gap: 2 })}">` +
+          `<div style="${bstyle({ display: 'flex', alignItems: 'baseline', gap: 7 })}">` +
+          `<span style="${bstyle({ width: 3, height: 3, background: BURN.lime, flex: '0 0 auto' })}"></span>` +
+          `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10, fontWeight: 700, color: BURN.text, letterSpacing: 0.25, textTransform: 'uppercase' })}">${burnEsc(a.title)}</span>` +
+          (a.providerName ? `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8.5, color: BURN.text3 })}">${burnEsc(a.providerName)}</span>` : '') +
+          `</div>` +
+          `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11, color: BURN.text2, lineHeight: 1.35, paddingLeft: 10 })}">${burnEsc(a.detail)}</div>` +
+          `</div>`
+        )).join('')
+        : `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11, color: BURN.text2, lineHeight: 1.35 })}">${enabled ? 'No urgent saves right now.' : 'Turn this on to keep the fastest token-saving moves at the top.'}</div>`) +
+      `</div>`
+    : ''
 
   return (
-    `<div style="${bstyle({ margin: '10px 14px', border: `1px solid ${enabled ? BURN.accentBtnBorder : BURN.border}`, background: enabled ? BURN.accentWashBg : BURN.surface, borderRadius: 2 })}">` +
-    `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 11px' })}">` +
-    `<div style="${bstyle({ flex: 1, minWidth: 0 })}">` +
-    `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 11, fontWeight: 700, color: enabled ? BURN.limeText : BURN.text, letterSpacing: 0.5, textTransform: 'uppercase' })}">Save Mode</div>` +
-    `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9, color: BURN.text3, letterSpacing: 0.4, marginTop: 3 })}">${enabled ? `${actions.length} MOVE${actions.length === 1 ? '' : 'S'} · ${sm.reservePct}% RESERVE` : 'OFF'}</div>` +
-    `</div>` +
+    `<div style="${bstyle({ margin: '10px 14px 6px', border: `1px solid ${enabled ? BURN.accentBtnBorder : BURN.border}`, background: enabled ? BURN.accentWashBg : BURN.surface, borderRadius: 2 })}">` +
+    `<div data-burn-opt-top="saveMode" style="${bstyle({ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', cursor: 'pointer' })}">` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10.5, fontWeight: 700, color: enabled ? BURN.limeText : BURN.text, letterSpacing: 0.5, textTransform: 'uppercase' })}">Save Mode</span>` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 12, color: BURN.text2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })}">${burnEsc(line)}</span>` +
+    `<span style="${bstyle({ flex: 1 })}"></span>` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8.5, color: BURN.text3, letterSpacing: 0.4, textTransform: 'uppercase' })}">${enabled ? `${sm.reservePct}%` : 'OFF'}</span>` +
+    burnIcon(open ? 'chevron-up' : 'chevron-down', 11, BURN.text2) +
     burnSwitch('opt:saveMode', enabled) +
     `</div>` +
-    actionRows +
+    details +
+    `</div>`
+  )
+}
+
+function optFlowModePanel(state, model) {
+  const flow = model.flowMode || { recommended: false, reservePct: 40, summary: 'Save a tiny pickup prompt before limits hit.' }
+  const on = flow.recommended === true
+  const open = !!(state.optTopOpen && state.optTopOpen.flowMode)
+  const meta = on
+    ? `${flow.providerName || 'MODEL'} · ${flow.freePct}% FREE`
+    : 'CHECKPOINT'
+  const line = on ? 'Save pickup point now' : 'Tiny restart prompt'
+  const details = open
+    ? `<div style="${bstyle({ borderTop: `1px solid ${BURN.border}`, padding: '8px 10px', fontFamily: BURN_FONT.sans, fontSize: 11, color: BURN.text2, lineHeight: 1.35 })}">${burnEsc(flow.summary || 'Save a tiny pickup prompt before limits hit.')}</div>`
+    : ''
+  return (
+    `<div style="${bstyle({ margin: '0 14px 10px', border: `1px solid ${on ? BURN.accentBtnBorder : BURN.border}`, background: on ? BURN.accentWashBg : BURN.surface, borderRadius: 2 })}">` +
+    `<div data-burn-opt-top="flowMode" style="${bstyle({ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', cursor: 'pointer' })}">` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10.5, fontWeight: 700, color: on ? BURN.limeText : BURN.text, letterSpacing: 0.5, textTransform: 'uppercase' })}">Flow Mode</span>` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 12, color: BURN.text2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })}">${burnEsc(line)}</span>` +
+    `<span style="${bstyle({ flex: 1 })}"></span>` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8.5, color: BURN.text3, letterSpacing: 0.4, textTransform: 'uppercase' })}">${burnEsc(meta)}</span>` +
+    burnIcon(open ? 'chevron-up' : 'chevron-down', 11, BURN.text2) +
+    `<button type="button" data-burn-action="flow-open" style="${bstyle({
+      background: on ? BURN.lime : 'transparent',
+      color: on ? BURN.bg : BURN.text2,
+      border: `1px solid ${on ? BURN.lime : BURN.border}`,
+      borderRadius: 2,
+      fontFamily: BURN_FONT.mono,
+      fontSize: 10.5,
+      fontWeight: 700,
+      letterSpacing: 0.4,
+      textTransform: 'uppercase',
+      padding: '6px 9px',
+      cursor: 'pointer',
+    })}">${on ? 'Save flow' : 'Open'}</button>` +
+    `</div>` +
+    details +
     `</div>`
   )
 }
@@ -508,7 +555,8 @@ function burnRenderOptimize(state) {
   return (
     burnHeader({ backLabel: 'OPTIMIZE', optimizeActive: true, hasSignals: optHasSignals(state) }) +
     optSummaryStrip(view) +
-    optSaveModePanel(model) +
+    optSaveModePanel(state, model) +
+    optFlowModePanel(state, model) +
     optFilterRow(state, model) +
     `<div class="burn-body" style="${bstyle({ flex: 1, overflowY: 'auto' })}">${body}</div>` +
     burnFooter({ items: footer })

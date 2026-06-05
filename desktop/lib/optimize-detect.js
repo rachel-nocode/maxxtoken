@@ -968,6 +968,45 @@ function buildSaveMode(snapshot, signals, opts = {}) {
   }
 }
 
+function buildFlowMode(snapshot, opts = {}) {
+  const reservePct = CONFIG.saveMode.reservePct
+  const now = opts.now || Date.now()
+  const providers = Array.isArray(snapshot && snapshot.providers) ? snapshot.providers : []
+  const candidates = providers
+    .filter((p) => p && p.connected !== false)
+    .map((p) => {
+      const w = sessionWindow(p)
+      if (!w) return null
+      const used = pct(w.usedPct)
+      const free = Math.max(0, 100 - used)
+      return { provider: p, window: w, used, free, resetAt: w.resetAt || soonestResetAt(p) }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.free - b.free)
+
+  const tight = candidates.find((item) => item.free < reservePct)
+  if (!tight) {
+    return {
+      recommended: false,
+      reservePct,
+      summary: `Flow Mode appears when a 5-hour window drops under ${reservePct}% free.`,
+    }
+  }
+
+  const reset = resetLabel(tight.resetAt, now)
+  return {
+    recommended: true,
+    reservePct,
+    providerId: tight.provider.id,
+    providerName: providerName(tight.provider),
+    usedPct: tight.used,
+    freePct: tight.free,
+    resetAt: tight.resetAt || null,
+    resetLabel: reset,
+    summary: `${providerName(tight.provider)} has ${tight.free}% free${reset && reset !== '—' ? ` until ${reset}` : ''}. Save a pickup point now.`,
+  }
+}
+
 // detectSignals(snapshot, { now }) → Signal[] sorted by saving desc.
 function detectSignals(snapshot, opts = {}) {
   const now = opts.now || Date.now()
@@ -1033,6 +1072,7 @@ function buildOptimizeModel(snapshot, opts = {}) {
     providers,
     drillable, // agentic providers the UI can offer a "session check" on
     saveMode: buildSaveMode(snapshot, signals, { ...opts, now }),
+    flowMode: buildFlowMode(snapshot, { ...opts, now }),
     counts: { total: signals.length, alerts },
     recoverable,
     headroom,
@@ -1083,6 +1123,7 @@ const OPTIMIZE_API = {
   dailyRatioSeries,
   detectRatioDaily,
   buildSaveMode,
+  buildFlowMode,
   isAgentic,
   // exposed for tests / tuning
   CONFIG,
