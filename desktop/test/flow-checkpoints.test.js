@@ -49,3 +49,14 @@ test('flow recommendation picks the tightest active short window', () => {
   assert.equal(rec.freePct, 18)
   assert.match(rec.summary, /18% free/)
 })
+
+test('flow recommendation quiet state says recommended instead of appears', () => {
+  const rec = flow.flowRecommendation({
+    providers: [
+      { id: 'claude', name: 'Claude', connected: true, windows: [{ kind: '5h', usedPct: 20 }] },
+    ],
+  }, { reservePct: 40 })
+
+  assert.equal(rec.recommended, false)
+  assert.equal(rec.summary, 'Recommended when a 5-hour window drops under 40% free.')
+})

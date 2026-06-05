@@ -71,3 +71,16 @@ test('flow mode recommends checkpointing when a short window is tight', () => {
   assert.equal(model.flowMode.freePct, 22)
   assert.match(model.flowMode.summary, /22% free/)
 })
+
+test('flow mode quiet state copy explains recommendation', () => {
+  const model = optimize.buildOptimizeModel(snapshot({
+    id: 'claude',
+    name: 'Claude',
+    connected: true,
+    monthly: 200,
+    windows: [{ label: 'Session', kind: '5h', usedPct: 20, resetAt: Date.parse('2026-06-04T14:00:00Z') }],
+  }), { now: Date.parse('2026-06-04T12:00:00Z') })
+
+  assert.equal(model.flowMode.recommended, false)
+  assert.equal(model.flowMode.summary, 'Recommended when a 5-hour window drops under 40% free.')
+})

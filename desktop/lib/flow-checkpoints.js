@@ -71,7 +71,7 @@ function flowRecommendation(snapshot, opts = {}) {
     return {
       recommended: false,
       reservePct,
-      summary: `Flow Mode appears when a 5-hour window drops under ${reservePct}% free.`,
+      summary: `Recommended when a 5-hour window drops under ${reservePct}% free.`,
     }
   }
 
