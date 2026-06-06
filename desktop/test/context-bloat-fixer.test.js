@@ -21,19 +21,20 @@ test('context bloat fixer points to files and folders worth excluding', () => {
     assert.ok(result.findings.length >= 3)
     assert.deepEqual(
       result.findings.map((f) => f.action).slice(0, 3),
-      ['Review instructions', 'Keep folder out', 'Keep file out'],
+      ['Review instructions', 'Exclude folder from AI context', 'Exclude file from AI context'],
     )
-    assert.match(result.summary, /items to review/i)
-    assert.match(result.summary, /will not delete/i)
+    assert.match(result.summary, /cleanup prompt/i)
+    assert.match(result.summary, /will not edit project files/i)
     assert.ok(result.estimatedTokens > 1000)
     assert.ok(result.findings[0].path)
-    assert.ok(result.findings.find((f) => f.action === 'Keep folder out').estimatedTokens > 0)
+    assert.ok(result.findings.find((f) => f.action === 'Exclude folder from AI context').estimatedTokens > 0)
+    assert.match(result.findings.find((f) => f.ignorePattern === 'dist/').promptText, /Do not edit files/)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
 
-test('context bloat fixer collapses git internals into one clear suggestion', () => {
+test('context bloat fixer skips git internals instead of suggesting them', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxxtoken-bloat-git-'))
   try {
     fs.mkdirSync(path.join(dir, '.git', 'logs'), { recursive: true })
@@ -41,9 +42,7 @@ test('context bloat fixer collapses git internals into one clear suggestion', ()
 
     const result = fixer.scanContextBloat(dir)
     assert.equal(result.ok, true)
-    assert.equal(result.findings.length, 1)
-    assert.equal(result.findings[0].action, 'Keep folder out')
-    assert.equal(result.findings[0].detail, '.git')
+    assert.deepEqual(result.findings, [])
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

@@ -118,6 +118,45 @@ function optBarRow(b, dim) {
   )
 }
 
+function optCachePromptRows(state, signal) {
+  if (!signal || signal.kind !== 'cache') return ''
+  const prompts = [
+    {
+      id: 'prefix',
+      title: 'Prefix audit',
+      text: 'Review my project instructions and repeated prompts. Move stable rules/examples to the top, put task-specific details at the end, and remove duplicate instructions. Do not edit files; give me a patch plan first.',
+    },
+    {
+      id: 'dedup',
+      title: 'Dedup instructions',
+      text: 'Find repeated instructions in this conversation/project config that could be consolidated into one stable prefix. Return: keep, remove, move-to-end.',
+    },
+    {
+      id: 'cache',
+      title: 'Cache friendliness',
+      text: 'Audit this prompt for cache friendliness. Identify anything dynamic near the top that should move later, and anything stable that should stay first.',
+    },
+  ]
+  const rows = prompts.map((p) => {
+    const key = `${signal.id}:prompt:${p.id}`
+    const open = !!(state.optPromptOpen && state.optPromptOpen[key])
+    const copied = state.optCopiedCmd === key
+    return (
+      `<div style="${bstyle({ borderTop: `1px solid ${BURN.border}` })}">` +
+      `<div style="${bstyle({ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'center', padding: '7px 0' })}">` +
+      `<button type="button" data-burn-opt-prompt-toggle="${burnEsc(key)}" style="${bstyle({ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, background: 'transparent', border: 'none', color: BURN.text, padding: 0, cursor: 'pointer', textAlign: 'left' })}">` +
+      burnIcon(open ? 'chevron-up' : 'chevron-down', 11, BURN.text2) +
+      `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10.5, fontWeight: 700, color: BURN.text, letterSpacing: 0.3, textTransform: 'uppercase', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })}">${burnEsc(p.title)}</span>` +
+      `</button>` +
+      `<button type="button" data-burn-opt-copy-text="${burnEsc(key)}::${burnEsc(encodeURIComponent(p.text))}" style="${bstyle({ background: 'transparent', border: `1px solid ${BURN.accentBtnBorder}`, borderRadius: 2, color: BURN.limeText, fontFamily: BURN_FONT.mono, fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', padding: '4px 7px', cursor: 'pointer', whiteSpace: 'nowrap' })}">${copied ? 'Copied' : 'Copy'}</button>` +
+      `</div>` +
+      (open ? `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11.5, color: BURN.text2, lineHeight: 1.45, padding: '0 0 8px 19px' })}">${burnEsc(p.text)}</div>` : '') +
+      `</div>`
+    )
+  }).join('')
+  return burnSectionHead('PROMPTS', 'copy') + rows
+}
+
 function optGhostBtn(label, action, id) {
   return (
     `<button type="button" data-burn-opt-action="${burnEsc(action)}:${burnEsc(id)}" style="${bstyle({
@@ -150,21 +189,28 @@ function optScanResults(state, s) {
   const rows = Array.isArray(scan.findings) ? scan.findings.slice(0, 5) : []
   const list = rows.length
     ? rows.map((f, i) => (
+      (() => {
+        const copied = scan.copiedPrompt === (f.ignorePattern || f.detail || String(i))
+        return (
       `<div style="${bstyle({ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, padding: '6px 0', borderTop: `1px solid ${BURN.border}`, alignItems: 'center' })}">` +
       `<div style="${bstyle({ minWidth: 0 })}">` +
       `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10.5, fontWeight: 700, color: BURN.text, letterSpacing: 0.3, textTransform: 'uppercase' })}">${burnEsc(f.action || 'Fix')}</div>` +
       `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11.5, color: BURN.text2, lineHeight: 1.35, overflowWrap: 'anywhere' })}">${burnEsc(f.detail || '')}</div>` +
+      (f.ignorePattern ? `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9.5, color: BURN.text3, marginTop: 2, overflowWrap: 'anywhere' })}">Suggested manual rule: ${burnEsc(f.ignorePattern)}</div>` : '') +
       `</div>` +
       `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 7 })}">` +
       `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10, color: BURN.limeText, fontVariantNumeric: 'tabular-nums' })}">${Number(f.estimatedTokens) > 0 ? burnEsc(f.tokenLabel || '') : ''}</span>` +
-      (f.path ? `<button type="button" data-burn-opt-reveal="${burnEsc(`${s.provider}:${i}`)}" style="${bstyle({ background: 'transparent', border: `1px solid ${BURN.border}`, borderRadius: 2, color: BURN.text2, fontFamily: BURN_FONT.mono, fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', padding: '4px 7px', cursor: 'pointer' })}">Finder</button>` : '') +
+      (f.promptText ? `<button type="button" data-burn-opt-copy-prompt="${burnEsc(`${s.provider}:${i}`)}" style="${bstyle({ background: 'transparent', border: `1px solid ${BURN.accentBtnBorder}`, borderRadius: 2, color: BURN.limeText, fontFamily: BURN_FONT.mono, fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', padding: '4px 7px', cursor: 'pointer' })}">${copied ? 'Copied' : 'Copy prompt'}</button>` : '') +
+      (f.path ? `<button type="button" data-burn-opt-reveal="${burnEsc(`${s.provider}:${i}`)}" style="${bstyle({ background: 'transparent', border: `1px solid ${BURN.border}`, borderRadius: 2, color: BURN.text3, fontFamily: BURN_FONT.mono, fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', padding: '4px 7px', cursor: 'pointer' })}">Show</button>` : '') +
       `</div>` +
       `</div>`
+        )
+      })()
     )).join('')
     : `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11.5, color: BURN.text2, lineHeight: 1.45 })}">No obvious context bloat found.</div>`
   return (
     `<div style="${bstyle({ display: 'flex', flexDirection: 'column', gap: 7 })}">` +
-    burnSectionHead('REVIEW LIST', scan.folderName || '') +
+    burnSectionHead('CLEANUP PROMPTS', scan.folderName || '') +
     `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11.5, color: BURN.text2, lineHeight: 1.45 })}">${burnEsc(scan.summary || '')}</div>` +
     list +
     `</div>`
@@ -196,7 +242,31 @@ function optCardExpanded(state, s) {
   }
   const scanResults = optScanResults(state, s)
   if (scanResults) blocks.push(scanResults)
+  const cachePrompts = optCachePromptRows(state, s)
+  if (cachePrompts) blocks.push(cachePrompts)
 
+  // Cross-agent tool card (RTK): one copyable wire-up command per tagged agent.
+  if (Array.isArray(s.agents) && s.agents.length) {
+    const rows = s.agents.map((a) => {
+      const copied = state.optCopiedCmd === `${s.id}:${a.id}`
+      return (
+        `<div style="${bstyle({ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, padding: '6px 0', borderTop: `1px solid ${BURN.border}`, alignItems: 'center' })}">` +
+        `<div style="${bstyle({ minWidth: 0 })}">` +
+        `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 6 })}">` +
+        burnProvGlyph(a.id, 11, BURN.text3) +
+        `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10.5, fontWeight: 700, color: BURN.text, letterSpacing: 0.3 })}">${burnEsc(a.name)}</span>` +
+        `</div>` +
+        `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10, color: BURN.text2, marginTop: 3, overflowWrap: 'anywhere' })}">${burnEsc(a.cmd)}</div>` +
+        `</div>` +
+        `<button type="button" data-burn-opt-copy-text="${burnEsc(`${s.id}:${a.id}`)}::${burnEsc(encodeURIComponent(a.cmd))}" style="${bstyle({ background: 'transparent', border: `1px solid ${BURN.accentBtnBorder}`, borderRadius: 2, color: BURN.limeText, fontFamily: BURN_FONT.mono, fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', padding: '4px 7px', cursor: 'pointer', whiteSpace: 'nowrap' })}">${copied ? 'Copied' : 'Copy'}</button>` +
+        `</div>`
+      )
+    }).join('')
+    blocks.push(burnSectionHead('WIRE YOUR AGENT', '') + rows)
+  }
+
+  const justCopied = state.optCopiedCmd === s.id
+  const primaryLabel = justCopied ? 'Copied ✓' : (d.primary || 'Apply →')
   const primary =
     `<button type="button" data-burn-opt-action="primary:${burnEsc(s.id)}" style="${bstyle({
       background: BURN.lime,
@@ -209,7 +279,7 @@ function optCardExpanded(state, s) {
       letterSpacing: 0.3,
       padding: '7px 11px',
       cursor: 'pointer',
-    })}">${burnEsc(d.primary || 'Apply →')}</button>`
+    })}">${burnEsc(primaryLabel)}</button>`
   const actions =
     `<div style="${bstyle({ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 })}">` +
     primary +
@@ -255,10 +325,16 @@ function optCard(state, s) {
     `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8, color: BURN.text3, letterSpacing: 0.4, marginTop: 3 })}">${burnEsc(s.metricUnit)}</div>` +
     `</div>` +
     `<div style="${bstyle({ flex: 1 })}">${optMeter(s.meter)}</div>` +
-    `<div style="${bstyle({ textAlign: 'right', minWidth: 52 })}">` +
-    `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 17, fontWeight: 700, color: savingColor, lineHeight: 1, fontVariantNumeric: 'tabular-nums' })}">${savePrefix}$${Math.round(s.saving)}</div>` +
-    `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8, color: BURN.text3, letterSpacing: 0.3, marginTop: 3 })}">${burnEsc(s.savingNote)}</div>` +
-    `</div>` +
+    // Recommend-only token savers (s.noDollar) carry no $ figure — show a small
+    // RECOMMEND tag instead of a misleading "$0".
+    (s.noDollar
+      ? `<div style="${bstyle({ textAlign: 'right', minWidth: 52 })}">` +
+        `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8.5, fontWeight: 700, color: accentText, border: `1px solid ${accent}`, borderRadius: 2, padding: '2px 5px', letterSpacing: 0.5, display: 'inline-block' })}">TOKENS</div>` +
+        `</div>`
+      : `<div style="${bstyle({ textAlign: 'right', minWidth: 52 })}">` +
+        `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 17, fontWeight: 700, color: savingColor, lineHeight: 1, fontVariantNumeric: 'tabular-nums' })}">${savePrefix}$${Math.round(s.saving)}</div>` +
+        `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8, color: BURN.text3, letterSpacing: 0.3, marginTop: 3 })}">${burnEsc(s.savingNote)}</div>` +
+        `</div>`) +
     `</div>` +
     // line 3 — fix + chevron
     `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 8, marginTop: 9 })}">` +
@@ -332,83 +408,38 @@ function optFilterRow(state, model) {
   )
 }
 
-function optSaveModePanel(state, model) {
-  const sm = model.saveMode || { enabled: false, reservePct: 40, actions: [] }
-  const enabled = sm.enabled === true
-  const actions = Array.isArray(sm.actions) ? sm.actions : []
-  const open = !!(state.optTopOpen && state.optTopOpen.saveMode)
-  const line = enabled
-    ? actions.length
-      ? `${actions.length} moves ready`
-      : 'No urgent saves'
-    : 'Best token-saving moves'
-  const details = open
-    ? `<div style="${bstyle({ borderTop: `1px solid ${BURN.border}`, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 7 })}">` +
-      (enabled && actions.length
-        ? actions.slice(0, 4).map((a) => (
-          `<div style="${bstyle({ display: 'grid', gridTemplateColumns: '1fr', gap: 2 })}">` +
-          `<div style="${bstyle({ display: 'flex', alignItems: 'baseline', gap: 7 })}">` +
-          `<span style="${bstyle({ width: 3, height: 3, background: BURN.lime, flex: '0 0 auto' })}"></span>` +
-          `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10, fontWeight: 700, color: BURN.text, letterSpacing: 0.25, textTransform: 'uppercase' })}">${burnEsc(a.title)}</span>` +
-          (a.providerName ? `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8.5, color: BURN.text3 })}">${burnEsc(a.providerName)}</span>` : '') +
-          `</div>` +
-          `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11, color: BURN.text2, lineHeight: 1.35, paddingLeft: 10 })}">${burnEsc(a.detail)}</div>` +
-          `</div>`
-        )).join('')
-        : `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11, color: BURN.text2, lineHeight: 1.35 })}">${enabled ? 'No urgent saves right now.' : 'Turn this on to keep the fastest token-saving moves at the top.'}</div>`) +
-      `</div>`
-    : ''
-
+function optTopFixRow(signal) {
+  if (!signal) return ''
+  const alert = signal.severity === 'alert'
+  const accent = alert ? BURN.warn : BURN.lime
+  const saving = Number(signal.saving) > 0
+    ? `${signal.softSaving ? '≈' : ''}$${Math.round(signal.saving)}`
+    : signal.metric
   return (
-    `<div style="${bstyle({ margin: '10px 14px 6px', border: `1px solid ${enabled ? BURN.accentBtnBorder : BURN.border}`, background: enabled ? BURN.accentWashBg : BURN.surface, borderRadius: 2 })}">` +
-    `<div data-burn-opt-top="saveMode" style="${bstyle({ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', cursor: 'pointer' })}">` +
-    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10.5, fontWeight: 700, color: enabled ? BURN.limeText : BURN.text, letterSpacing: 0.5, textTransform: 'uppercase' })}">Save Mode</span>` +
-    `<span style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 12, color: BURN.text2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })}">${burnEsc(line)}</span>` +
-    `<span style="${bstyle({ flex: 1 })}"></span>` +
-    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8.5, color: BURN.text3, letterSpacing: 0.4, textTransform: 'uppercase' })}">${enabled ? `${sm.reservePct}%` : 'OFF'}</span>` +
-    burnIcon(open ? 'chevron-up' : 'chevron-down', 11, BURN.text2) +
-    burnSwitch('opt:saveMode', enabled) +
-    `</div>` +
-    details +
-    `</div>`
-  )
-}
-
-function optFlowModePanel(state, model) {
-  const flow = model.flowMode || { recommended: false, reservePct: 40, summary: 'Save a tiny pickup prompt before limits hit.' }
-  const on = flow.recommended === true
-  const open = !!(state.optTopOpen && state.optTopOpen.flowMode)
-  const meta = on
-    ? `${flow.providerName || 'MODEL'} · ${flow.freePct}% FREE`
-    : 'CHECKPOINT'
-  const line = on ? 'Save pickup point now' : 'Tiny restart prompt'
-  const details = open
-    ? `<div style="${bstyle({ borderTop: `1px solid ${BURN.border}`, padding: '8px 10px', fontFamily: BURN_FONT.sans, fontSize: 11, color: BURN.text2, lineHeight: 1.35 })}">${burnEsc(flow.summary || 'Save a tiny pickup prompt before limits hit.')}</div>`
-    : ''
-  return (
-    `<div style="${bstyle({ margin: '0 14px 10px', border: `1px solid ${on ? BURN.accentBtnBorder : BURN.border}`, background: on ? BURN.accentWashBg : BURN.surface, borderRadius: 2 })}">` +
-    `<div data-burn-opt-top="flowMode" style="${bstyle({ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', cursor: 'pointer' })}">` +
-    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10.5, fontWeight: 700, color: on ? BURN.limeText : BURN.text, letterSpacing: 0.5, textTransform: 'uppercase' })}">Flow Mode</span>` +
-    `<span style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 12, color: BURN.text2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })}">${burnEsc(line)}</span>` +
-    `<span style="${bstyle({ flex: 1 })}"></span>` +
-    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8.5, color: BURN.text3, letterSpacing: 0.4, textTransform: 'uppercase' })}">${burnEsc(meta)}</span>` +
-    burnIcon(open ? 'chevron-up' : 'chevron-down', 11, BURN.text2) +
-    `<button type="button" data-burn-action="flow-open" style="${bstyle({
-      background: on ? BURN.lime : 'transparent',
-      color: on ? BURN.bg : BURN.text2,
-      border: `1px solid ${on ? BURN.lime : BURN.border}`,
-      borderRadius: 2,
-      fontFamily: BURN_FONT.mono,
-      fontSize: 10.5,
-      fontWeight: 700,
-      letterSpacing: 0.4,
-      textTransform: 'uppercase',
-      padding: '6px 9px',
+    `<button type="button" data-burn-opt-card="${burnEsc(signal.id)}" style="${bstyle({
+      width: '100%',
+      display: 'grid',
+      gridTemplateColumns: 'auto minmax(0, 1fr) auto',
+      gap: 9,
+      alignItems: 'center',
+      padding: '7px 14px',
+      border: 'none',
+      borderBottom: `1px solid ${BURN.border}`,
+      background: BURN.surface,
+      color: BURN.text,
       cursor: 'pointer',
-    })}">${on ? 'Save flow' : 'Open'}</button>` +
-    `</div>` +
-    details +
-    `</div>`
+      textAlign: 'left',
+    })}">` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9, fontWeight: 700, color: accent, letterSpacing: 0.6, textTransform: 'uppercase' })}">Top Fix</span>` +
+    `<span style="${bstyle({ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })}">` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10.5, fontWeight: 700, color: BURN.text, letterSpacing: 0.25, textTransform: 'uppercase' })}">${burnEsc(signal.title)}</span>` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9, color: BURN.text3, marginLeft: 8 })}">${burnEsc(signal.providerName || '')}</span>` +
+    `</span>` +
+    `<span style="${bstyle({ display: 'inline-flex', alignItems: 'center', gap: 7 })}">` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10.5, fontWeight: 700, color: accent, fontVariantNumeric: 'tabular-nums' })}">${burnEsc(saving)}</span>` +
+    burnIcon('chevron-down', 11, BURN.text2) +
+    `</span>` +
+    `</button>`
   )
 }
 
@@ -423,113 +454,19 @@ function optHealthyState() {
   )
 }
 
-// ----- agentic session drill-down (opt-in) ----------------------------------
-function optProviderById(state, id) {
-  const ps = state.lastSnap && state.lastSnap.providers
-  return Array.isArray(ps) ? ps.find((p) => p.id === id) || null : null
-}
-
-// one day row: date · ratio · cache% · mini ratio meter · chevron
-function optDayRow(pid, d, open) {
-  const ratioStr = d.ratio < 0.1 ? d.ratio.toFixed(3) : d.ratio.toFixed(2)
-  const cacheTone = d.cacheHitPct >= 50 ? BURN.limeText : BURN.warnText
-  const head =
-    `<button type="button" data-burn-opt-day="${burnEsc(pid)}:${burnEsc(d.dayKey)}" style="${bstyle({
-      width: '100%',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 10,
-      padding: '8px 4px',
-      background: 'transparent',
-      border: 'none',
-      borderBottom: `1px solid ${BURN.border}`,
-      cursor: 'pointer',
-      color: BURN.text,
-    })}">` +
-    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10.5, color: BURN.text2, minWidth: 74, textAlign: 'left' })}">${burnEsc(d.dayKey)}</span>` +
-    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 12, fontWeight: 700, color: BURN.text, minWidth: 46, textAlign: 'left', fontVariantNumeric: 'tabular-nums' })}">${ratioStr}</span>` +
-    `<span style="${bstyle({ flex: 1, maxWidth: 90 })}">${optMeter({ type: 'ratio', value: d.ratio, lo: 0.3, hi: 3.0 })}</span>` +
-    `<span style="${bstyle({ flex: 1 })}"></span>` +
-    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10, color: cacheTone, fontVariantNumeric: 'tabular-nums' })}">${d.cacheHitPct}% cache</span>` +
-    burnIcon(open ? 'chevron-up' : 'chevron-down', 11, BURN.text2) +
-    `</button>`
-
-  let detail = ''
-  if (open && window.OptimizeDetect && window.OptimizeDetect.detectRatioDaily) {
-    const prov = optProviderById(burnState, pid)
-    const sig = prov ? window.OptimizeDetect.detectRatioDaily(prov, d.dayKey) : null
-    if (sig) {
-      detail =
-        `<div style="${bstyle({ padding: '10px 4px 12px', display: 'flex', flexDirection: 'column', gap: 8 })}">` +
-        (sig.detail.rows || []).map(optDetailRow).join('') +
-        (sig.detail.note ? `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11.5, color: BURN.text2, lineHeight: 1.5 })}">${burnEsc(sig.detail.note)}</div>` : '') +
-        `</div>`
-    }
-  }
-  return head + detail
-}
-
-function optDrillProvider(state, p) {
-  const open = !!state.optDrillOpen[p.id]
-  const prov = optProviderById(state, p.id)
-  const series = prov && window.OptimizeDetect ? window.OptimizeDetect.dailyRatioSeries(prov, { days: 10 }) : []
-  const headRight = `${series.length} DAY${series.length === 1 ? '' : 'S'}`
-  const head =
-    `<button type="button" data-burn-opt-drill="${burnEsc(p.id)}" style="${bstyle({
-      width: '100%',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 8,
-      padding: '9px 11px',
-      background: BURN.surface2,
-      border: `1px solid ${BURN.borderHi}`,
-      borderRadius: 2,
-      cursor: 'pointer',
-      color: BURN.text,
-    })}">` +
-    burnProvGlyph(p.id, 13, BURN.text2) +
-    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 11, fontWeight: 700, color: BURN.text, letterSpacing: 0.3 })}">${burnEsc(p.name)}</span>` +
-    `<span style="${bstyle({ flex: 1 })}"></span>` +
-    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9, color: BURN.text2, letterSpacing: 0.5 })}">${headRight}</span>` +
-    burnIcon(open ? 'chevron-up' : 'chevron-down', 11, BURN.text2) +
-    `</button>`
-  const body = open
-    ? `<div style="${bstyle({ padding: '4px 11px 8px' })}">` +
-      (series.length
-        ? series.map((d) => optDayRow(p.id, d, state.optDrillDay[p.id] === d.dayKey)).join('')
-        : `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10, color: BURN.text2, padding: '8px 0' })}">NO RECENT DAILY DATA</div>`) +
-      `</div>`
-    : ''
-  return `<div style="${bstyle({ marginBottom: 6 })}">${head}${body}</div>`
-}
-
-function optDrillSection(state, model) {
-  if (!Array.isArray(model.drillable) || !model.drillable.length) return ''
-  return (
-    `<div style="${bstyle({ padding: '14px 14px 10px', borderTop: `1px solid ${BURN.border}` })}">` +
-    burnSectionHead('HEAVY DAYS', 'optional') +
-    `<div style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 11.5, color: BURN.text2, lineHeight: 1.5, margin: '8px 0 12px' })}">Open a provider to spot unusually heavy days.</div>` +
-    model.drillable.map((p) => optDrillProvider(state, p)).join('') +
-    `</div>`
-  )
-}
-
 // ----- screen ----------------------------------------------------------------
 function burnRenderOptimize(state) {
   const model = state.optimizeModel || { signals: [], providers: [], counts: { total: 0, alerts: 0 }, recoverable: 0, scannedAt: Date.now() }
   const filter = state.optFilter || 'ALL'
   const visible = model.signals
     .filter((s) => !optIsHidden(state, s))
-    .filter((s) => filter === 'ALL' || s.provider === filter)
+    .filter((s) => filter === 'ALL' || s.provider === filter || (Array.isArray(s.providers) && s.providers.includes(filter)))
     .sort((a, b) => b.saving - a.saving)
 
-  const drill = optDrillSection(state, model)
   const cardsHtml = visible.length
     ? visible.map((s) => optCard(state, s)).join('')
-    : drill // if no signals but agentic drill-downs exist, lead with those
-      ? ''
-      : optHealthyState()
-  const body = cardsHtml + drill
+    : optHealthyState()
+  const body = cardsHtml
 
   // Summary + footer reflect the CURRENT view (respect filter + dismissals).
   const recoverable = visible
@@ -555,8 +492,7 @@ function burnRenderOptimize(state) {
   return (
     burnHeader({ backLabel: 'OPTIMIZE', optimizeActive: true, hasSignals: optHasSignals(state) }) +
     optSummaryStrip(view) +
-    optSaveModePanel(state, model) +
-    optFlowModePanel(state, model) +
+    optTopFixRow(visible[0]) +
     optFilterRow(state, model) +
     `<div class="burn-body" style="${bstyle({ flex: 1, overflowY: 'auto' })}">${body}</div>` +
     burnFooter({ items: footer })

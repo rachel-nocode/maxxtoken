@@ -2,7 +2,6 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { canonicalProviderId } = require('./provider-ids')
-const { normalizeFlowCheckpoints } = require('./flow-checkpoints')
 
 const DIR = path.join(os.homedir(), '.maxxtoken')
 const FILE = path.join(DIR, 'config.json')
@@ -33,7 +32,6 @@ const DEFAULT_CONFIG = {
   // null = not yet decided, true = on, false = declined.
   missions: null,
   missionHistory: [],
-  flowCheckpoints: [],
   // tier drives which providers the UI lists:
   //   'core'     — the popular agents both CodexBar + OpenUsage track; shown by default.
   //   'extended' — secondary/API providers; revealed later via a "more providers" drawer.
@@ -111,7 +109,6 @@ function loadConfig(file = FILE) {
       onboardingComplete: raw.onboardingComplete === true,
       missions: typeof raw.missions === 'boolean' ? raw.missions : null,
       missionHistory: normalizeMissionHistory(raw.missionHistory),
-      flowCheckpoints: normalizeFlowCheckpoints(raw.flowCheckpoints),
       providerOrder: normalizeProviderOrder(raw.providerOrder, providers),
       providers,
     }
@@ -184,7 +181,6 @@ function saveConfig(config, file = FILE) {
     quotaWarningSessionThresholds: normalizeQuotaWarningThresholds(config.quotaWarningSessionThresholds || config.quotaWarningThresholds),
     quotaWarningWeeklyThresholds: normalizeQuotaWarningThresholds(config.quotaWarningWeeklyThresholds || config.quotaWarningThresholds),
     missionHistory: normalizeMissionHistory(config.missionHistory),
-    flowCheckpoints: normalizeFlowCheckpoints(config.flowCheckpoints),
     providerOrder: normalizeProviderOrder(config.providerOrder, providers),
     providers,
   }
@@ -251,5 +247,5 @@ module.exports = {
   saveConfig,
   billingCycle,
   FILE,
-  _private: { normalizeProviders, normalizeTrayMetric, normalizeUsageMeterMode, normalizeTokenHistoryDays, normalizeQuotaWarningThresholds, normalizeProviderConfig, normalizeMissionHistory, normalizeFlowCheckpoints },
+  _private: { normalizeProviders, normalizeTrayMetric, normalizeUsageMeterMode, normalizeTokenHistoryDays, normalizeQuotaWarningThresholds, normalizeProviderConfig, normalizeMissionHistory },
 }

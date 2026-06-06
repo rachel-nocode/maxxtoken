@@ -19,8 +19,8 @@ const NOISY_DIRS = new Set([
   'logs',
   'tmp',
   'temp',
-  '.git',
 ])
+const ALWAYS_SKIP_DIRS = new Set(['.git'])
 
 const NOISY_EXTS = new Set(['.log', '.mp4', '.mov', '.webm', '.zip', '.gz', '.tar', '.png', '.jpg', '.jpeg', '.gif', '.sqlite', '.db'])
 const INSTRUCTION_FILES = new Set(['AGENTS.md', 'CLAUDE.md'])
@@ -36,12 +36,23 @@ function fmtTokens(tokens) {
   return String(n)
 }
 
-function finding(action, detail, itemPath, bytes, priority) {
+function ignorePattern(root, itemPath, isDirectory) {
+  const rel = path.relative(root, itemPath).split(path.sep).join('/')
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return ''
+  return isDirectory ? `${rel.replace(/\/+$/, '')}/` : rel
+}
+
+function finding(action, detail, itemPath, bytes, priority, pattern = '') {
   const estimatedTokens = tokenEstimate(bytes)
+  const promptText = pattern
+    ? `I want to reduce AI context bloat in this project. Please help me decide whether to exclude "${pattern}" from AI context. Explain what the folder/file is, why it may waste tokens, and show the exact ignore-file lines I could add manually. Do not edit files unless I explicitly ask.`
+    : `I want to reduce AI context bloat in this project. Please review "${detail}" and suggest a shorter, safer version or cleanup plan. Do not edit files unless I explicitly ask.`
   return {
     action,
     detail,
     path: itemPath,
+    ignorePattern: pattern,
+    promptText,
     bytes: Math.max(0, Math.round(Number(bytes) || 0)),
     estimatedTokens,
     tokenLabel: estimatedTokens > 0 ? `~${fmtTokens(estimatedTokens)} est.` : '',
@@ -129,8 +140,9 @@ function scanContextBloat(dir, opts = {}) {
     const name = path.basename(current)
     const rel = path.relative(root, current) || name
     if (stat.isDirectory()) {
+      if (ALWAYS_SKIP_DIRS.has(name)) return
       if (NOISY_DIRS.has(name)) {
-        add(finding('Keep folder out', rel, current, estimateFolderBytes(current), name === '.git' ? 95 : 90))
+        add(finding('Exclude folder from AI context', rel, current, estimateFolderBytes(current), 90, ignorePattern(root, current, true)))
         return
       }
       let entries = []
@@ -148,7 +160,7 @@ function scanContextBloat(dir, opts = {}) {
     const bytes = Number(stat.size) || 0
     const ext = path.extname(name).toLowerCase()
     if (INSTRUCTION_FILES.has(name)) add(instructionFinding(current, rel, bytes))
-    else if (NOISY_EXTS.has(ext)) add(finding('Keep file out', rel, current, bytes, 80))
+    else if (NOISY_EXTS.has(ext)) add(finding('Exclude file from AI context', rel, current, bytes, 80, ignorePattern(root, current, false)))
     else if (bytes >= 750000) add(finding('Review large file', rel, current, bytes, 70))
   }
 
@@ -165,12 +177,12 @@ function scanContextBloat(dir, opts = {}) {
     estimatedTokens,
     tokenLabel: fmtTokens(estimatedTokens),
     summary: top.length
-      ? `${top.length} item${top.length === 1 ? '' : 's'} to review. MaxxToken will not delete anything.`
+      ? `${top.length} context cleanup prompt${top.length === 1 ? '' : 's'} ready. MaxxToken will not edit project files.`
       : 'No obvious context bloat found.',
   }
 }
 
 module.exports = {
   scanContextBloat,
-  _private: { tokenEstimate, fmtTokens, finding },
+  _private: { tokenEstimate, fmtTokens, finding, ignorePattern },
 }
