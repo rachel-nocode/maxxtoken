@@ -2,6 +2,7 @@ const crypto = require('crypto')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { execFileSync } = require('child_process')
 const { getKey } = require('../secrets')
 const { fetchWithTimeout } = require('../http')
 const { readCookieHeader } = require('../browser-cookies')
@@ -15,6 +16,15 @@ const WORKSPACES_ID = 'def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459
 const COOKIE_NAMES = new Set(['auth', '__Host-auth'])
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'
+
+const LIMITS = {
+  rolling: 12,
+  weekly: 30,
+  monthly: 60,
+}
+const DAY = 86400000
+const WEEK = 7 * DAY
+const FIFTH = 5 * 3600 * 1000
 
 const PERCENT_KEYS = [
   'usagePercent',
@@ -43,7 +53,8 @@ const RESET_AT_KEYS = ['resetAt', 'resetsAt', 'reset_at', 'resets_at', 'nextRese
 
 function num(value) {
   if (value == null || value === '') return null
-  const n = Number(String(value).replace(/,/g, ''))
+  const text = String(value).trim()
+  const n = Number(text.replace(/,/g, ''))
   return Number.isFinite(n) ? n : null
 }
 
@@ -51,6 +62,183 @@ function clampPct(value) {
   const n = num(value)
   if (n == null) return null
   return Math.max(0, Math.min(100, n <= 1 && n >= 0 ? n * 100 : n))
+}
+
+function localDbCandidates(home = os.homedir(), env = process.env) {
+  const xdg = env.XDG_DATA_HOME || path.join(home, '.local', 'share')
+  return [
+    env.OPENCODE_DB,
+    env.OPENCODE_DB_PATH,
+    env.XDG_DATA_HOME ? path.join(xdg, 'opencode', 'opencode.db') : null,
+    path.join(home, '.local', 'share', 'opencode', 'opencode.db'),
+    path.join(home, '.config', 'opencode', 'opencode.db'),
+    path.join(home, 'Library', 'Application Support', 'opencode', 'opencode.db'),
+  ].filter(Boolean)
+}
+
+function hasAllColumns(columns = [], names = []) {
+  const set = new Set(columns.map((name) => String(name || '').toLowerCase()))
+  return names.find((name) => set.has(name.toLowerCase())) || null
+}
+
+function candidateTableNames() {
+  return ['messages', 'message', 'events', 'requests', 'history']
+}
+
+function listTables(dbPath, execImpl = execFileSync) {
+  const out = execImpl('sqlite3', ['-readonly', '-json', `file:${dbPath}?mode=ro`, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const text = String(out).trim()
+  if (!text) return []
+  const rows = JSON.parse(text)
+  return Array.isArray(rows) ? rows.map((row) => row.name).filter(Boolean) : []
+}
+
+function listColumns(dbPath, table, execImpl = execFileSync) {
+  const out = execImpl('sqlite3', ['-readonly', '-json', `file:${dbPath}?mode=ro`, `PRAGMA table_info("${table}")`], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const text = String(out).trim()
+  if (!text) return []
+  const rows = JSON.parse(text)
+  return Array.isArray(rows) ? rows.map((row) => row.name).filter(Boolean) : []
+}
+
+function chooseUsageTable(dbPath, execImpl = execFileSync) {
+  const tables = listTables(dbPath, execImpl)
+  if (!tables.length) return null
+
+  const providerCandidates = ['providerid', 'provider_id', 'providerId', 'provider']
+  const roleCandidates = ['role']
+  const tsCandidates = ['createdat', 'created_at', 'created', 'timestamp', 'ts']
+  const costCandidates = ['cost', 'spent', 'amount', 'totalcost', 'total_cost']
+
+  const priority = candidateTableNames()
+  const ordered = [
+    ...priority.filter((name) => tables.includes(name)),
+    ...tables.filter((name) => !priority.includes(name)),
+  ]
+
+  for (const table of ordered) {
+    const columns = listColumns(dbPath, table, execImpl)
+    const providerCol = hasAllColumns(columns, providerCandidates)
+    const tsCol = hasAllColumns(columns, tsCandidates)
+    const costCol = hasAllColumns(columns, costCandidates)
+    if (!providerCol || !tsCol || !costCol) continue
+    const roleCol = hasAllColumns(columns, roleCandidates)
+    return { table, providerCol, tsCol, costCol, roleCol }
+  }
+  return null
+}
+
+function sqliteRows(dbPath, query, execImpl = execFileSync) {
+  const out = execImpl('sqlite3', ['-readonly', '-json', `file:${dbPath}?mode=ro`, query], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const text = String(out).trim()
+  if (!text) return []
+  return JSON.parse(text)
+}
+
+function parseTimestamp(value) {
+  const n = num(value)
+  if (n != null) {
+    if (n > 1_000_000_000_000) return n
+    if (n > 1_000_000_000) return n * 1000
+  }
+  const ms = Date.parse(String(value || ''))
+  return Number.isFinite(ms) ? ms : null
+}
+
+function sumRows(rows, startMs, now) {
+  return rows.reduce((acc, row) => {
+    const ts = parseTimestamp(row.ts)
+    if (ts == null || ts < startMs || ts > now) return acc
+    const cost = num(row.cost)
+    if (cost == null || cost < 0 || !Number.isFinite(cost)) return acc
+    return acc + cost
+  }, 0)
+}
+
+function usageWindowsFromRows(rows, now = Date.now()) {
+  if (!Array.isArray(rows) || !rows.length) {
+    return {
+      connected: false,
+      needsKey: false,
+      usageSource: 'local db',
+      error: 'No OpenCode Go usage rows in local opencode.db.',
+    }
+  }
+
+  const nowMs = Number(now) || Date.now()
+  const rollingStart = nowMs - FIFTH
+
+  const nowDate = new Date(nowMs)
+  const dayStart = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), nowDate.getUTCDate())
+  const mondayOffset = (nowDate.getUTCDay() + 6) % 7
+  const weeklyStart = dayStart - mondayOffset * DAY
+
+  const firstOfMonth = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), 1)
+  const monthEnd = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth() + 1, 1)
+
+  const parsedRows = rows
+    .map((row) => ({
+      ts: parseTimestamp(row.ts),
+      cost: num(row.cost),
+    }))
+    .filter((entry) => entry.ts != null && entry.cost != null && entry.cost >= 0)
+
+  if (!parsedRows.length) {
+    return {
+      connected: false,
+      needsKey: false,
+      usageSource: 'local db',
+      error: 'No numeric OpenCode Go costs in local opencode.db.',
+    }
+  }
+
+  const rolling = sumRows(parsedRows, rollingStart, nowMs)
+  const weekly = sumRows(parsedRows, weeklyStart, nowMs)
+  const monthly = sumRows(parsedRows, firstOfMonth, nowMs)
+  const lastActive = parsedRows.reduce((best, row) => Math.max(best, row.ts), 0)
+  const toWindow = (used, limit, resetAt) => ({
+    usedPct: clampPct((used / limit) * 100),
+    resetAt,
+    resetInSec: Math.max(0, Math.round((resetAt - nowMs) / 1000)),
+  })
+
+  return {
+    connected: true,
+    rolling: toWindow(rolling, LIMITS.rolling, nowMs + FIFTH),
+    weekly: toWindow(weekly, LIMITS.weekly, weeklyStart + WEEK),
+    monthly: toWindow(monthly, LIMITS.monthly, monthEnd),
+    lastActive,
+    usageSource: 'local db',
+  }
+}
+
+function readLocalUsageFromDb(options = {}) {
+  const home = options.home || os.homedir()
+  const env = options.env || process.env
+  const dbPath = (options.localDbPath || localDbCandidates(home, env).find((file) => fs.existsSync(file))) || null
+  if (!dbPath) return null
+
+  const execImpl = options.execFileSync || execFileSync
+  try {
+    const target = chooseUsageTable(dbPath, execImpl)
+    if (!target) return null
+    const where = [`"${target.providerCol}" = 'opencode-go'`]
+    if (target.roleCol) where.push(`"${target.roleCol}" = 'assistant'`)
+    const query = `SELECT "${target.tsCol}" AS ts, "${target.costCol}" AS cost FROM "${target.table}" WHERE ${where.join(' AND ')}`
+    const rows = sqliteRows(dbPath, query, execImpl)
+    return usageWindowsFromRows(rows, options.now || Date.now())
+  } catch {
+    return null
+  }
 }
 
 function cookieHeader(raw) {
@@ -491,6 +679,9 @@ function resolveDashboardCredentials(options = {}) {
 }
 
 async function read(options = {}) {
+  const local = readLocalUsageFromDb(options)
+  if (local) return { ...local, apiKeySource: null }
+
   const apiKey = resolveApiKey(options)
   const dashboard = resolveDashboardCredentials(options)
   if (!dashboard?.cookie) {
@@ -524,6 +715,8 @@ async function read(options = {}) {
 module.exports = {
   read,
   _private: {
+    localDbCandidates,
+    readLocalUsageFromDb,
     cookieHeader,
     resolveCookie,
     resolveApiKey,

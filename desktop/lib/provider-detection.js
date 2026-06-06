@@ -191,7 +191,10 @@ function detectLocalProviders(options = {}) {
   ], fsImpl)
   if (cursorEvidence) mark(out, 'cursor', 'Cursor local data found', cursorEvidence)
 
-  const opencodeEvidence = firstExisting([path.join(home, '.config', 'opencode')], fsImpl)
+  const dataHome = env.XDG_DATA_HOME || path.join(home, '.local', 'share')
+  const opencodeEvidence =
+    firstExisting([path.join(home, '.config', 'opencode'), path.join(dataHome, 'opencode', 'opencode.db')], fsImpl) ||
+    null
   if (opencodeEvidence) {
     mark(out, 'opencode', 'OpenCode config found', opencodeEvidence)
     mark(out, 'opencodego', 'OpenCode config found', opencodeEvidence)

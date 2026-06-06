@@ -3,6 +3,39 @@ const assert = require('node:assert')
 const og = require('../lib/adapters/opencode-go')
 
 const { parseRscUsageWindows, parseSubscription } = og._private
+const { readLocalUsageFromDb, localDbCandidates } = og._private
+
+test('opencode go reads local opencode.db usage windows by providerID and timestamps', () => {
+  const now = Date.parse('2026-05-21T12:00:00.000Z')
+  const outputRows = [
+    { providerID: 'opencode-go', role: 'assistant', cost: '3', created_at: '2026-05-21T11:00:00.000Z' },
+    { providerID: 'opencode-go', role: 'assistant', cost: 2, created_at: '2026-05-20T13:00:00.000Z' },
+    { providerID: 'opencode-go', role: 'assistant', cost: 5, created_at: '2026-05-20T10:00:00.000Z' },
+  ]
+  const read = (_cmd, args) => {
+    const query = String(Array.isArray(args) ? args[3] : args)
+    if (query.includes('sqlite_master')) return JSON.stringify([{ name: 'messages' }])
+    if (query.includes('PRAGMA table_info')) return JSON.stringify([{ name: 'providerID' }, { name: 'role' }, { name: 'cost' }, { name: 'created_at' }])
+    return JSON.stringify(outputRows)
+  }
+  const usage = readLocalUsageFromDb({
+    localDbPath: '/tmp/opencode.db',
+    now,
+    execFileSync: read,
+  })
+
+  assert.equal(usage.connected, true)
+  assert.equal(Math.round(usage.rolling.usedPct), 25)
+  assert.equal(Math.round(usage.weekly.usedPct), 33)
+  assert.equal(Math.round(usage.monthly.usedPct), 17)
+  assert.equal(usage.usageSource, 'local db')
+})
+
+test('local db usage path candidates include opencode.db locations', () => {
+  const candidates = localDbCandidates('/tmp/home', { XDG_DATA_HOME: '/tmp/xdg' })
+  assert.equal(candidates.includes('/tmp/xdg/opencode/opencode.db'), true)
+  assert.equal(candidates.includes('/tmp/home/.local/share/opencode/opencode.db'), true)
+})
 
 // A page carries BOTH the pre-hydration placeholder (usagePercent:0) and the
 // real React Server Component assignment (`xUsage:$R[n]={...}`). The parser must

@@ -1313,12 +1313,14 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
   if (id === 'opencodego') {
     const d = await opencodego.read()
     if (!d.connected) {
+      const source = d.usageSource || 'web session'
       return {
         ...base,
         connected: false,
         activity: 'none',
-        needsKey: true,
+        needsKey: d.needsKey !== false ? true : false,
         error: d.error || null,
+        extra: [{ label: 'Source', value: source }],
       }
     }
     const capturedPct = percent(d.monthly?.usedPct ?? d.weekly?.usedPct ?? d.rolling?.usedPct ?? 0)
@@ -1364,7 +1366,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
       extra: [
         d.zenBalanceUSD != null ? { label: 'Zen balance', value: '$' + d.zenBalanceUSD.toFixed(2) } : null,
         d.workspaceID ? { label: 'Workspace', value: d.workspaceID } : null,
-        { label: 'Source', value: 'web session' },
+        { label: 'Source', value: d.usageSource || 'web session' },
       ].filter(Boolean),
       resetAt: d.monthly?.resetAt || d.weekly?.resetAt || d.rolling?.resetAt || cycle.endMs,
       resetKind: d.monthly ? 'cycle' : 'weekly',

@@ -1373,6 +1373,7 @@ const ICON_SHARE = `<svg ${ICON_ATTRS}><circle cx="4" cy="7" r="1.6"/><circle cx
 let config = null
 let apiKeyState = {}
 let providerDetections = {}
+const MISSIONS_ENABLED = false
 
 function alertReserveSelect(id, p) {
   const value = p.alertsEnabled === false ? 'off' : p.alertReservePct ? String(p.alertReservePct) : 'inherit'
@@ -1482,7 +1483,9 @@ function renderOnboarding() {
 }
 
 function updatePrefMetas() {
-  const onCount = ['missions-toggle', 'maxx-alerts-toggle', 'session-quota-toggle', 'quota-warning-toggle', 'save-mode-toggle']
+  const toggleIds = ['maxx-alerts-toggle', 'session-quota-toggle', 'quota-warning-toggle', 'save-mode-toggle']
+  if (MISSIONS_ENABLED) toggleIds.unshift('missions-toggle')
+  const onCount = toggleIds
     .filter((id) => $(id) && $(id).classList.contains('on')).length
   const notif = $('pref-meta-notifications')
   if (notif) notif.textContent = onCount === 0 ? 'all off' : `${onCount} on`
@@ -1549,7 +1552,8 @@ function renderSettings() {
     .join('')
   wireSettingsDragAndDrop()
   $('open-at-login').classList.toggle('on', config.openAtLogin !== false)
-  $('missions-toggle').classList.toggle('on', config.missions === true)
+  const missionsToggle = $('missions-toggle')
+  if (MISSIONS_ENABLED && missionsToggle) missionsToggle.classList.toggle('on', config.missions === true)
   $('maxx-alerts-toggle').classList.toggle('on', config.maxxAlertsEnabled !== false)
   $('session-quota-toggle').classList.toggle('on', config.sessionQuotaNotificationsEnabled !== false)
   $('quota-warning-toggle').classList.toggle('on', config.quotaWarningNotificationsEnabled === true)
@@ -1562,7 +1566,12 @@ function renderSettings() {
   $('tray-metric').value = config.trayMetric || 'burnbar'
   $('usage-meter-mode').value = config.usageMeterMode || 'used'
   $('token-history-days').value = String(config.tokenHistoryDays || 30)
-  $('missions-toggle').onclick = () => { $('missions-toggle').classList.toggle('on'); updatePrefMetas() }
+  if (MISSIONS_ENABLED && missionsToggle) {
+    missionsToggle.onclick = () => {
+      missionsToggle.classList.toggle('on')
+      updatePrefMetas()
+    }
+  }
   $('maxx-alerts-toggle').onclick = () => { $('maxx-alerts-toggle').classList.toggle('on'); updatePrefMetas() }
   $('session-quota-toggle').onclick = () => { $('session-quota-toggle').classList.toggle('on'); updatePrefMetas() }
   $('quota-warning-toggle').onclick = () => { $('quota-warning-toggle').classList.toggle('on'); updatePrefMetas() }
@@ -1685,7 +1694,7 @@ function collectSettings() {
     tokenHistoryDays: Number($('token-history-days').value) || 30,
     saveModeSuggestions: $('save-mode-toggle').classList.contains('on'),
     onboardingComplete: config.onboardingComplete === true,
-    missions: $('missions-toggle').classList.contains('on'),
+    missions: MISSIONS_ENABLED ? ($('missions-toggle') && $('missions-toggle').classList.contains('on')) : false,
     providerOrder,
     providers,
   }
@@ -1710,7 +1719,9 @@ function collectOnboarding() {
 }
 
 function showView(id) {
-  for (const v of ['view-main', 'view-onboarding', 'view-forge', 'view-missions', 'view-settings']) {
+  const views = ['view-main', 'view-onboarding', 'view-forge', 'view-settings']
+  if (MISSIONS_ENABLED) views.splice(3, 0, 'view-missions')
+  for (const v of views) {
     $(v).hidden = v !== id
   }
 }
@@ -2067,6 +2078,7 @@ async function showBurnChallenge() {
 
 // Missions are opt-in, then the button opens the mission launcher.
 async function openForge() {
+  if (!MISSIONS_ENABLED) return
   if (!config) config = await window.maxx.getConfig()
   setPopoverMode('compact')
   showView('view-missions')
@@ -2084,41 +2096,43 @@ async function openGoalBurn() {
   })
 }
 
-$('forge-btn').addEventListener('click', openForge)
 $('forge-back').addEventListener('click', showMain)
-$('missions-back').addEventListener('click', missionBack)
-$('missions-decline').addEventListener('click', async () => {
-  config = await window.maxx.setMissions(false)
-  showMain()
-})
-$('missions-enable').addEventListener('click', async () => {
-  config = await window.maxx.setMissions(true)
-  renderMissions()
-})
-$('mission-project').addEventListener('click', () => {
-  setMissionLoading('mission-project', true)
-  requestAnimationFrame(() => {
-    showProjectMission()
-    setMissionLoading('mission-project', false)
+if (MISSIONS_ENABLED) {
+  $('forge-btn').addEventListener('click', openForge)
+  $('missions-back').addEventListener('click', missionBack)
+  $('missions-decline').addEventListener('click', async () => {
+    config = await window.maxx.setMissions(false)
+    showMain()
   })
-})
-$('mission-project-back').addEventListener('click', () => {
-  showMissionHub()
-})
-$('mission-burn').addEventListener('click', () => {
-  setMissionLoading('mission-burn', true)
-  showBurnChallenge().catch((err) => {
-    $('burn-note').textContent = err && err.message ? err.message : 'Could not load burn ideas.'
-  }).finally(() => {
-    setMissionLoading('mission-burn', false)
+  $('missions-enable').addEventListener('click', async () => {
+    config = await window.maxx.setMissions(true)
+    renderMissions()
   })
-})
-$('mission-burn-back').addEventListener('click', () => showMissionHub())
-$('mission-burn-refresh').addEventListener('click', () => {
-  loadBurnChallenges().catch((err) => {
-    $('burn-note').textContent = err && err.message ? err.message : 'Could not refresh burn ideas.'
+  $('mission-project').addEventListener('click', () => {
+    setMissionLoading('mission-project', true)
+    requestAnimationFrame(() => {
+      showProjectMission()
+      setMissionLoading('mission-project', false)
+    })
   })
-})
+  $('mission-project-back').addEventListener('click', () => {
+    showMissionHub()
+  })
+  $('mission-burn').addEventListener('click', () => {
+    setMissionLoading('mission-burn', true)
+    showBurnChallenge().catch((err) => {
+      $('burn-note').textContent = err && err.message ? err.message : 'Could not load burn ideas.'
+    }).finally(() => {
+      setMissionLoading('mission-burn', false)
+    })
+  })
+  $('mission-burn-back').addEventListener('click', () => showMissionHub())
+  $('mission-burn-refresh').addEventListener('click', () => {
+    loadBurnChallenges().catch((err) => {
+      $('burn-note').textContent = err && err.message ? err.message : 'Could not refresh burn ideas.'
+    })
+  })
+}
 $('burn-list').addEventListener('click', async (event) => {
   const btn = event.target.closest('[data-burn-action]')
   if (!btn) return

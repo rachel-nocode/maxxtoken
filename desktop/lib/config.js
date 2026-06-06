@@ -43,6 +43,8 @@ const DEFAULT_CONFIG = {
     claude: { name: 'Claude', plan: 'Max', monthly: 200, enabled: false, tier: 'core' },
     // Codex CLI runs on the OpenAI / ChatGPT Pro subscription.
     codex: { name: 'ChatGPT', plan: 'Pro', monthly: 200, enabled: false, tier: 'core' },
+    opencode: { name: 'OpenCode', plan: 'Go', monthly: 60, enabled: false, tier: 'core' },
+    opencodego: { name: 'OpenCode Go', plan: 'Go', monthly: 60, enabled: false, tier: 'core' },
     openai: { name: 'OpenAI API', plan: 'Admin API', monthly: 50, enabled: false, tier: 'extended' },
     azureopenai: { name: 'Azure OpenAI', plan: 'Deployment', monthly: 20, enabled: false, tier: 'hidden' },
     cursor: { name: 'Cursor', plan: 'Pro', monthly: 20, enabled: false, tier: 'core' },
