@@ -130,8 +130,9 @@ function burnHeader({ title = 'BURN', backLabel = '', diamondActive = false, set
     `<button type="button" data-burn-nav="optimize" aria-label="Optimize" style="${burnBtnStyle(true)}">${burnIcon('sliders', 14, BURN.limeText)}</button>` +
     optimizeDot +
     `</span>`
-  const diamond =
-    `<button type="button" data-burn-nav="missions" aria-label="Missions" style="${burnBtnStyle(diamondActive)}">${burnDiamondGlyph(11)}</button>`
+  // Missions hidden from UI (code retained). Render nothing for the diamond entry.
+  const diamond = ''
+  void diamondActive
   const gear =
     `<button type="button" data-burn-nav="settings" aria-label="Settings" style="${burnBtnStyle(settingsActive)}">${burnIcon('settings', 13, settingsActive ? BURN.lime : BURN.text2)}</button>`
 
