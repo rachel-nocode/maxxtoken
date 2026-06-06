@@ -479,34 +479,6 @@ function drawRect(set, scale, x, y, w, h, color) {
   }
 }
 
-function pointInPolygon(x, y, points) {
-  let inside = false
-  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-    const xi = points[i][0]
-    const yi = points[i][1]
-    const xj = points[j][0]
-    const yj = points[j][1]
-    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi
-    if (intersect) inside = !inside
-  }
-  return inside
-}
-
-function drawPolygon(set, scale, points, color) {
-  const scaled = points.map(([x, y]) => [x * scale, y * scale])
-  const xs = scaled.map(([x]) => x)
-  const ys = scaled.map(([, y]) => y)
-  const minX = Math.floor(Math.min(...xs))
-  const maxX = Math.ceil(Math.max(...xs))
-  const minY = Math.floor(Math.min(...ys))
-  const maxY = Math.ceil(Math.max(...ys))
-  for (let y = minY; y <= maxY; y++) {
-    for (let x = minX; x <= maxX; x++) {
-      if (pointInPolygon(x + 0.5, y + 0.5, scaled)) set(x, y, color)
-    }
-  }
-}
-
 function drawTrayCells(set, scale, { x, y, cells, filled, cellW, cellH, gap, color }) {
   const empty = rgba(TRAY_BURN.empty)
   for (let i = 0; i < cells; i++) {
@@ -514,44 +486,38 @@ function drawTrayCells(set, scale, { x, y, cells, filled, cellW, cellH, gap, col
   }
 }
 
-function drawTrayReceipt(set, scale, x, y) {
-  const white = rgba(TRAY_BURN.white)
-  const black = rgba(TRAY_BURN.black)
-  drawPolygon(set, scale, [
-    [x, y], [x + 14, y], [x + 14, y + 15], [x + 12, y + 13.2],
-    [x + 10, y + 15], [x + 8, y + 13.2], [x + 6, y + 15],
-    [x + 4, y + 13.2], [x + 2, y + 15], [x, y + 13.2],
-  ], white)
-  drawPolygon(set, scale, [
-    [x + 7.7, y + 2.8], [x + 3.8, y + 9.4], [x + 6.7, y + 9.4],
-    [x + 5.6, y + 14], [x + 10.3, y + 7.2], [x + 7.4, y + 7.2],
-  ], black)
-}
-
 function trayBurnbarImage(snap, config) {
   const providers = trayActiveProviders(snap, config).slice(0, 3)
   const multi = providers.length > 1
-  const width = multi ? 45 : 22
+  // Receipt glyph removed — icon is now just the segmented burn bar(s).
+  // Thinner cells, capped at 4 so a maximum of 4 fit; filled segments white.
+  const cells = 4
+  const cellW = 4
+  const cellH = 4
+  const gap = 2
+  const barW = cells * cellW + (cells - 1) * gap
   const height = 22
-  const provider = providers[0] || {}
+  const width = barW
   const scale = 2
+  const white = rgba(TRAY_BURN.white)
 
   const png = createPng(width * scale, height * scale, (set) => {
-    drawTrayReceipt(set, scale, multi ? 0 : 3, multi ? 3 : 1)
     if (multi) {
+      const rowH = cellH + 2
+      const startY = Math.round((height - providers.length * rowH) / 2)
       providers.forEach((item, index) => {
-        const cells = 4
         const pct = trayPctForProvider(item, config)
         const filled = Math.max(0, Math.min(cells, Math.round((pct / 100) * cells)))
-        const color = rgba(trayProviderWarning(item, config) ? TRAY_BURN.coral : TRAY_BURN.lime)
-        drawTrayCells(set, scale, { x: 20, y: 3 + index * 6, cells, filled, cellW: 5, cellH: 4, gap: 2, color })
+        const color = trayProviderWarning(item, config) ? rgba(TRAY_BURN.coral) : white
+        drawTrayCells(set, scale, { x: 0, y: startY + index * rowH, cells, filled, cellW, cellH, gap, color })
       })
     } else {
-      const cells = 6
+      const provider = providers[0] || {}
       const pct = trayPctForProvider(provider, config)
       const filled = Math.max(0, Math.min(cells, Math.round((pct / 100) * cells)))
-      const color = rgba(trayProviderWarning(provider, config) ? TRAY_BURN.coral : TRAY_BURN.lime)
-      drawTrayCells(set, scale, { x: 0, y: 18, cells, filled, cellW: 3, cellH: 4, gap: 1, color })
+      const color = trayProviderWarning(provider, config) ? rgba(TRAY_BURN.coral) : white
+      const y = Math.round((height - cellH) / 2)
+      drawTrayCells(set, scale, { x: 0, y, cells, filled, cellW, cellH, gap, color })
     }
   })
   const image = nativeImage.createFromBuffer(png, { scaleFactor: scale })
