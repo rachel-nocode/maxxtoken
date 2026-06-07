@@ -57,7 +57,7 @@ const burnState = {
   provAlert: {}, // providerId -> 'inherit' | 'off' | '15' | '25' | '40' | '60'
   justSaved: false,
   justExported: false,
-  version: 'v0.2.4',
+  version: 'v0.2.8',
   updatesOpen: false,
   update: { status: 'idle', percent: 0, error: '' }, // mirrors main's updateState
 }
