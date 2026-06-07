@@ -227,18 +227,6 @@ async function burnOptPrimaryAction(sig) {
   if (!a) return
   try {
     if (a.type === 'external' && a.url) window.maxx?.openExternal?.(a.url)
-    else if (a.type === 'copyCmd' && a.text && window.maxx?.copyText) {
-      // Recommend-only: copy the setup command to the clipboard. We never run it.
-      await window.maxx.copyText(a.text)
-      burnState.optCopiedCmd = sig.id
-      burnRender()
-      setTimeout(() => {
-        if (burnState.optCopiedCmd === sig.id) {
-          burnState.optCopiedCmd = null
-          if (burnState.screen === 'optimize') burnRender()
-        }
-      }, 1800)
-    }
     else if (a.type === 'providerLink') window.maxx?.openProviderLink?.(sig.provider, a.kind || 'dashboard')
     else if (a.type === 'contextScan' && window.maxx?.scanContextBloat) {
       burnState.optContextScanLoading[sig.provider] = true
@@ -507,8 +495,9 @@ function burnHandleClick(e) {
     return
   }
 
-  // Optimize: per-agent "Copy" on a cross-agent tool card (RTK). Attribute =
-  // "<copiedKey>::<uri-encoded command>". Recommend-only: clipboard, no run.
+  // Optimize: generic "Copy" button (e.g. cache cleanup prompts). Attribute =
+  // "<copiedKey>::<uri-encoded text>". Copies to clipboard; flags the key for a
+  // brief "Copied" state.
   const optCopyText = e.target.closest('[data-burn-opt-copy-text]')
   if (optCopyText) {
     const raw = optCopyText.getAttribute('data-burn-opt-copy-text') || ''

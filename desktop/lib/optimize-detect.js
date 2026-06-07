@@ -103,17 +103,6 @@ const CONFIG = {
   // Snooze hides a signal for a fixed window; dismiss hides it until the
   // underlying metric moves materially (re-trigger deltas below). See
   // optimize-handoff/DATA.md "Re-trigger after Dismiss".
-  // Noisy command output (#9, recommend-only): coding agents run shell commands
-  // (installs, git, test runners, builds) whose verbose output floods the
-  // context window EVERY run. RTK (rtk-ai/rtk) is a local binary that compresses
-  // that output 60–90% before it reaches the agent. We never install or modify
-  // anything — the card only shows the user the one-line setup command for their
-  // OWN agent and copies it on click. Fires once per supported agent that's
-  // connected + has real token usage (so we don't nag on an idle integration).
-  commandNoise: {
-    agents: ['claude', 'codex', 'cursor'], // default-on set (RTK "full hook" + Codex rules)
-    minInput: 1, // require at least 1 input token (real shell user, not a dormant connect)
-  },
   snoozeDays: 30,
   retrigger: {
     cacheDropPts: 10, // cache hit % falls another 10pts → resurface
@@ -878,76 +867,9 @@ function detectPace(provider, now) {
 }
 
 // ---------------------------------------------------------------------------
-// DETECTOR 9 — noisy command output (RTK recommendation, RECOMMEND-ONLY)
-// Verified install/wire commands from rtk-ai/rtk README (master branch) +
-// docs/guide/getting-started/supported-agents.md. We copy the command to the
-// clipboard; the user runs it themselves. maxxToken installs/edits NOTHING.
-//   claude  → rtk init -g            (transparent Bash-tool rewrite; restart CC)
-//   codex   → rtk init --global --codex   (rules file Codex follows)
-//   cursor  → rtk init --global --agent cursor (transparent rewrite; restart)
-// RTK README: "~80% reduction in token usage" over a 30-min session; tagline
-// "reduce LLM token consumption by 60-90%". We show that range, labelled est.
-// ---------------------------------------------------------------------------
-const RTK_SETUP = {
-  claude: { cmd: 'rtk init -g', note: 'Restart Claude Code after running it.' },
-  codex: { cmd: 'rtk init --global --codex', note: 'Adds a rules file Codex follows.' },
-  cursor: { cmd: 'rtk init --global --agent cursor', note: 'Restart Cursor after running it.' },
-  gemini: { cmd: 'rtk init --global --gemini', note: 'Restart Gemini CLI after running it.' },
-  copilot: { cmd: 'rtk init --global --copilot', note: 'Restart after running it.' },
-  opencode: { cmd: 'rtk init --global --opencode', note: 'Restart after running it.' },
-}
-
-function detectCommandNoise(provider) {
-  const C = CONFIG.commandNoise
-  if (!C.agents.includes(provider.id)) return null
-  const setup = RTK_SETUP[provider.id]
-  if (!setup) return null
-  // Only nudge agents the user actually drives — needs real input volume.
-  const usage = tokenUsage(provider)
-  const totalIn = usage ? (Number(usage.input) || 0) + (Number(usage.cached) || 0) : 0
-  if (totalIn < C.minInput) return null
-
-  const install = `# 1. install RTK (once)\nbrew install rtk\n# or: curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh\n\n# 2. wire it into ${providerName(provider)}\n${setup.cmd}`
-
-  return {
-    id: `${provider.id}:commandNoise`,
-    kind: 'commandNoise',
-    provider: provider.id,
-    providerName: providerName(provider),
-    plan: planLabel(provider),
-    severity: 'nudge',
-    title: 'SHRINK NOISY COMMAND OUTPUT',
-    metric: '60–90%',
-    metricValue: 0, // static recommendation — no metric to re-trigger on
-    metricUnit: 'LESS NOISE',
-    signal: `Installs, git, tests and builds dump long output into context every run.`,
-    saving: 0, // recommend-only: token saver, not a $ figure we can claim
-    savingNote: 'EST.',
-    softSaving: true, // never counts toward recoverable / headroom $
-    noDollar: true, // UI: hide the $ column, this is a token/context win
-    fix: 'Run RTK to compress that output before the agent reads it.',
-    source: 'rtk-ai/rtk (you run it — nothing is changed for you)',
-    action: { type: 'copyCmd', text: `${setup.cmd}\n`, full: install },
-    meter: { type: 'split', good: 75 }, // lime = noise removed
-    detail: {
-      rows: [
-        { l: 'Tool', v: 'RTK (local binary)', tone: 'text' },
-        { l: 'Cuts command output', v: '60–90%', tone: 'lime', strong: true },
-        { l: 'Setup command', v: setup.cmd, tone: 'text' },
-        { l: 'After', v: setup.note, tone: 'text' },
-      ],
-      barsTitle: null,
-      bars: null,
-      note: 'maxxToken changes nothing. Copy the command and run it yourself; RTK trims verbose output (errors and summaries stay). Remove anytime with brew uninstall rtk.',
-      primary: 'Copy setup command',
-    },
-  }
-}
-
-// ---------------------------------------------------------------------------
 // public API
 // ---------------------------------------------------------------------------
-const DETECTORS = [detectCache, detectRatio, detectReset, detectDormant, detectConfigBloat, detectOverdrive, detectPace, detectCommandNoise]
+const DETECTORS = [detectCache, detectRatio, detectReset, detectDormant, detectConfigBloat, detectOverdrive, detectPace]
 
 function saveModeAction(kind, title, detail, provider, priority) {
   return {
@@ -1046,51 +968,6 @@ function buildSaveMode(snapshot, signals, opts = {}) {
   }
 }
 
-// Tool recommendations (e.g. RTK command-noise) fire once PER agent, but they
-// recommend the SAME tool — so we collapse the per-agent signals into one
-// cross-agent card that's tagged with every eligible agent and carries each
-// agent's own copyable setup command. Keyed by kind so future tool detectors
-// can opt in the same way.
-function mergeToolSignals(signals) {
-  const noise = signals.filter((s) => s.kind === 'commandNoise')
-  if (noise.length < 2) return signals // 0 or 1 → nothing to merge
-
-  const agents = noise.map((s) => ({
-    id: s.provider,
-    name: s.providerName,
-    cmd: (s.action && s.action.text ? String(s.action.text) : '').trim(),
-    note: (s.detail && Array.isArray(s.detail.rows)
-      ? (s.detail.rows.find((r) => r.l === 'After') || {}).v
-      : '') || '',
-  }))
-  const base = noise[0]
-  const install = 'brew install rtk'
-  const block = ['# 1. install RTK once', install, '', '# 2. wire your agent:']
-  for (const a of agents) block.push(`# ${a.name}`, a.cmd)
-
-  const merged = {
-    ...base,
-    id: 'tools:commandNoise',
-    provider: base.provider, // first agent → header glyph + a filter match
-    providers: agents.map((a) => a.id), // every agent → shows under each filter chip
-    providerName: agents.map((a) => a.name).join(' + '),
-    agents, // rendered as a per-agent copy list in the expanded card
-    action: { type: 'copyCmd', text: `${install}\n`, full: block.join('\n') },
-    detail: {
-      ...base.detail,
-      rows: [
-        { l: 'Tool', v: 'RTK (local binary)', tone: 'text' },
-        { l: 'Cuts command output', v: '60–90%', tone: 'lime', strong: true },
-        { l: 'Install once', v: install, tone: 'text' },
-      ],
-      primary: 'Copy install command',
-    },
-  }
-  const rest = signals.filter((s) => s.kind !== 'commandNoise')
-  rest.push(merged)
-  return rest
-}
-
 // detectSignals(snapshot, { now }) → Signal[] sorted by saving desc.
 function detectSignals(snapshot, opts = {}) {
   const now = opts.now || Date.now()
@@ -1108,9 +985,8 @@ function detectSignals(snapshot, opts = {}) {
       if (sig) signals.push(sig)
     }
   }
-  const merged = mergeToolSignals(signals)
-  merged.sort((a, b) => b.saving - a.saving)
-  return merged
+  signals.sort((a, b) => b.saving - a.saving)
+  return signals
 }
 
 // buildOptimizeModel(snapshot) → everything the window needs in one object.
@@ -1211,7 +1087,7 @@ const OPTIMIZE_API = {
   // exposed for tests / tuning
   CONFIG,
   FAMILY_RATES,
-  _detectors: { detectCache, detectRatio, detectReset, detectDormant, detectConfigBloat, detectOverdrive, detectPace, detectCommandNoise },
+  _detectors: { detectCache, detectRatio, detectReset, detectDormant, detectConfigBloat, detectOverdrive, detectPace },
   _fmt: { fmtUSD, fmtTokRaw, pct },
 }
 

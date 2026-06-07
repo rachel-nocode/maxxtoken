@@ -245,28 +245,6 @@ function optCardExpanded(state, s) {
   const cachePrompts = optCachePromptRows(state, s)
   if (cachePrompts) blocks.push(cachePrompts)
 
-  // Cross-agent tool card (RTK): one copyable wire-up command per tagged agent.
-  if (Array.isArray(s.agents) && s.agents.length) {
-    const rows = s.agents.map((a) => {
-      const copied = state.optCopiedCmd === `${s.id}:${a.id}`
-      return (
-        `<div style="${bstyle({ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, padding: '6px 0', borderTop: `1px solid ${BURN.border}`, alignItems: 'center' })}">` +
-        `<div style="${bstyle({ minWidth: 0 })}">` +
-        `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 6 })}">` +
-        burnProvGlyph(a.id, 11, BURN.text3) +
-        `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10.5, fontWeight: 700, color: BURN.text, letterSpacing: 0.3 })}">${burnEsc(a.name)}</span>` +
-        `</div>` +
-        `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 10, color: BURN.text2, marginTop: 3, overflowWrap: 'anywhere' })}">${burnEsc(a.cmd)}</div>` +
-        `</div>` +
-        `<button type="button" data-burn-opt-copy-text="${burnEsc(`${s.id}:${a.id}`)}::${burnEsc(encodeURIComponent(a.cmd))}" style="${bstyle({ background: 'transparent', border: `1px solid ${BURN.accentBtnBorder}`, borderRadius: 2, color: BURN.limeText, fontFamily: BURN_FONT.mono, fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', padding: '4px 7px', cursor: 'pointer', whiteSpace: 'nowrap' })}">${copied ? 'Copied' : 'Copy'}</button>` +
-        `</div>`
-      )
-    }).join('')
-    blocks.push(burnSectionHead('WIRE YOUR AGENT', '') + rows)
-  }
-
-  const justCopied = state.optCopiedCmd === s.id
-  const primaryLabel = justCopied ? 'Copied ✓' : (d.primary || 'Apply →')
   const primary =
     `<button type="button" data-burn-opt-action="primary:${burnEsc(s.id)}" style="${bstyle({
       background: BURN.lime,
@@ -279,7 +257,7 @@ function optCardExpanded(state, s) {
       letterSpacing: 0.3,
       padding: '7px 11px',
       cursor: 'pointer',
-    })}">${burnEsc(primaryLabel)}</button>`
+    })}">${burnEsc(d.primary || 'Apply →')}</button>`
   const actions =
     `<div style="${bstyle({ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 })}">` +
     primary +
@@ -325,16 +303,10 @@ function optCard(state, s) {
     `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8, color: BURN.text3, letterSpacing: 0.4, marginTop: 3 })}">${burnEsc(s.metricUnit)}</div>` +
     `</div>` +
     `<div style="${bstyle({ flex: 1 })}">${optMeter(s.meter)}</div>` +
-    // Recommend-only token savers (s.noDollar) carry no $ figure — show a small
-    // RECOMMEND tag instead of a misleading "$0".
-    (s.noDollar
-      ? `<div style="${bstyle({ textAlign: 'right', minWidth: 52 })}">` +
-        `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8.5, fontWeight: 700, color: accentText, border: `1px solid ${accent}`, borderRadius: 2, padding: '2px 5px', letterSpacing: 0.5, display: 'inline-block' })}">TOKENS</div>` +
-        `</div>`
-      : `<div style="${bstyle({ textAlign: 'right', minWidth: 52 })}">` +
-        `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 17, fontWeight: 700, color: savingColor, lineHeight: 1, fontVariantNumeric: 'tabular-nums' })}">${savePrefix}$${Math.round(s.saving)}</div>` +
-        `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8, color: BURN.text3, letterSpacing: 0.3, marginTop: 3 })}">${burnEsc(s.savingNote)}</div>` +
-        `</div>`) +
+    `<div style="${bstyle({ textAlign: 'right', minWidth: 52 })}">` +
+    `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 17, fontWeight: 700, color: savingColor, lineHeight: 1, fontVariantNumeric: 'tabular-nums' })}">${savePrefix}$${Math.round(s.saving)}</div>` +
+    `<div style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 8, color: BURN.text3, letterSpacing: 0.3, marginTop: 3 })}">${burnEsc(s.savingNote)}</div>` +
+    `</div>` +
     `</div>` +
     // line 3 — fix + chevron
     `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 8, marginTop: 9 })}">` +
