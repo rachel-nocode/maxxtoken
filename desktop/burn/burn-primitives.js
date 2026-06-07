@@ -15,8 +15,8 @@ function burnProviderVisibleById(state, id) {
   return burnProviderVisible(state && state.config && state.config.providers && state.config.providers[id])
 }
 
-// THE progress bar. 28×5 default; 20×3 for per-model sub-bars.
-function burnSegBar({ pct, burning = false, cells = 28, height = 5, gap = 2 }) {
+// THE progress bar. 40×3 default (thin segments, compact); 28×2 for per-model sub-bars.
+function burnSegBar({ pct, burning = false, cells = 40, height = 3, gap = 1 }) {
   const clamped = Math.max(0, Math.min(100, Number(pct) || 0))
   const lit = Math.round((clamped / 100) * cells)
   const litColor = burning ? BURN.warn : BURN.lime
