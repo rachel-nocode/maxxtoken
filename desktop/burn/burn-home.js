@@ -81,13 +81,13 @@ function burnWindowBar(label, pct, reset, burning, value) {
   const hasPct = Number.isFinite(pctNum)
   const valueText = value || (hasPct ? `${pctNum}%` : '—')
   const head =
-    `<div style="${bstyle({ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 })}">` +
+    `<div style="${bstyle({ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 })}">` +
     `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9.5, color: BURN.text2, letterSpacing: 0.7 })}">${burnEsc(label)}</span>` +
     `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 14, fontWeight: 700, color: burning ? BURN.warnText : BURN.text, fontVariantNumeric: 'tabular-nums' })}">` +
     `${burnEsc(valueText)}</span>` +
     `</div>`
   const caption =
-    `<div style="${bstyle({ marginTop: 3, fontFamily: BURN_FONT.mono, fontSize: 9, color: BURN.text2, letterSpacing: 0.5, textAlign: 'right', fontVariantNumeric: 'tabular-nums' })}">` +
+    `<div style="${bstyle({ marginTop: 5, fontFamily: BURN_FONT.mono, fontSize: 9, color: BURN.text2, letterSpacing: 0.5, textAlign: 'right', fontVariantNumeric: 'tabular-nums' })}">` +
     `RESETS IN ${burnEsc(reset.toUpperCase())}</div>`
   return `<div>${head}${burnSegBar({ pct: hasPct ? pctNum : 0, burning })}${caption}</div>`
 }
@@ -121,7 +121,7 @@ function burnModelRow(m, burning) {
     `<span style="${bstyle({ color: m.usd > 0 ? BURN.limeText : BURN.text2, minWidth: 56, textAlign: 'right' })}">${m.usd > 0 ? '$' + m.usd.toFixed(2) : 'incl.'}</span>` +
     `<span style="${bstyle({ color: burning ? BURN.warnText : BURN.text, minWidth: 32, textAlign: 'right', fontWeight: 600 })}">${m.burn}%</span>` +
     `</div>`
-  return `<div>${top}${burnSegBar({ pct: m.burn, burning, cells: 28, height: 2 })}</div>`
+  return `<div>${top}${burnSegBar({ pct: m.burn, burning, cells: 20, height: 3 })}</div>`
 }
 
 // In-place detail panel below a collapsed row.

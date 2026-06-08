@@ -117,6 +117,12 @@ const KEY_PROVIDERS = new Set([
 
 let tray = null
 let popover = null
+// Timestamp of the last popover hide. A tray click while the popover is open
+// fires `blur` (which hides it) just before the tray `click` handler runs, so
+// the click would otherwise re-show it. We suppress the re-open if the hide
+// happened within this guard window.
+let popoverHiddenAt = 0
+const TRAY_REOPEN_GUARD_MS = 250
 let refreshTimer = null
 let heavyRefreshTimer = null
 let lastSnapshot = null
@@ -215,6 +221,7 @@ function cachedSnapshot() {
 
 function setTraySnapshot(snap) {
   lastSnapshot = snap
+  persistDetectedProviderPlans(snap)
   try {
     widgetSnapshot.saveWidgetSnapshot(snap)
   } catch {
@@ -223,6 +230,35 @@ function setTraySnapshot(snap) {
   updateTrayAppearance(snap, loadConfig())
   maybePostMaxxAlert(snap)
   maybePostQuotaNotifications(snap)
+}
+
+function persistDetectedProviderPlans(snap) {
+  const providers = Array.isArray(snap?.providers) ? snap.providers : []
+  const detected = providers.filter((provider) => (
+    provider?.id &&
+    provider.connected &&
+    typeof provider.plan === 'string' &&
+    provider.plan.trim()
+  ))
+  if (!detected.length) return
+
+  const config = loadConfig()
+  let changed = false
+  for (const provider of detected) {
+    const id = canonicalProviderId(provider.id)
+    const current = config.providers?.[id]
+    const plan = provider.plan.trim()
+    if (!current || current.plan === plan) continue
+    config.providers[id] = { ...current, plan }
+    changed = true
+  }
+  if (!changed) return
+
+  try {
+    saveConfig(config)
+  } catch (err) {
+    logger.warn('config', 'detected plan persist failed', { error: err && err.message ? err.message : String(err) })
+  }
 }
 
 let workerRequestId = 0
@@ -479,23 +515,21 @@ function drawRect(set, scale, x, y, w, h, color) {
   }
 }
 
-function drawTrayCells(set, scale, { x, y, cells, filled, cellW, cellH, gap, color }) {
+// Continuous fill bar: empty track + a solid filled portion to pct (no segments).
+function drawTrayBar(set, scale, { x, y, barW, barH, pct, color }) {
   const empty = rgba(TRAY_BURN.empty)
-  for (let i = 0; i < cells; i++) {
-    drawRect(set, scale, x + i * (cellW + gap), y, cellW, cellH, i < filled ? color : empty)
-  }
+  drawRect(set, scale, x, y, barW, barH, empty)
+  const fillW = Math.max(0, Math.min(barW, (Math.max(0, Math.min(100, pct)) / 100) * barW))
+  if (fillW > 0) drawRect(set, scale, x, y, fillW, barH, color)
 }
 
 function trayBurnbarImage(snap, config) {
   const providers = trayActiveProviders(snap, config).slice(0, 3)
   const multi = providers.length > 1
-  // Receipt glyph removed — icon is now just the segmented burn bar(s).
-  // Thinner cells, capped at 4 so a maximum of 4 fit; filled segments white.
-  const cells = 4
-  const cellW = 4
-  const cellH = 4
-  const gap = 2
-  const barW = cells * cellW + (cells - 1) * gap
+  // Receipt glyph removed — icon is now just the burn bar(s). Continuous fill
+  // (no segmented cells); width matches the prior 4-cell bar so layout is stable.
+  const barW = 22
+  const barH = 4
   const height = 22
   const width = barW
   const scale = 2
@@ -503,21 +537,19 @@ function trayBurnbarImage(snap, config) {
 
   const png = createPng(width * scale, height * scale, (set) => {
     if (multi) {
-      const rowH = cellH + 2
+      const rowH = barH + 2
       const startY = Math.round((height - providers.length * rowH) / 2)
       providers.forEach((item, index) => {
         const pct = trayPctForProvider(item, config)
-        const filled = Math.max(0, Math.min(cells, Math.round((pct / 100) * cells)))
         const color = trayProviderWarning(item, config) ? rgba(TRAY_BURN.coral) : white
-        drawTrayCells(set, scale, { x: 0, y: startY + index * rowH, cells, filled, cellW, cellH, gap, color })
+        drawTrayBar(set, scale, { x: 0, y: startY + index * rowH, barW, barH, pct, color })
       })
     } else {
       const provider = providers[0] || {}
       const pct = trayPctForProvider(provider, config)
-      const filled = Math.max(0, Math.min(cells, Math.round((pct / 100) * cells)))
       const color = trayProviderWarning(provider, config) ? rgba(TRAY_BURN.coral) : white
-      const y = Math.round((height - cellH) / 2)
-      drawTrayCells(set, scale, { x: 0, y, cells, filled, cellW, cellH, gap, color })
+      const y = Math.round((height - barH) / 2)
+      drawTrayBar(set, scale, { x: 0, y, barW, barH, pct, color })
     }
   })
   const image = nativeImage.createFromBuffer(png, { scaleFactor: scale })
@@ -565,7 +597,10 @@ function createPopover() {
   popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
   popover.loadFile(path.join(__dirname, 'index.html'))
   popover.on('blur', () => {
-    if (popover && popover.isVisible()) popover.hide()
+    if (popover && popover.isVisible()) {
+      popoverHiddenAt = Date.now()
+      popover.hide()
+    }
   })
 }
 
@@ -621,6 +656,10 @@ async function togglePopover() {
     popover.hide()
     return
   }
+  // The popover loses focus and hides the instant the tray is clicked, so an
+  // open popover is already hidden by the time this handler runs. Treat a click
+  // that lands right after that auto-hide as "close", not "re-open".
+  if (Date.now() - popoverHiddenAt < TRAY_REOPEN_GUARD_MS) return
   await showPopover()
 }
 

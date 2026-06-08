@@ -159,6 +159,24 @@ function planLabel(raw) {
   return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : null
 }
 
+// The live usage endpoint omits plan_type, so the live path otherwise loses it
+// and aggregate falls back to a stale persisted plan. The id_token JWT always
+// carries the authoritative plan under chatgpt_plan_type — decode it here.
+function planFromIdToken(idToken) {
+  if (typeof idToken !== 'string') return null
+  const parts = idToken.split('.')
+  if (parts.length < 2) return null
+  try {
+    let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    payload += '='.repeat((4 - (payload.length % 4)) % 4)
+    const claims = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
+    const auth = claims && claims['https://api.openai.com/auth']
+    return (auth && auth.chatgpt_plan_type) || null
+  } catch {
+    return null
+  }
+}
+
 function numberHeader(headers, key) {
   const raw = headers?.get ? headers.get(key) : null
   if (raw == null || raw === '') return null
@@ -409,7 +427,12 @@ async function readLiveWithAuth(state) {
   }
   if (!resp.ok) throw new Error(`Codex usage request failed (${resp.status}).`)
 
-  return parseLiveUsage(await resp.json(), resp.headers)
+  const result = parseLiveUsage(await resp.json(), resp.headers)
+  if (!result.planType) {
+    const raw = planFromIdToken(state.auth.tokens?.id_token)
+    if (raw) result.planType = planLabel(raw) || raw
+  }
+  return result
 }
 
 async function readLive() {
@@ -519,7 +542,7 @@ function readLocal(options = {}) {
   const toMs = (s) => (s ? s * 1000 : null)
   const result = {
     connected: true,
-    planType: rl.plan_type || null,
+    planType: planLabel(rl.plan_type) || rl.plan_type || null,
     lastActive: mtime,
     windows: [],
     tokenUsage,
