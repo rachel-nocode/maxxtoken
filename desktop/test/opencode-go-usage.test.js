@@ -7,10 +7,12 @@ const { readLocalUsageFromDb, localDbCandidates } = og._private
 
 test('opencode go reads local opencode.db usage windows by providerID and timestamps', () => {
   const now = Date.parse('2026-05-21T12:00:00.000Z')
+  // Rows as sqlite3 -json returns them for the adapter's aliased query
+  // (SELECT "created_at" AS ts, "cost" AS cost ...): keys are ts/cost.
   const outputRows = [
-    { providerID: 'opencode-go', role: 'assistant', cost: '3', created_at: '2026-05-21T11:00:00.000Z' },
-    { providerID: 'opencode-go', role: 'assistant', cost: 2, created_at: '2026-05-20T13:00:00.000Z' },
-    { providerID: 'opencode-go', role: 'assistant', cost: 5, created_at: '2026-05-20T10:00:00.000Z' },
+    { ts: '2026-05-21T11:00:00.000Z', cost: '3' },
+    { ts: '2026-05-20T13:00:00.000Z', cost: 2 },
+    { ts: '2026-05-20T10:00:00.000Z', cost: 5 },
   ]
   const read = (_cmd, args) => {
     const query = String(Array.isArray(args) ? args[3] : args)

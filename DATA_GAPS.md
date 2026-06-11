@@ -16,15 +16,15 @@ not as a structured column on assistant rows.
 2. Fallback: model name as effort proxy (fable/opus = high-cost class, sonnet = mid, haiku = low).
 If neither resolves → R2 skips that session (no partial verdicts).
 
-## G3 — `~/.maxxtoken/usage-history.json` currently EMPTY (0 bytes)
-`usage-history.js` writes async fire-and-forget; the file on this machine is empty even though
-`quota-notifications.json` is current. Either snapshot recording isn't running on this build or a
-write was truncated.
-**Workaround:** R4 must run from BOTH feeds: Codex in-band `rate_limits` (always present in rollouts,
-needs no app history) and Claude usage-history samples when ≥ `MIN_HISTORY_SAMPLES`. If Claude history
-is empty → R4 emits Codex-only verdicts; never interpolate Claude limit timing.
-**Action item:** debug why usage-history.json is empty before shipping the limit forecast (forecast
-quality depends on it for Claude).
+## G3 — `~/.maxxtoken/usage-history.json` currently EMPTY (0 bytes) — ✅ FIXED
+Root cause: the snapshot worker is `child.kill()`ed by the main process as soon as it posts its
+result, and `writeHistory` used fire-and-forget `fs.promises.writeFile` — which truncates before
+writing. SIGTERM in that window left a 0-byte file; the next surviving write self-healed it, so
+the corruption was intermittent. Fixed in `lib/usage-history.js`: synchronous atomic write
+(pid-suffixed tmp + rename) — readers see old or new content, never torn. Regression test in
+`test/usage-history-write.test.js`.
+R4 still runs from BOTH feeds (Codex in-band `rate_limits` + Claude usage-history samples);
+Claude samples now accumulate reliably for the limit forecast.
 
 ## G4 — Claude limit EVENTS (the actual "you hit the wall" moment): INDIRECT
 Anthropic OAuth usage API gives utilization %, not a discrete "limit reached" event. The transcript
