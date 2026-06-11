@@ -33,7 +33,24 @@ module.exports = {
     minWeightedResentTokens: 1_500_000,
   },
 
-  r2: {}, // effort mismatch — populated in Loop 1b
+  r2: {
+    // Turns lacking effort or prompt length are skipped; if fewer than this
+    // many turns are evaluable across all sessions, emit nothing.
+    minEvaluableTurns: 8,
+    // Minimum flagged turns before "effort mismatch" is a habit, not noise.
+    minFlaggedTurns: 5,
+    // A prompt shorter than this is a "quick ask".
+    shortPromptChars: 280,
+    // ...and an answer smaller than this means no big deliverable came back.
+    smallOutputTokens: 1_200,
+    // Effort levels considered premium. Codex exposes effort per turn;
+    // Claude Code session effort comes from the attachment-row heuristic (G2).
+    highEffortLevels: ['high', 'xhigh', 'max'],
+    // When a flagged turn has no observed reasoning-token overhead (Claude
+    // does not split thinking from output), count this share of the turn's
+    // weighted tokens as waste. Surfaced in evidence as an assumption.
+    assumedOverkillShare: 0.5,
+  },
   r3: {}, // cache misses — populated in Loop 1c
   r4: {}, // limit collision — populated in Loop 1d
 }

@@ -4,10 +4,12 @@
 
 const defaultConfig = require('./config')
 const { detectLongThreadBleed } = require('./rules/r1-long-thread')
+const { detectEffortMismatch } = require('./rules/r2-effort-mismatch')
 
 const RULES = [
   detectLongThreadBleed,
-  // R2 effort mismatch, R3 cache misses, R4 limit collision — next loops.
+  detectEffortMismatch,
+  // R3 cache misses, R4 limit collision — next loops.
 ]
 
 function runDailyVerdict(input, config = defaultConfig) {
