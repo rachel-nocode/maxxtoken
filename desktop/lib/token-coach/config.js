@@ -5,6 +5,17 @@ module.exports = {
   // Daily Verdict screen shows at most this many cards, ranked by waste.
   maxVerdictsPerDay: 5,
 
+  // One rule may not monopolize the card list (real-data QA: R1 alone filled
+  // all five slots and crowded out every other insight).
+  maxCardsPerRule: 2,
+
+  // 🟢 good-habit card (PRD section 5 — positive reinforcement, max 1/day).
+  green: {
+    minSessions: 3, // enough activity to call it a habit
+    minHitRatio: 0.7, // overall cache hit ratio that earns the cache card
+    minContextTokens: 200_000, // ignore trivial weeks
+  },
+
   // Quota weight of a cache-read token relative to uncached input. Providers
   // bill/weigh cache reads far below fresh input; verdicts must not count a
   // cached re-send as if it were full-price context.

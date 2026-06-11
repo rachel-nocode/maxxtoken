@@ -73,6 +73,43 @@ const VARIANTS = {
       () => "Don't restart chats mid-task; each restart re-bills your whole project.",
     ],
   },
+  greenCache: {
+    title: [
+      () => 'Your cache discount is working',
+      () => 'Free re-reads: unlocked',
+      () => 'The discount kicked in this week',
+    ],
+    what: [
+      (p) =>
+        `${p.ratio}% of what the model re-read this week came from cache — ${p.saved} tokens you did not pay full price for.`,
+      (p) =>
+        `Your chats reused the model's memory well: ${p.saved} tokens of repeat content arrived nearly free (${p.ratio}% hit rate).`,
+      (p) =>
+        `${p.saved} tokens of old context got re-served from cache instead of being billed fresh — a ${p.ratio}% hit rate.`,
+    ],
+    fix: [
+      () => 'Keep it up — nothing to change here.',
+      () => 'Whatever you are doing, keep doing it.',
+      () => 'No fix needed. This is the good column.',
+    ],
+  },
+  greenClean: {
+    title: [
+      () => 'Clean week — no waste found',
+      () => 'Nothing to flag this week',
+      () => 'Your tokens went where they should',
+    ],
+    what: [
+      (p) => `${p.sessions} sessions checked this week and none of them tripped a waste rule.`,
+      (p) => `All ${p.sessions} of this week's sessions came back clean — no re-send bleed, no overkill, no wall sprints.`,
+      (p) => `${p.sessions} sessions, zero waste verdicts. That is rarer than you would think.`,
+    ],
+    fix: [
+      () => 'Keep it up — nothing to change here.',
+      () => 'Whatever you are doing, keep doing it.',
+      () => 'No fix needed. This is the good column.',
+    ],
+  },
   r4: {
     title: [
       () => 'You sprinted straight into the wall',
@@ -103,6 +140,8 @@ const LOCKED = {
   r2: { title: 0, what: 1, fix: 0 },
   r3: { title: 0, what: 0, fix: 2 },
   r4: { title: 0, what: 0, fix: 1 },
+  greenCache: { title: 0, what: 0, fix: 0 },
+  greenClean: { title: 0, what: 0, fix: 0 },
 }
 
 function render(rule, slot, params = {}) {
