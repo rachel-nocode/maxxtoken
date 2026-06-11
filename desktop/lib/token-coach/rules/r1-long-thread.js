@@ -19,6 +19,7 @@
 
 const defaultConfig = require('../config')
 const { severityFor, costFor, makeVerdict, formatTokens } = require('../verdict')
+const { render } = require('../templates')
 
 function num(value) {
   const n = Number(value)
@@ -96,10 +97,14 @@ function detectLongThreadBleed(input, config = defaultConfig) {
         rule: 'R1',
         id: `r1-long-thread:${session.sessionId}`,
         severity,
-        title: 'One long chat drained your limit',
-        what: `One ${agent} chat ran ${stats.requests.length} messages and re-sent up to ${formatTokens(stats.peakContextTokens)} tokens of old history with each new message.`,
+        title: render('r1', 'title'),
+        what: render('r1', 'what', {
+          agent,
+          count: stats.requests.length,
+          peak: formatTokens(stats.peakContextTokens),
+        }),
         cost: costFor(stats.weightedResentTokens, limitContext),
-        fix: 'Start a fresh chat when you switch tasks.',
+        fix: render('r1', 'fix'),
         evidence: {
           sessionId: session.sessionId || null,
           agentType: session.agentType || null,

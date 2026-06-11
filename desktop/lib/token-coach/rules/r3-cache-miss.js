@@ -20,6 +20,7 @@
 
 const defaultConfig = require('../config')
 const { severityFor, costFor, makeVerdict, formatTokens } = require('../verdict')
+const { render } = require('../templates')
 
 function num(value) {
   const n = Number(value)
@@ -93,10 +94,15 @@ function detectCacheMisses(input, config = defaultConfig) {
         rule: 'R3',
         id: `r3-cache-miss:${agentType}`,
         severity,
-        title: 'Your chats kept paying full price',
-        what: `${bucket.missSessions.length} ${agent} sessions barely reused cached context — only ${Math.round(avgRatio * 100)}% of what the model re-read came from cache, so the rest was paid as ${formatTokens(bucket.wasted)} tokens of fresh input.`,
+        title: render('r3', 'title'),
+        what: render('r3', 'what', {
+          agent,
+          count: bucket.missSessions.length,
+          ratio: Math.round(avgRatio * 100),
+          waste: formatTokens(bucket.wasted),
+        }),
         cost: costFor(bucket.wasted, limitContext),
-        fix: 'Keep one chat going per task instead of stopping and restarting.',
+        fix: render('r3', 'fix'),
         evidence: {
           agentType,
           sessionsEvaluated: bucket.evaluated,

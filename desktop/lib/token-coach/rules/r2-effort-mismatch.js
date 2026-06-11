@@ -14,6 +14,7 @@
 
 const defaultConfig = require('../config')
 const { severityFor, costFor, makeVerdict, formatTokens } = require('../verdict')
+const { render } = require('../templates')
 
 function num(value) {
   const n = Number(value)
@@ -41,12 +42,6 @@ function weightedTokens(request, config) {
 
 function agentLabel(agentType) {
   return agentType === 'codex' ? 'Codex' : 'Claude Code'
-}
-
-function fixFor(agentType) {
-  return agentType === 'codex'
-    ? 'Set Codex reasoning effort to medium for quick asks.'
-    : 'Run /effort medium before small questions and edits.'
 }
 
 function detectEffortMismatch(input, config = defaultConfig) {
@@ -117,10 +112,14 @@ function detectEffortMismatch(input, config = defaultConfig) {
         rule: 'R2',
         id: `r2-effort-mismatch:${agentType}`,
         severity,
-        title: 'Max effort spent on tiny questions',
-        what: `${bucket.flaggedTurns} quick ${agentLabel(agentType)} asks ran at high effort — short questions that got short answers but paid ${formatTokens(wasted)} tokens of deep-thinking overhead.`,
+        title: render('r2', 'title'),
+        what: render('r2', 'what', {
+          agent: agentLabel(agentType),
+          count: bucket.flaggedTurns,
+          waste: formatTokens(wasted),
+        }),
         cost: costFor(wasted, limitContext),
-        fix: fixFor(agentType),
+        fix: render('r2', 'fix', { agentType }),
         evidence: {
           agentType,
           flaggedTurns: bucket.flaggedTurns,

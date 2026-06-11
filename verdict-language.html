@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Coach — Verdict Language Variants</title>
+<style>
+  :root { --bg:#0d0d0f; --panel:#161618; --line:#2a2a2e; --orange:#FF6B00; --text:#e8e8ea; --dim:#9a9aa2; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.55 "Space Grotesk", system-ui, sans-serif; padding:40px 20px 80px; }
+  .wrap { max-width:880px; margin:0 auto; }
+  h1 { font-size:30px; letter-spacing:-0.5px; margin:0 0 6px; text-transform:uppercase; }
+  h1 span { color:var(--orange); }
+  .sub { color:var(--dim); margin:0 0 28px; }
+  .how { border:1px solid var(--orange); background:#1a120a; padding:14px 18px; margin-bottom:36px; }
+  .how code { font-family:"JetBrains Mono", monospace; font-size:13px; color:var(--orange); }
+  .rule { border:1px solid var(--line); background:var(--panel); margin-bottom:30px; }
+  .rule-head { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:baseline; }
+  .rule-head h2 { margin:0; font-size:17px; text-transform:uppercase; letter-spacing:0.5px; }
+  .rule-head .tag { font-family:"JetBrains Mono", monospace; font-size:12px; color:var(--orange); }
+  .slot { padding:14px 18px; border-bottom:1px solid var(--line); }
+  .slot:last-child { border-bottom:none; }
+  .slot h3 { margin:0 0 10px; font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); }
+  .variant { display:flex; gap:12px; padding:8px 10px; margin-bottom:6px; border:1px solid var(--line); align-items:flex-start; }
+  .variant.win { border-color:var(--orange); background:#181210; }
+  .variant .idx { font-family:"JetBrains Mono", monospace; font-size:12px; color:var(--dim); padding-top:2px; min-width:18px; }
+  .variant.win .idx { color:var(--orange); font-weight:700; }
+  .variant p { margin:0; }
+  .badge { margin-left:auto; font-family:"JetBrains Mono", monospace; font-size:10px; color:var(--bg); background:var(--orange); padding:2px 7px; text-transform:uppercase; white-space:nowrap; align-self:center; }
+  .note { color:var(--dim); font-size:13px; padding:10px 18px 16px; }
+  .checklist { border:1px solid var(--line); background:var(--panel); padding:16px 20px; }
+  .checklist h2 { font-size:15px; text-transform:uppercase; margin:0 0 10px; }
+  .checklist li { margin-bottom:6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Token Coach <span>verdict language</span></h1>
+  <p class="sub">Loop 2 deliverable — 3 variants per string, sample numbers filled in. Winners (orange) are locked and shipping now.</p>
+
+  <div class="how">
+    <strong>How to swap a winner:</strong> edit <code>LOCKED</code> in
+    <code>desktop/lib/token-coach/templates.js</code> — e.g. <code>r1: { what: 2 }</code> ships variant #2.
+    Rules and UI read through <code>render()</code>; nothing else changes. Tests: <code>cd desktop && npm test</code>.
+  </div>
+
+  <!-- R1 -->
+  <div class="rule">
+    <div class="rule-head"><h2>R1 — Long-thread bleed</h2><span class="tag">one card per offending chat</span></div>
+    <div class="slot"><h3>Title (max 8 words)</h3>
+      <div class="variant win"><span class="idx">0</span><p>One long chat drained your limit</p><span class="badge">Locked</span></div>
+      <div class="variant"><span class="idx">1</span><p>Marathon chat ate your week</p></div>
+      <div class="variant"><span class="idx">2</span><p>Old messages billed you again and again</p></div>
+    </div>
+    <div class="slot"><h3>What happened</h3>
+      <div class="variant"><span class="idx">0</span><p>One Claude Code chat ran 50 messages — every new message re-sent the whole conversation again, up to 260K tokens each time.</p></div>
+      <div class="variant win"><span class="idx">1</span><p>You kept one Claude Code chat alive for 50 messages. Each reply paid to re-read everything above it — up to 260K tokens.</p><span class="badge">Locked</span></div>
+      <div class="variant"><span class="idx">2</span><p>One marathon Claude Code chat hit 50 messages; by the end every question dragged 260K tokens of old chat along with it.</p></div>
+    </div>
+    <div class="slot"><h3>Fix</h3>
+      <div class="variant win"><span class="idx">0</span><p>Start a fresh chat when you switch tasks.</p><span class="badge">Locked</span></div>
+      <div class="variant"><span class="idx">1</span><p>Open a new chat for each new task — old history costs you every message.</p></div>
+      <div class="variant"><span class="idx">2</span><p>When the task changes, change the chat.</p></div>
+    </div>
+    <div class="note">Cards only fire on <em>uncached</em> re-sending — a long thread with healthy caching stays silent, so the fix never contradicts R3.</div>
+  </div>
+
+  <!-- R2 -->
+  <div class="rule">
+    <div class="rule-head"><h2>R2 — Effort mismatch</h2><span class="tag">one card per agent (habit)</span></div>
+    <div class="slot"><h3>Title</h3>
+      <div class="variant win"><span class="idx">0</span><p>Max effort spent on tiny questions</p><span class="badge">Locked</span></div>
+      <div class="variant"><span class="idx">1</span><p>Heavy thinking on light questions</p></div>
+      <div class="variant"><span class="idx">2</span><p>Genius mode left on for small talk</p></div>
+    </div>
+    <div class="slot"><h3>What happened</h3>
+      <div class="variant"><span class="idx">0</span><p>12 quick Codex questions ran in deep-thinking mode — short asks that paid 2.4M tokens of heavy thinking for simple answers.</p></div>
+      <div class="variant win"><span class="idx">1</span><p>You asked Codex 12 small questions with maximum brainpower turned on. That overthinking cost 2.4M tokens.</p><span class="badge">Locked</span></div>
+      <div class="variant"><span class="idx">2</span><p>12 tiny asks got the full genius treatment on Codex — 2.4M tokens spent thinking hard about easy things.</p></div>
+    </div>
+    <div class="slot"><h3>Fix</h3>
+      <div class="variant win"><span class="idx">0</span><p>Codex: "Set Codex reasoning effort to medium for quick asks." · Claude: "Run /effort medium before small questions and edits."</p><span class="badge">Locked</span></div>
+      <div class="variant"><span class="idx">1</span><p>Drop to medium effort for quick questions — save the deep thinking for hard problems.</p></div>
+      <div class="variant"><span class="idx">2</span><p>Turn effort down before asking small stuff.</p></div>
+    </div>
+    <div class="note">Winner keeps the exact command per agent — "repeat the fix back" hallway test passes when the fix is literally typeable.</div>
+  </div>
+
+  <!-- R3 -->
+  <div class="rule">
+    <div class="rule-head"><h2>R3 — Cache misses</h2><span class="tag">one card per agent (habit)</span></div>
+    <div class="slot"><h3>Title</h3>
+      <div class="variant win"><span class="idx">0</span><p>Your chats kept paying full price</p><span class="badge">Locked</span></div>
+      <div class="variant"><span class="idx">1</span><p>Repeat content billed at full price</p></div>
+      <div class="variant"><span class="idx">2</span><p>The discount never kicked in</p></div>
+    </div>
+    <div class="slot"><h3>What happened</h3>
+      <div class="variant win"><span class="idx">0</span><p>4 Claude Code sessions kept paying full price — only 5% of what the model re-read came from its memory, the rest billed fresh: 2.5M tokens.</p><span class="badge">Locked</span></div>
+      <div class="variant"><span class="idx">1</span><p>Claude Code re-read your project from scratch in 4 sessions instead of using its short-term memory — 2.5M tokens paid twice.</p></div>
+      <div class="variant"><span class="idx">2</span><p>In 4 Claude Code sessions the discount for repeated content barely kicked in (5%) — 2.5M tokens billed at full price.</p></div>
+    </div>
+    <div class="slot"><h3>Fix</h3>
+      <div class="variant"><span class="idx">0</span><p>Keep one chat going per task instead of stopping and restarting.</p></div>
+      <div class="variant"><span class="idx">1</span><p>Work in longer stretches — pauses over 5 minutes make the model forget and re-bill.</p></div>
+      <div class="variant win"><span class="idx">2</span><p>Don't restart chats mid-task; each restart re-bills your whole project.</p><span class="badge">Locked</span></div>
+    </div>
+    <div class="note">Fix #2 chosen over #1: the 5-minute detail is true but reads as trivia; #2 names the billing consequence and never contradicts R1's "fresh chat per task".</div>
+  </div>
+
+  <!-- R4 -->
+  <div class="rule">
+    <div class="rule-head"><h2>R4 — Limit collision</h2><span class="tag">one card per agent + window</span></div>
+    <div class="slot"><h3>Title</h3>
+      <div class="variant win"><span class="idx">0</span><p>You sprinted straight into the wall</p><span class="badge">Locked</span></div>
+      <div class="variant"><span class="idx">1</span><p>One burst used up your whole limit</p></div>
+      <div class="variant"><span class="idx">2</span><p>Big run, instant lockout</p></div>
+    </div>
+    <div class="slot"><h3>What happened</h3>
+      <div class="variant win"><span class="idx">0</span><p>Codex burned 89.5% of its 5-hour limit in the 90 minutes before hitting the wall. <em>(multi: "Codex hit its 5-hour limit 2 times; the worst run burned 79.5% of the window right before the wall.")</em></p><span class="badge">Locked</span></div>
+      <div class="variant"><span class="idx">1</span><p>One burst of work ate 89.5% of your Codex 5-hour limit just before you ran out — then you were locked out.</p></div>
+      <div class="variant"><span class="idx">2</span><p>Codex went from 10% to full in under 90 minutes — one heavy run took the whole 5-hour limit down.</p></div>
+    </div>
+    <div class="slot"><h3>Fix</h3>
+      <div class="variant"><span class="idx">0</span><p>Check your remaining window before kicking off big runs.</p></div>
+      <div class="variant win"><span class="idx">1</span><p>Glance at the menu bar before big runs — if the bar is low, wait or switch tools.</p><span class="badge">Locked</span></div>
+      <div class="variant"><span class="idx">2</span><p>Split heavy jobs across providers when your bar runs low.</p></div>
+    </div>
+    <div class="note">Fix #1 chosen: it points at maxxToken's own menu bar — the product teaches the user to use the product.</div>
+  </div>
+
+  <div class="checklist">
+    <h2>Next steps</h2>
+    <ul>
+      <li>Skim winners above; swap any index in <code style="font-family:'JetBrains Mono',monospace;color:var(--orange)">templates.js → LOCKED</code> if you disagree.</li>
+      <li>Hallway-test one card on a non-dev friend: can they repeat the fix back?</li>
+      <li>Loop 3 builds the card UI with these locked strings — screenshots become the X-thread marketing.</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>

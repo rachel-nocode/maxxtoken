@@ -18,6 +18,7 @@
 
 const defaultConfig = require('../config')
 const { severityForPct, makeVerdict } = require('../verdict')
+const { render } = require('../templates')
 
 const HOUR_MS = 3_600_000
 
@@ -110,11 +111,15 @@ function detectLimitCollision(input, config = defaultConfig) {
         rule: 'R4',
         id: `r4-limit-collision:${key}`,
         severity,
-        title: 'You sprinted straight into the wall',
-        what:
-          collisions.length > 1
-            ? `${agent} hit its ${label} ${collisions.length} times; the worst run burned ${worst.spikePct}% of the window right before the wall.`
-            : `${agent} burned ${worst.spikePct}% of its ${label} in the ${config.r4.spikeWindowMinutes} minutes before hitting the wall.`,
+        title: render('r4', 'title'),
+        what: render('r4', 'what', {
+          agent,
+          window: label,
+          collisionCount: collisions.length,
+          spike: worst.spikePct,
+          baseline: worst.baselinePct,
+          minutes: config.r4.spikeWindowMinutes,
+        }),
         cost: {
           tokens: estTokens,
           pctOfLimit: worst.spikePct,
@@ -122,7 +127,7 @@ function detectLimitCollision(input, config = defaultConfig) {
           lockedOutHours: worst.lockedOutHours,
           text: costParts.join(' · '),
         },
-        fix: 'Check your remaining window before kicking off big runs.',
+        fix: render('r4', 'fix'),
         evidence: {
           agentType,
           windowKind,
