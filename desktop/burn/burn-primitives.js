@@ -130,6 +130,9 @@ function burnHeader({ title = 'BURN', backLabel = '', diamondActive = false, set
     `<button type="button" data-burn-nav="optimize" aria-label="Optimize" style="${burnBtnStyle(true)}">${burnIcon('sliders', 14, BURN.limeText)}</button>` +
     optimizeDot +
     `</span>`
+  // Token Coach entry (beta) — pulse glyph next to Optimize.
+  const coach =
+    `<button type="button" data-burn-nav="coach" aria-label="Token Coach" style="${burnBtnStyle(true)}">${burnIcon('pulse', 14, BURN.limeText)}</button>`
   // Missions hidden from UI (code retained). Render nothing for the diamond entry.
   const diamond = ''
   void diamondActive
@@ -143,7 +146,7 @@ function burnHeader({ title = 'BURN', backLabel = '', diamondActive = false, set
       gap: 10,
       padding: '11px 14px',
       borderBottom: `1px solid ${BURN.border}`,
-    })}">${left}<span style="${bstyle({ flex: 1 })}"></span>${optimize}${diamond}${gear}</div>`
+    })}">${left}<span style="${bstyle({ flex: 1 })}"></span>${optimize}${coach}${diamond}${gear}</div>`
   )
 }
 

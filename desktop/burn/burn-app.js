@@ -22,6 +22,10 @@ const burnState = {
   optPromptOpen: {}, // promptKey -> true (compact prompt dropdowns)
   optContextScan: {}, // providerId -> scan result for context bloat fixer
   optContextScanLoading: {}, // providerId -> true while folder picker/scan runs
+  // token coach (beta) — Daily Verdict cards over IPC
+  coachModel: null,
+  coachLoading: false,
+  coachOpen: {}, // verdictId -> true (evidence expanded)
   // mission-setup form
   missionModels: {},
   missionFolder: null, // display basename
@@ -89,6 +93,8 @@ function burnScreenHtml() {
       return burnRenderSettings(burnState)
     case 'optimize':
       return burnRenderOptimize(burnState)
+    case 'coach':
+      return burnRenderCoach(burnState)
     case 'home':
     default:
       return burnRenderHome(burnState)
@@ -113,6 +119,23 @@ function burnGo(screen) {
   if (screen !== 'home') burnState.expandedId = null
   burnRender()
   if (screen === 'missions' && !burnState.ideasLoaded && !burnState.ideasLoading) burnLoadIdeas()
+  if (screen === 'coach' && !burnState.coachModel && !burnState.coachLoading) burnLoadCoach()
+}
+
+// Pull Daily Verdict cards once per popover session, then re-render Coach.
+async function burnLoadCoach() {
+  if (!window.maxx?.coachVerdicts) return
+  burnState.coachLoading = true
+  burnRender()
+  try {
+    burnState.coachModel = await window.maxx.coachVerdicts()
+  } catch (err) {
+    console.error('[burn] coachVerdicts failed', err)
+    burnState.coachModel = { ok: false, verdicts: [], error: 'Could not build verdicts.' }
+  } finally {
+    burnState.coachLoading = false
+    if (burnState.screen === 'coach') burnRender()
+  }
 }
 
 // Pull real burn ideas (+ target provider) once, then re-render Missions.
@@ -365,6 +388,14 @@ function burnHandleClick(e) {
     // avoids the settings⇄missions ping-pong the one-deep memory used to cause.
     if (dest === 'back') burnGo(burnState.screen === 'mission-setup' ? 'missions' : burnState.screen === 'flow' ? 'optimize' : 'home')
     else burnGo(dest)
+    return
+  }
+
+  const coachToggle = e.target.closest('[data-coach-toggle]')
+  if (coachToggle) {
+    const id = coachToggle.getAttribute('data-coach-toggle')
+    burnState.coachOpen[id] = !burnState.coachOpen[id]
+    burnRender()
     return
   }
 

@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('maxx', {
   backlogStart: (payload) => ipcRenderer.invoke('backlog-start', payload),
   copyText: (text) => ipcRenderer.invoke('copy-text', text),
   scanContextBloat: (providerId) => ipcRenderer.invoke('scan-context-bloat', providerId),
+  coachVerdicts: () => ipcRenderer.invoke('coach-verdicts'),
   getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
   checkUpdates: () => ipcRenderer.invoke('check-updates'),
   installUpdate: () => ipcRenderer.invoke('install-update'),

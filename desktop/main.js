@@ -1360,6 +1360,19 @@ ipcMain.handle('backlog-start', async (_e, payload) => {
   return { ok: result.ok, terminal: result.terminal, dir, copied: true, cli, error: result.error }
 })
 
+// Token Coach (beta) — Daily Verdict cards. Preview fixtures until the
+// session collector wires real transcripts (token-coach/fixtures.js).
+ipcMain.handle('coach-verdicts', async () => {
+  try {
+    const { runDailyVerdict } = require('./lib/token-coach')
+    const { previewInput } = require('./lib/token-coach/fixtures')
+    return { ok: true, preview: true, generatedAt: Date.now(), verdicts: runDailyVerdict(previewInput) }
+  } catch (err) {
+    log('coach-verdicts failed', err && err.message)
+    return { ok: false, preview: true, generatedAt: Date.now(), verdicts: [], error: 'Could not build verdicts.' }
+  }
+})
+
 ipcMain.handle('scan-context-bloat', async (_e, providerId) => {
   const picked = await dialog.showOpenDialog(popover, {
     title: 'Scan a project folder for context bloat',
