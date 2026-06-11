@@ -349,6 +349,7 @@ function parseClaudeTokenUsageFromText(text, file = '') {
       when,
       day: localDayKey(when),
       model: cleanText(message.model) || 'unknown',
+      sessionId: cleanText(row.sessionId),
       isSidechain: Boolean(row.isSidechain),
       pathRole: String(file).includes('/subagents/') ? 'subagent' : 'parent',
     }
