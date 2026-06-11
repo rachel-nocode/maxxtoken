@@ -26,6 +26,15 @@ function severityFor(weightedTokens, limitContext = null, config = defaultConfig
   return { severity: null, pctOfLimit: null }
 }
 
+// Severity straight from an observed % of the period limit (R4 measures the
+// spike in limit-percent directly, no token conversion involved).
+function severityForPct(pct, config = defaultConfig) {
+  const value = Number(pct) || 0
+  if (value >= config.severity.redPctOfLimit) return 'red'
+  if (value >= config.severity.yellowPctOfLimit) return 'yellow'
+  return null
+}
+
 function formatTokens(value) {
   const n = round(value)
   if (n >= 1_000_000) {
@@ -71,4 +80,4 @@ function makeVerdict({ rule, id, severity, title, what, cost, fix, evidence, was
   }
 }
 
-module.exports = { severityFor, costFor, makeVerdict, formatTokens }
+module.exports = { severityFor, severityForPct, costFor, makeVerdict, formatTokens }

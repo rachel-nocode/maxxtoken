@@ -64,5 +64,16 @@ module.exports = {
     // above this. Surfaced in evidence so the estimate is auditable.
     targetHitRatio: 0.7,
   },
-  r4: {}, // limit collision — populated in Loop 1d
+  r4: {
+    // A window sample at or above this utilization counts as hitting the wall.
+    limitPct: 99,
+    // Z — lookback window before the collision in which a spike is measured.
+    spikeWindowMinutes: 90,
+    // Rise (in % of the period limit) below this means the collision was a
+    // slow grind, not a burst — no pacing verdict.
+    minSpikePct: 5,
+    // Need at least this many samples inside the lookback to measure a rise;
+    // fewer means insufficient data, not a clean bill.
+    minSamplesInWindow: 2,
+  },
 }
