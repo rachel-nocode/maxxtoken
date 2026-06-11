@@ -25,11 +25,20 @@ function readHistory(file = FILE) {
 }
 
 function writeHistory(history, file = FILE) {
-  // Async fire-and-forget — never block snapshot path on disk write.
+  // Synchronous atomic write (tmp + rename). The old fire-and-forget
+  // fs.promises.writeFile raced the snapshot worker's kill(): writeFile
+  // truncates before it writes, so SIGTERM in between left a 0-byte file
+  // (DATA_GAPS G3). rename is atomic, so readers see old or new — never torn.
+  // Payload is a few KB; the sync write costs ~1ms at the end of a cycle.
   const payload = JSON.stringify({ samples: history.samples || [], totals: history.totals || [], tokens: history.tokens || [] }, null, 2)
-  fs.promises.mkdir(path.dirname(file), { recursive: true })
-    .then(() => fs.promises.writeFile(file, payload))
-    .catch(() => { /* best effort */ })
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const tmp = `${file}.${process.pid}.tmp`
+    fs.writeFileSync(tmp, payload)
+    fs.renameSync(tmp, file)
+  } catch {
+    /* best effort */
+  }
   return history
 }
 
