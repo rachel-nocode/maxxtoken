@@ -1360,16 +1360,22 @@ ipcMain.handle('backlog-start', async (_e, payload) => {
   return { ok: result.ok, terminal: result.terminal, dir, copied: true, cli, error: result.error }
 })
 
-// Token Coach (beta) — Daily Verdict cards. Preview fixtures until the
-// session collector wires real transcripts (token-coach/fixtures.js).
+// Token Coach (beta) — Daily Verdict cards from real local logs via the
+// session collector. Preview fixtures only when no usage data exists yet
+// (fresh machine), clearly labeled in the UI.
 ipcMain.handle('coach-verdicts', async () => {
+  const { runDailyVerdict } = require('./lib/token-coach')
   try {
-    const { runDailyVerdict } = require('./lib/token-coach')
+    const { collectCoachInput } = require('./lib/token-coach/collect')
+    const input = collectCoachInput({ historyDays: 7 })
+    if (input.sessions.length) {
+      return { ok: true, preview: false, generatedAt: Date.now(), meta: input.meta, verdicts: runDailyVerdict(input) }
+    }
     const { previewInput } = require('./lib/token-coach/fixtures')
     return { ok: true, preview: true, generatedAt: Date.now(), verdicts: runDailyVerdict(previewInput) }
   } catch (err) {
     log('coach-verdicts failed', err && err.message)
-    return { ok: false, preview: true, generatedAt: Date.now(), verdicts: [], error: 'Could not build verdicts.' }
+    return { ok: false, preview: false, generatedAt: Date.now(), verdicts: [], error: 'Could not build verdicts.' }
   }
 })
 
