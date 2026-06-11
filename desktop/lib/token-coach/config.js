@@ -51,6 +51,18 @@ module.exports = {
     // weighted tokens as waste. Surfaced in evidence as an assumption.
     assumedOverkillShare: 0.5,
   },
-  r3: {}, // cache misses — populated in Loop 1c
+  r3: {
+    // Sessions smaller than this barely move quota — skip them as noise.
+    minSessionContextTokens: 500_000,
+    // A cache-miss habit needs several affected sessions, not one outlier.
+    minSessionsForVerdict: 3,
+    minRequestsPerSession: 5,
+    // Hit ratio (cache reads / total context) below this = miss-heavy session.
+    lowHitRatio: 0.4,
+    // Achievable baseline used to size the waste estimate. Claude Code and
+    // Codex both cache automatically; healthy sessions commonly sit well
+    // above this. Surfaced in evidence so the estimate is auditable.
+    targetHitRatio: 0.7,
+  },
   r4: {}, // limit collision — populated in Loop 1d
 }
