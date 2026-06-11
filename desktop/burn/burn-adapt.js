@@ -124,7 +124,12 @@ function burnAdaptProvider(provider, options = {}) {
   const session = burnFindWindow(windows, '5h')
   const weekly = burnFindWindow(windows, 'weekly')
   const used = burnPct(provider.capturedPct)
-  const meter = burnMeterForPct(provider.capturedPct, provider.remainingPct, options)
+  const meterSource = session || provider
+  const meter = burnMeterForPct(
+    meterSource.usedPct ?? provider.capturedPct,
+    meterSource === provider ? provider.remainingPct : meterSource.remainingPct,
+    options,
+  )
   const status = burnStatus(provider, windows)
   // Reset shown on the collapsed row: prefer the soonest window reset.
   const resets = [...windows.map((w) => w.resetAt), provider.resetAt].filter(Boolean)
@@ -133,7 +138,7 @@ function burnAdaptProvider(provider, options = {}) {
     .filter((w) => w && (w.kind !== 'cycle' ? true : w?.label))
     .map((w) => ({
       label: burnWindowCaption(w),
-      pct: w.valueLabel ? null : burnMeterForPct(w.usedPct, w.remainingPct, options).pct,
+      pct: burnFiniteNumber(w.usedPct) == null ? null : burnMeterForPct(w.usedPct, w.remainingPct, options).pct,
       value: w.valueLabel ? burnWindowValue(w) : burnMeterForPct(w.usedPct, w.remainingPct, options).summary,
       reset: burnFormatReset(w.resetAt),
     }))

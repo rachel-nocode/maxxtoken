@@ -125,6 +125,8 @@ function compactWindow(window) {
     usedPct: window.usedPct ?? null,
     valueLabel: window.valueLabel || null,
     creditUSD: window.creditUSD ?? null,
+    spentUSD: window.spentUSD ?? null,
+    leftUSD: window.leftUSD ?? null,
     resetAt: window.resetAt || null,
     historyRiskPct: window.history?.missRiskPct || null,
     pace: window.pace

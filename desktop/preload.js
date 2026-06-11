@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('maxx', {
   missionContext: () => ipcRenderer.invoke('mission-context'),
   missionPickFolder: () => ipcRenderer.invoke('mission-pick-folder'),
   missionPreflight: (payload) => ipcRenderer.invoke('mission-preflight', payload),
+  modelFitRecommend: (payload) => ipcRenderer.invoke('model-fit-recommend', payload),
   missionCopyGoal: (payload) => ipcRenderer.invoke('mission-copy-goal', payload),
   missionStartProject: (payload) => ipcRenderer.invoke('mission-start-project', payload),
   burnIdeas: () => ipcRenderer.invoke('burn-ideas'),

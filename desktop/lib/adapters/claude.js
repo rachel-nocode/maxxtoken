@@ -168,10 +168,17 @@ function windowsFromUsage(data) {
 function resultFromUsage(plan, data, cached = false, options = {}) {
   const windows = windowsFromUsage(data)
   const extra = []
+  let extraUsage = null
   if (data.extra_usage && data.extra_usage.is_enabled) {
     // credits are reported in cents
     const used = (Number(data.extra_usage.used_credits) || 0) / 100
     const limit = (Number(data.extra_usage.monthly_limit) || 0) / 100
+    const utilization = Number(data.extra_usage.utilization)
+    extraUsage = {
+      usedUSD: used,
+      limitUSD: limit,
+      utilization: Number.isFinite(utilization) ? utilization : limit > 0 ? (used / limit) * 100 : 0,
+    }
     extra.push({ label: 'Extra usage', value: `$${used.toFixed(2)} / $${limit.toFixed(0)}` })
   }
   if (cached) extra.push({ label: 'Status', value: 'cached live usage' })
@@ -181,7 +188,7 @@ function resultFromUsage(plan, data, cached = false, options = {}) {
   if (tokenUsage?.historyTotal) {
     extra.push({ label: tokenHistoryLabel(tokenUsage.historyDays), value: formatInteger(tokenUsage.historyTotal) })
   }
-  return { connected: true, plan, windows, extra, tokenUsage, lastActive: cached ? cachedUsageAt : Date.now() }
+  return { connected: true, plan, windows, extra, extraUsage, tokenUsage, lastActive: cached ? cachedUsageAt : Date.now() }
 }
 
 function formatInteger(value) {

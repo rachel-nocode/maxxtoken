@@ -932,7 +932,7 @@ test('burn adapter only renders primary provider windows plus Claude Agent SDK c
   assert.equal(adapted.windowSummary, '5H 2% · 7D 3% · AGENT SDK $200/MO')
 })
 
-test('burn adapter can show quota left without changing raw usage sorting fields', () => {
+test('burn adapter can show session quota left without changing raw usage sorting fields', () => {
   const { burnAdaptProvider } = loadBurnAdaptForTest()
   const resetAt = Date.now() + 5 * 3600e3
   const adapted = burnAdaptProvider({
@@ -950,9 +950,9 @@ test('burn adapter can show quota left without changing raw usage sorting fields
   }, { usageMeterMode: 'left' })
 
   assert.equal(adapted.used, 75)
-  assert.equal(adapted.meterPct, 25)
+  assert.equal(adapted.meterPct, 20)
   assert.equal(adapted.meterLabel, 'LEFT')
-  assert.equal(adapted.meterValue, '25%')
+  assert.equal(adapted.meterValue, '20%')
   const visible = JSON.parse(JSON.stringify(adapted.windows.map((w) => [w.label, w.pct, w.value])))
   assert.deepEqual(visible, [
     ['5H', 20, '20% LEFT'],
@@ -961,11 +961,124 @@ test('burn adapter can show quota left without changing raw usage sorting fields
   assert.equal(adapted.windowSummary, '5H 20% LEFT · 7D 70% LEFT')
 })
 
+test('burn adapter collapsed meter prefers 5-hour session over weekly headline', () => {
+  const { burnAdaptProvider } = loadBurnAdaptForTest()
+  const resetAt = Date.now() + 5 * 3600e3
+  const adapted = burnAdaptProvider({
+    id: 'codex',
+    name: 'ChatGPT',
+    plan: 'Pro',
+    connected: true,
+    capturedPct: 95,
+    remainingPct: 5,
+    resetAt,
+    windows: [
+      { label: 'Session', kind: '5h', usedPct: 12, remainingPct: 88, resetAt },
+      { label: 'Weekly', kind: '7d', usedPct: 95, remainingPct: 5, resetAt: resetAt + 2 * 86400e3 },
+    ],
+  })
+
+  assert.equal(adapted.used, 95)
+  assert.equal(adapted.meterPct, 12)
+  assert.equal(adapted.meterValue, '12%')
+  assert.equal(adapted.meterLabel, 'USED')
+})
+
+test('burn adapter collapsed left meter prefers 5-hour session remaining', () => {
+  const { burnAdaptProvider } = loadBurnAdaptForTest()
+  const resetAt = Date.now() + 5 * 3600e3
+  const adapted = burnAdaptProvider({
+    id: 'codex',
+    name: 'ChatGPT',
+    plan: 'Pro',
+    connected: true,
+    capturedPct: 95,
+    remainingPct: 5,
+    resetAt,
+    windows: [
+      { label: 'Session', kind: '5h', usedPct: 12, remainingPct: 88, resetAt },
+      { label: 'Weekly', kind: '7d', usedPct: 95, remainingPct: 5, resetAt: resetAt + 2 * 86400e3 },
+    ],
+  }, { usageMeterMode: 'left' })
+
+  assert.equal(adapted.used, 95)
+  assert.equal(adapted.meterPct, 88)
+  assert.equal(adapted.meterValue, '88%')
+  assert.equal(adapted.meterLabel, 'LEFT')
+})
+
+test('burn adapter does not borrow provider remaining for 5-hour collapsed left meter', () => {
+  const { burnAdaptProvider } = loadBurnAdaptForTest()
+  const resetAt = Date.now() + 5 * 3600e3
+  const adapted = burnAdaptProvider({
+    id: 'codex',
+    name: 'ChatGPT',
+    plan: 'Pro',
+    connected: true,
+    capturedPct: 5,
+    remainingPct: 95,
+    resetAt,
+    windows: [
+      { label: 'Session', kind: '5h', usedPct: 1, resetAt },
+      { label: 'Weekly', kind: '7d', usedPct: 5, resetAt: resetAt + 2 * 86400e3 },
+    ],
+  }, { usageMeterMode: 'left' })
+
+  assert.equal(adapted.meterPct, 99)
+  assert.equal(adapted.meterValue, '99%')
+  assert.equal(adapted.windowSummary, '5H 99% LEFT · 7D 95% LEFT')
+})
+
 test('Claude Agent SDK credit amount follows official paid plan tiers', () => {
   assert.equal(_private.claudeAgentSdkCreditAmount('Pro'), 20)
   assert.equal(_private.claudeAgentSdkCreditAmount('Max 5x'), 100)
   assert.equal(_private.claudeAgentSdkCreditAmount('Max 20x'), 200)
   assert.equal(_private.claudeAgentSdkCreditAmount('Claude'), null)
+})
+
+test('Claude Agent SDK credit window tracks live extra usage when API reports it', () => {
+  const cycle = { endMs: Date.parse('2026-07-01T00:00:00Z') }
+  const w = _private.claudeAgentSdkCreditWindow('Max 20x', cycle, {
+    usedUSD: 15.74,
+    limitUSD: 200,
+    utilization: 7.87,
+  })
+  assert.equal(w.label, 'Agent SDK')
+  assert.equal(w.kind, 'agent-sdk-credit')
+  assert.equal(w.usedPct, 8)
+  assert.equal(w.valueLabel, '$15.74 / $200')
+  assert.equal(w.creditUSD, 200)
+  assert.equal(w.spentUSD, 15.74)
+  assert.equal(w.leftUSD, 184.26)
+  assert.equal(w.resetAt, cycle.endMs)
+})
+
+test('Claude Agent SDK credit window falls back to static plan credit without live data', () => {
+  const cycle = { endMs: Date.parse('2026-07-01T00:00:00Z') }
+  const w = _private.claudeAgentSdkCreditWindow('Max 20x', cycle, null)
+  assert.equal(w.usedPct, null)
+  assert.equal(w.valueLabel, '$200/mo')
+})
+
+test('burn adapter shows live Agent SDK credit spend with a real meter', () => {
+  const { burnAdaptProvider } = loadBurnAdaptForTest()
+  const resetAt = Date.now() + 5 * 3600e3
+  const adapted = burnAdaptProvider({
+    id: 'claude',
+    name: 'Claude',
+    plan: 'Max 20x',
+    connected: true,
+    capturedPct: 3,
+    resetAt,
+    windows: [
+      { label: 'Session', kind: '5h', usedPct: 2, resetAt },
+      { label: 'Weekly', kind: '7d', usedPct: 3, resetAt },
+      { label: 'Agent SDK', kind: 'agent-sdk-credit', usedPct: 8, valueLabel: '$15.74 / $200', creditUSD: 200, spentUSD: 15.74, leftUSD: 184.26, resetAt },
+    ],
+  })
+  const sdk = adapted.windows.find((w) => w.label === 'AGENT SDK')
+  assert.equal(sdk.value, '$15.74 / $200')
+  assert.equal(sdk.pct, 8)
 })
 
 test('token cost uses cached models.dev prices for new OpenAI and Anthropic models', () => {

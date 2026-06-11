@@ -20,6 +20,7 @@ const widgetSnapshot = require('./lib/widget-snapshot')
 const { trayTitleFromSnapshot } = require('./lib/tray-title')
 const { buildUsageExport } = require('./lib/usage-export')
 const { estimateMissionPreflight } = require('./lib/preflight-estimate')
+const { recommendModelFit } = require('./lib/model-fit')
 const { scanContextBloat } = require('./lib/context-bloat-fixer')
 const localApi = require('./lib/local-api')
 const logger = require('./lib/logger')
@@ -385,9 +386,15 @@ function trayIcon() {
   return image
 }
 
+function trayPrimaryWindow(provider) {
+  const windows = Array.isArray(provider?.windows) ? provider.windows : []
+  return windows.find((window) => window?.kind === '5h') || null
+}
+
 function trayPctForProvider(provider, config) {
-  const used = Number(provider?.capturedPct)
-  const left = Number(provider?.remainingPct)
+  const primary = trayPrimaryWindow(provider) || provider
+  const used = Number(primary?.usedPct ?? provider?.capturedPct)
+  const left = Number(primary === provider ? provider?.remainingPct : primary?.remainingPct)
   if (config?.usageMeterMode === 'left') {
     if (Number.isFinite(left)) return Math.max(0, Math.min(100, left))
     if (Number.isFinite(used)) return Math.max(0, Math.min(100, 100 - used))
@@ -399,8 +406,9 @@ function trayPctForProvider(provider, config) {
 }
 
 function trayProviderWarning(provider, config) {
-  const remaining = Number(provider?.remainingPct)
-  const used = Number(provider?.capturedPct)
+  const primary = trayPrimaryWindow(provider) || provider
+  const remaining = Number(primary === provider ? provider?.remainingPct : primary?.remainingPct)
+  const used = Number(primary?.usedPct ?? provider?.capturedPct)
   const reserve = Number(config?.maxxAlertReservePct) || 25
   if (Number.isFinite(remaining) && remaining <= reserve) return true
   return Number.isFinite(used) && used >= 100 - reserve
@@ -1424,6 +1432,17 @@ ipcMain.handle('mission-preflight', async (_e, payload) => {
     goal: payload?.goal,
     modelIds: payload?.models,
     models: projectMissionModels(snap, selectedIds),
+    snapshot: snap,
+  })
+})
+
+ipcMain.handle('model-fit-recommend', async (_e, payload) => {
+  const snap = await readSnapshot({ staleOk: true })
+  const selectedIds = new Set(Array.isArray(payload?.models) ? payload.models.map((m) => String(m)) : [])
+  return recommendModelFit({
+    dir: payload?.dir || payload?.folder,
+    goal: payload?.goal,
+    models: selectedIds.size ? projectMissionModels(snap, selectedIds) : [],
     snapshot: snap,
   })
 })

@@ -797,9 +797,24 @@ function claudeAgentSdkCreditAmount(plan) {
   return null
 }
 
-function claudeAgentSdkCreditWindow(plan, cycle) {
-  const amount = claudeAgentSdkCreditAmount(plan)
+function claudeAgentSdkCreditWindow(plan, cycle, extraUsage = null) {
+  const amount = extraUsage?.limitUSD || claudeAgentSdkCreditAmount(plan)
   if (!amount) return null
+  if (extraUsage) {
+    const usedPct = Math.max(0, Math.min(100, Math.round(Number(extraUsage.utilization) || 0)))
+    const spent = Math.max(0, Number(extraUsage.usedUSD) || 0)
+    return {
+      label: 'Agent SDK',
+      kind: 'agent-sdk-credit',
+      usedPct,
+      valueLabel: `$${spent.toFixed(2)} / $${amount.toFixed(0)}`,
+      creditUSD: amount,
+      spentUSD: spent,
+      leftUSD: Math.max(0, amount - spent),
+      resetAt: cycle?.endMs || null,
+      periodMs: null,
+    }
+  }
   return {
     label: 'Agent SDK',
     kind: 'agent-sdk-credit',
@@ -824,7 +839,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
     const urgent = d.windows.some(windowUrgent)
     const plan = d.plan || conf.plan
     const windows = id === 'claude'
-      ? [...d.windows, claudeAgentSdkCreditWindow(plan, cycle)].filter(Boolean)
+      ? [...d.windows, claudeAgentSdkCreditWindow(plan, cycle, d.extraUsage)].filter(Boolean)
       : d.windows
     return {
       ...base,

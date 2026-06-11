@@ -1013,6 +1013,199 @@ body {
   font-size: 10.5px;
 }
 
+.model-fit-card {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid rgba(182, 242, 74, 0.22);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(182, 242, 74, 0.08), rgba(14, 17, 10, 0.92));
+}
+
+.model-fit-head {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  align-items: center;
+  gap: 9px;
+}
+
+.model-fit-head > span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(182, 242, 74, 0.28);
+  border-radius: 7px;
+  color: var(--green);
+  background: rgba(182, 242, 74, 0.08);
+}
+
+.model-fit-head b,
+.model-fit-head small {
+  display: block;
+}
+
+.model-fit-head b {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.model-fit-head small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.model-fit-folder {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-fit-folder span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-fit-goal {
+  width: 100%;
+  min-height: 72px;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  outline: none;
+  color: var(--text);
+  background: #10130d;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.model-fit-goal:focus {
+  border-color: rgba(182, 242, 74, 0.45);
+}
+
+.model-fit-run {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid rgba(182, 242, 74, 0.35);
+  border-radius: 8px;
+  color: #081006;
+  background: var(--green);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.model-fit-run:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.model-fit-output {
+  display: grid;
+  gap: 8px;
+}
+
+.model-fit-note,
+.model-fit-estimate {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.model-fit-note.warn {
+  color: var(--warn);
+}
+
+.model-fit-recs {
+  display: grid;
+  gap: 7px;
+}
+
+.model-fit-rec {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 5px 8px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0d100a;
+}
+
+.model-fit-rec.lime {
+  border-color: rgba(182, 242, 74, 0.28);
+}
+
+.model-fit-rec.warn {
+  border-color: rgba(255, 107, 92, 0.3);
+}
+
+.model-fit-rec span,
+.model-fit-rec i {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.model-fit-rec b {
+  display: block;
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.model-fit-rec p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.model-fit-balance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.model-fit-balance span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: #0d100a;
+  font-size: 10px;
+}
+
+.model-fit-balance span.spend {
+  border-color: rgba(182, 242, 74, 0.3);
+  color: var(--green);
+}
+
+.model-fit-balance span.save {
+  border-color: rgba(255, 107, 92, 0.3);
+  color: var(--warn);
+}
+
+.model-fit-balance b {
+  color: var(--text);
+  font-weight: 700;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -3143,11 +3336,19 @@ button.foot-chip:hover {
   background: #ecefe8;
 }
 
-:root[data-theme="light"] :where(.save-mode-panel, .token-model-tip, .burn-signal, .burn-reason) {
+:root[data-theme="light"] :where(.save-mode-panel, .token-model-tip, .burn-signal, .burn-reason, .model-fit-rec) {
   background: rgba(242, 245, 239, 0.94);
 }
 
-:root[data-theme="light"] :where(.save-mode-actions button, .save-mode-close) {
+:root[data-theme="light"] :where(.save-mode-actions button, .save-mode-close, .model-fit-goal) {
+  background: rgba(235, 239, 230, 0.92);
+}
+
+:root[data-theme="light"] .model-fit-card {
+  background: linear-gradient(180deg, rgba(182, 242, 74, 0.14), rgba(242, 245, 239, 0.94));
+}
+
+:root[data-theme="light"] .model-fit-balance span {
   background: rgba(235, 239, 230, 0.92);
 }
 

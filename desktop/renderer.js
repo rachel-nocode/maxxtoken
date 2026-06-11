@@ -202,6 +202,10 @@ const expandedProviders = new Set()
 let activeSaveProvider = null
 let saveModeScanResult = null
 let refreshingProvider = null
+let modelFitGoal = ''
+let modelFitDir = ''
+let modelFitResult = null
+let modelFitLoading = false
 const THEME_KEY = 'maxxtoken-theme'
 
 function currentTheme() {
@@ -492,13 +496,29 @@ function windowRow(w) {
     w.resetAt &&
     ((w.kind === '5h' && left < 90 * 60000 && w.usedPct < 50) ||
       (w.kind !== '5h' && left < 2 * 86400000 && w.usedPct < 60))
-  const tierLabel = w.kind === '5h' ? 'SESSION · 5H' : w.kind === 'cycle' ? 'BILLING · 30D' : 'WEEKLY · 7D'
+  const tierLabel =
+    w.kind === '5h'
+      ? 'SESSION · 5H'
+      : w.kind === 'cycle'
+        ? 'BILLING · 30D'
+        : w.kind === 'agent-sdk-credit'
+          ? 'CREDIT · MO'
+          : 'WEEKLY · 7D'
   const ahead = expectedPct - usedPct > 2
   const behind = usedPct - expectedPct > 2
   const paceClass = ahead ? 'ahead' : behind ? 'behind' : 'onpace'
   const projectedPct = w.pace && Number.isFinite(Number(w.pace.projectedAtResetPercent))
     ? Number(w.pace.projectedAtResetPercent)
     : null
+  const isCredit = w.kind === 'agent-sdk-credit'
+  const footValue =
+    isCredit && Number.isFinite(Number(w.spentUSD))
+      ? usageMeterMode() === 'left'
+        ? `${h(moneyExact(Math.max(0, Number(w.leftUSD) || 0)))} left`
+        : `${h(moneyExact(Number(w.spentUSD)))} / ${h(money(w.creditUSD))} used`
+      : isCredit && w.valueLabel
+        ? h(w.valueLabel)
+        : `${h(meter.value).replace('%', '<i>%</i>')} ${h(meter.label)}`
   return `
     <div class="usage-window ${paceClass}">
       <div class="usage-window-head">
@@ -507,7 +527,7 @@ function windowRow(w) {
       </div>
       ${usageMeterMode() === 'left' ? meterWithMarkers(meter.pct, usageTone(usedPct), quotaWarningKind(w)) : paceRailSvg(usedPct, expectedPct, projectedPct)}
       <div class="usage-window-foot">
-        <span class="usage-window-pct mono">${h(meter.value).replace('%', '<i>%</i>')} ${h(meter.label)}</span>
+        <span class="usage-window-pct mono">${footValue}</span>
         <span class="usage-window-reset mono ${urgent ? 'urgent' : ''}" data-reset="${w.resetAt || ''}">${countdown(w.resetAt)}</span>
       </div>
     </div>`
@@ -1238,6 +1258,69 @@ function saveSignalForProvider(id) {
   return { provider, signal }
 }
 
+function modelFitProviderIds() {
+  return (snap?.providers || [])
+    .filter((provider) => provider.connected)
+    .map((provider) => provider.id)
+    .slice(0, 4)
+}
+
+function modelFitResults() {
+  if (modelFitLoading) return '<div class="model-fit-note">Scoring live quota, reset timing, and estimated task size...</div>'
+  if (!modelFitResult) return '<div class="model-fit-note">Pick a folder, describe the job, then let MaxxToken rank the best subscription to use.</div>'
+  if (modelFitResult.ok === false) {
+    const missing = Array.isArray(modelFitResult.missing) ? modelFitResult.missing.join(', ') : 'inputs'
+    return `<div class="model-fit-note warn">Missing ${h(missing)}.</div>`
+  }
+  const recs = Array.isArray(modelFitResult.recommendations) ? modelFitResult.recommendations.slice(0, 3) : []
+  const balance = Array.isArray(modelFitResult.balance) ? modelFitResult.balance : []
+  const estimate = modelFitResult.estimate?.summary ? `<div class="model-fit-estimate">${h(modelFitResult.estimate.summary)}</div>` : ''
+  return `
+    ${estimate}
+    <div class="model-fit-recs">
+      ${recs.map((row) => `
+        <div class="model-fit-rec ${h(row.tone || 'neutral')}">
+          <div>
+            <span>${h(row.label)}</span>
+            <b>${h(row.providerName)}</b>
+          </div>
+          <i class="mono">${h(row.score)}</i>
+          <p>${h([...(row.reasons || []), ...(row.cautions || [])][0] || row.action || 'Use for this job.')}</p>
+        </div>`).join('')}
+    </div>
+    <div class="model-fit-balance">
+      ${balance.map((row) => `
+        <span class="${h(row.state)}">
+          <b>${h(row.providerName)}</b>
+          ${h(row.state === 'spend' ? 'spend now' : row.state === 'save' ? 'save quota' : 'balanced')}
+        </span>`).join('')}
+    </div>`
+}
+
+function modelFitCard() {
+  const folderLabel = modelFitDir ? modelFitDir.split(/[\\/]/).filter(Boolean).pop() : 'No folder picked'
+  const disabled = modelFitLoading ? 'disabled' : ''
+  return `
+    <div class="model-fit-card">
+      <div class="model-fit-head">
+        <span>${ICON_DIAL}</span>
+        <div>
+          <b>Best model for this job</b>
+          <small>Balance underused plans against quota risk.</small>
+        </div>
+      </div>
+      <div class="model-fit-folder">
+        <button type="button" class="ghost-btn" data-model-fit-folder ${disabled}>Pick folder</button>
+        <span title="${h(modelFitDir || '')}">${h(folderLabel)}</span>
+      </div>
+      <textarea id="model-fit-goal" class="model-fit-goal" placeholder="Describe the job you are about to run...">${h(modelFitGoal)}</textarea>
+      <button type="button" class="model-fit-run" data-model-fit-run ${disabled}>
+        ${modelFitLoading ? 'Scoring...' : 'Rank models'}
+      </button>
+      <div class="model-fit-output">${modelFitResults()}</div>
+    </div>`
+}
+
 function skeletonProviderCards(count = 4) {
   return Array.from({ length: count }, () => `
     <div class="prov prov-skeleton" aria-hidden="true">
@@ -1328,7 +1411,7 @@ function renderMainList() {
     bindMainListActions()
     return
   }
-  list.innerHTML = snap.providers.map(providerCard).join('')
+  list.innerHTML = modelFitCard() + snap.providers.map(providerCard).join('')
 }
 
 function render() {
@@ -2265,6 +2348,40 @@ $('foot-left').addEventListener('click', (event) => {
 })
 
 $('list').addEventListener('click', (event) => {
+  const modelFitFolder = event.target.closest('[data-model-fit-folder]')
+  if (modelFitFolder) {
+    window.maxx.missionPickFolder().then((result) => {
+      if (result?.ok && result.dir) {
+        modelFitDir = result.dir
+        modelFitResult = null
+        render()
+      }
+    }).catch(() => {})
+    return
+  }
+
+  const modelFitRun = event.target.closest('[data-model-fit-run]')
+  if (modelFitRun) {
+    const goalEl = $('model-fit-goal')
+    modelFitGoal = goalEl ? goalEl.value : modelFitGoal
+    modelFitLoading = true
+    modelFitResult = null
+    render()
+    window.maxx.modelFitRecommend({
+      dir: modelFitDir,
+      goal: modelFitGoal,
+      models: modelFitProviderIds(),
+    }).then((result) => {
+      modelFitResult = result
+    }).catch((err) => {
+      modelFitResult = { ok: false, missing: [err && err.message ? err.message : 'planner'] }
+    }).finally(() => {
+      modelFitLoading = false
+      render()
+    })
+    return
+  }
+
   const saveOpen = event.target.closest('[data-save-open]')
   if (saveOpen) {
     activeSaveProvider = saveOpen.dataset.saveOpen
@@ -2362,6 +2479,12 @@ $('list').addEventListener('click', (event) => {
   if (expandedProviders.has(id)) expandedProviders.delete(id)
   else expandedProviders.add(id)
   render()
+})
+
+$('list').addEventListener('input', (event) => {
+  if (event.target && event.target.id === 'model-fit-goal') {
+    modelFitGoal = event.target.value
+  }
 })
 
 if ($('close-btn')) $('close-btn').addEventListener('click', () => window.maxx.close())
