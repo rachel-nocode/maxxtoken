@@ -51,3 +51,51 @@ After fixes: `R1:red ×2 · R2:yellow · GREEN:green` — diverse, capped, ends 
 - **G3** `usage-history.json` empty → Claude-side R4/forecast dark until fixed (task #9).
 - **R2 Claude** skipped by design until the effort attachment-row heuristic lands (G2).
 - Pre-existing `opencode-go` test failure — unrelated to Token Coach (task #10).
+
+---
+
+# QA_FINDINGS — Licensing gauntlet (spec section 21 ship gate)
+
+Run 2026-06-11 on branch `token-coach`. All 8 edge cases live as permanent automated
+tests across `desktop/test/license-machine.test.js` (13), `license-manager.test.js` (18),
+`license-polar.test.js` (12) — 43 tests, all passing.
+
+## Edge-case coverage (spec section 21 table)
+
+| # | Scenario | Test | Result |
+|---|---|---|---|
+| E1 | Invalid/typo'd key | manager: "E1: invalid/typo key → inline error, no state change, retry allowed"; polar: "404 → invalid_key" | ✅ inline error, UNLICENSED unchanged, retry succeeds |
+| E2 | Key already on 3 machines | manager: "E2: activation limit reached…"; polar: "403 → limit_reached" | ✅ message explains limit + Polar portal link |
+| E3 | Offline at activation | manager: "E3: offline at activation…"; polar: "timeout/network failure → unreachable" | ✅ "need internet once" message, free tier untouched |
+| E4 | Offline 6 months while LICENSED/GRACE | machine: "GRACE stays GRACE forever…"; manager: "E4: offline for 6 months…" (26 weekly failed checks, fake clock) | ✅ unlocked the whole time, GRACE note only |
+| E5 | Refund issued in Polar | machine + manager + polar revoked-status tests | ✅ next successful revalidation → REVOKED; free tracker unaffected (gate is Coach-screen-only) |
+| E6 | Clock tampering | machine: "E6 clock tampering: clock moved backwards…" | ✅ ignored, never locks |
+| E7 | User deletes license file | manager: "E7: user deletes license file…" | ✅ UNLICENSED; re-paste re-activates as new seat |
+| E8 | Validation API returns 500 | machine + manager E8 tests; polar: "5xx → unreachable" | ✅ GRACE rules, stays unlocked, retries next cycle |
+
+## Loop 9 hostile-QA checks
+
+- **(a) Only licensing network call is license validation:** `lib/license/` greps clean —
+  single endpoint `api.polar.sh/v1/customer-portal/license-keys`; request body field
+  allowlist asserted in `license-polar.test.js`. Pre-existing app calls audited in
+  DATA_GAPS.md G8 (none egress usage data).
+- **(b) Free tracker identical with no license file:** gate exists ONLY in
+  `burn-coach.js` (Coach screen render) — Home/Optimize/Missions/Settings code paths
+  never read `licenseState` for gating. No-record state = UNLICENSED handled by
+  "fresh install is UNLICENSED and locked" + corrupted-file test.
+- **(c) Unlock requires no restart:** `burnActivateLicense()` updates
+  `burnState.license` from the activate response and re-renders in place.
+- **No nag modals:** zero launch-time license UI; upsell renders only inside the
+  Coach screen + Settings → LICENSE group. No `dialog.show*` added anywhere in the
+  licensing paths.
+- **State machine never locks on network failure:** asserted by every UNREACHABLE
+  transition test; only explicit revoked/invalid answers move to REVOKED.
+
+## Known limitations (tracked, not blockers)
+
+- `lib/license/config.js` ships with empty `organizationId`/`checkoutUrl` until the
+  Polar product exists — activation returns "Licensing is not configured in this
+  build" and the unlock button opens maxxtoken.app. Fill both after creating the
+  product (manual step).
+- Weekly report + limit forecast render as locked tiles per spec 19.2; the unlocked
+  implementations are the next build loops (PRD Loop 5).

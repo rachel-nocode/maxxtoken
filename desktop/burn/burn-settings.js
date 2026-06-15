@@ -163,6 +163,51 @@ function burnUpdatesBody(state) {
   return `<div style="${bstyle({ padding: '8px 0 0' })}">${versionRow}${statusRow}${buttons}</div>`
 }
 
+// Settings → License (licensing spec section 19.3): key entry always
+// available, status display, tiny GRACE note, REVOKED re-enter prompt.
+// Unlock buttons use the spec's #FF6B00, not the BURN lime.
+const BURN_LICENSE_ORANGE = '#FF6B00'
+
+function burnLicenseSummary() {
+  // No gating — always unlocked.
+  return 'UNLOCKED'
+}
+
+function burnLicenseBody(state) {
+  const lic = state.license || {}
+  const price = lic.price || '$20'
+  const row = (label, value, color) =>
+    `<div style="${bstyle({ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '8px 11px', borderBottom: `1px solid ${BURN.border}` })}">` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.sans, fontSize: 12.5, color: BURN.text })}">${burnEsc(label)}</span>` +
+    `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 11, color: color || BURN.text2, letterSpacing: 0.4 })}">${burnEsc(value)}</span>` +
+    `</div>`
+
+  // No gating: everything is unlocked. Polar is an optional one-time payment
+  // ($20, lifetime upgrades) shown as a Support button.
+  const statusRows = row('Token Coach', 'UNLOCKED · LIFETIME', BURN.limeText)
+
+  const buttons =
+    `<div style="${bstyle({ display: 'flex', gap: 6, padding: '10px 11px 4px' })}">` +
+    `<button type="button" data-burn-action="license-buy" style="${bstyle({
+      padding: '8px 14px',
+      background: BURN_LICENSE_ORANGE,
+      color: '#000000',
+      border: 'none',
+      borderRadius: 2,
+      fontFamily: BURN_FONT.mono,
+      fontSize: 10.5,
+      fontWeight: 700,
+      letterSpacing: 0.8,
+      textTransform: 'uppercase',
+      cursor: 'pointer',
+    })}">Support — ${burnEsc(price)} one-time</button>` +
+    `</div>`
+
+  const pitch = `<div style="${bstyle({ padding: '6px 11px 2px', fontFamily: BURN_FONT.mono, fontSize: 9, letterSpacing: 0.6, color: BURN.text3 })}">FREE & FULLY UNLOCKED. PAY ONCE IF YOU WANT TO SUPPORT — GETS YOU LIFETIME UPGRADES. RUNS LOCAL.</div>`
+
+  return `<div style="${bstyle({ padding: '8px 0 0' })}">${statusRows}${buttons}${pitch}</div>`
+}
+
 function burnRenderSettings(state) {
   const provs = burnSettingsProviders(state)
   const enabled = state.settingsEnabled || {}
@@ -223,6 +268,12 @@ function burnRenderSettings(state) {
       : '') +
     `</div>`
 
+  const licenseGroup =
+    `<div style="${bstyle({ padding: '14px 14px 0' })}">` +
+    burnCollapsibleHead('SUPPORT', burnLicenseSummary(state.license), state.licenseOpen, 'license') +
+    (state.licenseOpen ? burnLicenseBody(state) : '') +
+    `</div>`
+
   const updatesGroup =
     `<div style="${bstyle({ padding: 14 })}">` +
     burnCollapsibleHead('UPDATES', (state.version || 'v0.2.4').toUpperCase(), state.updatesOpen, 'updates') +
@@ -230,7 +281,7 @@ function burnRenderSettings(state) {
     `</div>`
 
   const body =
-    `<div class="burn-body" style="${bstyle({ flex: 1, overflowY: 'auto' })}">${banner}${provRows}${notifsGroup}${appGroup}${updatesGroup}</div>`
+    `<div class="burn-body" style="${bstyle({ flex: 1, overflowY: 'auto' })}">${banner}${provRows}${notifsGroup}${appGroup}${licenseGroup}${updatesGroup}</div>`
 
   const textBtn = bstyle({
     padding: '8px 12px',

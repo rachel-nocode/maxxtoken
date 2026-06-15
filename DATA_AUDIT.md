@@ -69,3 +69,31 @@ Source of truth: rollout JSONL files at `~/.codex/sessions/YYYY/MM/DD/rollout-<t
 | R4 Limit collision | ✅ | Codex: in-band rate_limits per event. Claude: usage-history samples + quota-notifications thresholds. |
 | R5 Stale-session restart | ✅ (v1.1) | Timestamps + session gap computable both agents. |
 | R6 Model overkill | ⚠️ (v1.1) | Model per request available both; "task class" needs prompt-length + diff-size heuristics. |
+
+## Licensing data contract (spec section 20)
+
+### License record location (the ONLY licensing data stored)
+
+| OS | Path |
+|---|---|
+| macOS | `~/Library/Application Support/maxxtoken-menubar/license.json` |
+| Windows | `%APPDATA%/maxxtoken-menubar/license.json` |
+| Linux | `~/.config/maxxtoken-menubar/license.json` |
+
+Written by `desktop/lib/license/store.js` (atomic tmp+rename, same pattern as the G3
+fix). Contents per spec section 18: key, email, activatedAt, lastValidatedAt, status,
+machineId (random UUID, NOT hardware-derived), activationId. Plaintext JSON per spec
+principle 3.
+
+### Outbound network call audit (licensing principle 1)
+
+License validation (`desktop/lib/license/provider-polar.js` →
+`api.polar.sh/v1/customer-portal/license-keys/*`) is the only network call **licensing**
+makes. Request body is exactly `{ organization_id, key, label | activation_id }` —
+zero usage data, verified by test "activate success maps activation id and customer
+email" in `test/license-polar.test.js`.
+
+The app as a whole makes other outbound calls that PRE-DATE licensing and are core to
+the free tracker (fetching the user's own usage from their providers, updates). Full
+list in DATA_GAPS.md G8. None of them transmit local usage data either — they READ
+usage from provider APIs using the user's own credentials.

@@ -51,3 +51,16 @@ tokens-per-% conversion.
 **Workaround:** compute an empirical tokens-per-% rate from same-window deltas (tokens consumed
 between two samples ÷ %-points moved). Show "≈" and only when ≥2 clean samples exist in the window;
 otherwise the card shows tokens + % separately without equivalence.
+
+## G8 — "License validation is the ONLY network call" (spec 15.1): pre-existing outbound calls, audited
+Licensing itself adds exactly one endpoint (`api.polar.sh/v1/customer-portal/license-keys/*`,
+key + machine label only — never usage data). The app already makes these other outbound calls,
+all core free-tracker function or user-initiated, none sending local usage data anywhere:
+- **Provider usage adapters** (`lib/adapters/*.js`, ~45 providers): READ the user's own usage
+  from each provider's API with the user's own credentials. Inbound data, nothing uploaded.
+- **Auto-updater** (`electron-updater` → GitHub releases): version checks + downloads.
+- **models.dev pricing** (`lib/models-dev-pricing.js`): public price table fetch.
+- **Missions idea generation** (`lib/ideas.js`, `lib/llm.js`): user-initiated LLM calls.
+**Resolution:** spec principle reads as "licensing introduces no new data egress" — holds.
+The positioning line "your data never leaves your machine" stays accurate: usage analysis
+(Token Coach verdicts) runs 100% on-device; verdict content is never transmitted.

@@ -1382,7 +1382,7 @@ ipcMain.handle('coach-verdicts', async () => {
     const { previewInput } = require('./lib/token-coach/fixtures')
     return { ok: true, preview: true, generatedAt: Date.now(), verdicts: runDailyVerdict(previewInput) }
   } catch (err) {
-    log('coach-verdicts failed', err && err.message)
+    logger.error('coach', 'coach-verdicts failed', { error: err && err.message })
     return { ok: false, preview: false, generatedAt: Date.now(), verdicts: [], error: 'Could not build verdicts.' }
   }
 })
@@ -1470,6 +1470,37 @@ ipcMain.handle('mission-start-project', async (_e, payload) => {
     error: result.error,
   }
 })
+
+// Token Coach licensing — single licenseState source of truth (licensing
+// spec section 15.5). Lazy singleton: the manager reads/writes license.json
+// in userData and talks to Polar; everything paid gates off its getState().
+let _licenseManager = null
+function licenseManager() {
+  if (!_licenseManager) {
+    const { createLicenseManager } = require('./lib/license')
+    _licenseManager = createLicenseManager({
+      dir: app.getPath('userData'),
+      log: (msg, detail) => logger.warn('license', msg, { detail }),
+    })
+  }
+  return _licenseManager
+}
+
+ipcMain.handle('license-state', () => licenseManager().getState())
+ipcMain.handle('license-activate', (_e, payload) =>
+  licenseManager().activate(payload && payload.key, payload && payload.email),
+)
+ipcMain.handle('license-deactivate', () => licenseManager().deactivate())
+
+// Silent revalidation (spec section 17): the manager self-throttles to once
+// per 7 days, so a daily timer just gives it chances while the app is
+// running. Unreachable checks never lock — fail open, log quietly.
+let licenseRevalidateTimer = null
+function setupLicenseRevalidation() {
+  const kick = () => licenseManager().revalidateIfDue().catch(() => {})
+  setTimeout(kick, 30_000) // let launch I/O settle first
+  licenseRevalidateTimer = setInterval(kick, 24 * 60 * 60 * 1000)
+}
 
 let updateTimer = null
 let updatePromptShown = false
@@ -1575,6 +1606,7 @@ if (!gotSingleInstanceLock) {
       logger,
     })
     setupAutoUpdate()
+    setupLicenseRevalidation()
   })
 }
 
@@ -1582,6 +1614,7 @@ app.on('before-quit', () => {
   clearInterval(refreshTimer)
   clearInterval(heavyRefreshTimer)
   clearInterval(updateTimer)
+  clearInterval(licenseRevalidateTimer)
   localApi.stopLocalApi()
   for (const child of activeSnapshotWorkers) {
     try { child.kill() } catch {}

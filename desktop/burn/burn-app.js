@@ -22,10 +22,17 @@ const burnState = {
   optPromptOpen: {}, // promptKey -> true (compact prompt dropdowns)
   optContextScan: {}, // providerId -> scan result for context bloat fixer
   optContextScanLoading: {}, // providerId -> true while folder picker/scan runs
-  // token coach (beta) — Daily Verdict cards over IPC
+  // token coach — Daily Verdict cards over IPC
   coachModel: null,
   coachLoading: false,
   coachOpen: {}, // verdictId -> true (evidence expanded)
+  // licensing — mirror of main's licenseState (single source of truth lives
+  // in lib/license; this is display state only)
+  license: null, // { status, unlocked, email, maskedKey, graceNote, checkoutUrl, portalUrl, price }
+  licenseKeyInput: '',
+  licenseNote: null, // { kind: 'error'|'ok', text } shown inline near the key field
+  licenseBusy: false,
+  licenseOpen: false, // settings LICENSE group collapsed state
   // mission-setup form
   missionModels: {},
   missionFolder: null, // display basename
@@ -120,6 +127,70 @@ function burnGo(screen) {
   burnRender()
   if (screen === 'missions' && !burnState.ideasLoaded && !burnState.ideasLoading) burnLoadIdeas()
   if (screen === 'coach' && !burnState.coachModel && !burnState.coachLoading) burnLoadCoach()
+}
+
+// Refresh the license state mirror. Cheap local IPC (reads a JSON file);
+// called at init and whenever a licensing action completes.
+async function burnLoadLicense() {
+  if (!window.maxx?.licenseState) return
+  try {
+    burnState.license = await window.maxx.licenseState()
+  } catch (err) {
+    console.error('[burn] licenseState failed', err)
+  }
+}
+
+// Activate a pasted key. Unlock is instant on success (spec section 19): the
+// new state lands in burnState.license and the next render shows full cards —
+// no restart.
+async function burnActivateLicense() {
+  if (burnState.licenseBusy || !window.maxx?.licenseActivate) return
+  const key = (burnState.licenseKeyInput || '').trim()
+  if (!key) {
+    burnState.licenseNote = { kind: 'error', text: 'Paste your license key first.' }
+    burnRender()
+    return
+  }
+  burnState.licenseBusy = true
+  burnState.licenseNote = null
+  burnRender()
+  try {
+    const res = await window.maxx.licenseActivate({ key })
+    if (res && res.state) burnState.license = res.state
+    if (res && res.ok) {
+      burnState.licenseKeyInput = ''
+      burnState.licenseNote = { kind: 'ok', text: 'Token Coach unlocked. Enjoy.' }
+    } else {
+      burnState.licenseNote = { kind: 'error', text: (res && res.message) || 'Activation failed.' }
+    }
+  } catch (err) {
+    console.error('[burn] licenseActivate failed', err)
+    burnState.licenseNote = { kind: 'error', text: 'Activation failed. Try again.' }
+  } finally {
+    burnState.licenseBusy = false
+    burnRender()
+  }
+}
+
+async function burnDeactivateLicense() {
+  if (burnState.licenseBusy || !window.maxx?.licenseDeactivate) return
+  burnState.licenseBusy = true
+  burnRender()
+  try {
+    const res = await window.maxx.licenseDeactivate()
+    if (res && res.state) burnState.license = res.state
+    burnState.licenseNote = { kind: 'ok', text: 'Seat freed. This machine is back on the free tracker.' }
+  } catch (err) {
+    console.error('[burn] licenseDeactivate failed', err)
+  } finally {
+    burnState.licenseBusy = false
+    burnRender()
+  }
+}
+
+function burnBuyLicense() {
+  const url = (burnState.license && burnState.license.checkoutUrl) || 'https://maxxtoken.app'
+  window.maxx?.openExternal?.(url)
 }
 
 // Pull Daily Verdict cards once per popover session, then re-render Coach.
@@ -447,6 +518,7 @@ function burnHandleClick(e) {
     if (key === 'notifs') burnState.notifsOpen = !burnState.notifsOpen
     else if (key === 'app') burnState.appOpen = !burnState.appOpen
     else if (key === 'updates') burnState.updatesOpen = !burnState.updatesOpen
+    else if (key === 'license') burnState.licenseOpen = !burnState.licenseOpen
     burnRender()
     return
   }
@@ -455,6 +527,10 @@ function burnHandleClick(e) {
   if (action) {
     const which = action.getAttribute('data-burn-action')
     if (which === 'sync') burnSync()
+    else if (which === 'license-buy') burnBuyLicense()
+    else if (which === 'license-activate') burnActivateLicense()
+    else if (which === 'license-deactivate') burnDeactivateLicense()
+    else if (which === 'license-settings') { burnState.licenseOpen = true; burnGo('settings') }
     else if (which === 'pick-folder') burnPickFolder()
     else if (which === 'copy-goal') window.maxx?.copyText?.(burnState.missionGoal)
     else if (which === 'start-mission') burnStartMission()
@@ -670,6 +746,11 @@ function burnHandleInput(e) {
   const cookie = e.target.closest('[data-burn-cookie]')
   if (cookie) {
     burnState.cookies[cookie.getAttribute('data-burn-cookie')] = cookie.value
+    return
+  }
+  const licenseKey = e.target.closest('[data-burn-license-key]')
+  if (licenseKey) {
+    burnState.licenseKeyInput = licenseKey.value
   }
 }
 
@@ -821,6 +902,9 @@ function burnResize() {
 
 function burnPreparePopoverOpen() {
   if (burnState.screen !== 'home' && burnState.screen !== 'mission-setup') burnGo('home')
+  // Background revalidation may have moved the license state since the last
+  // open (e.g. GRACE ↔ LICENSED, refund → REVOKED). Refresh quietly.
+  burnLoadLicense().catch(() => {})
   return Promise.resolve(burnResize()).catch(() => {})
 }
 
@@ -864,6 +948,12 @@ async function burnInit() {
   burnOptLoadStore()
   applyBurnTheme(burnState.app.lightMode)
   burnRender()
+
+  // License state mirrors main's licenseState; gates the Coach screen only —
+  // the free tracker never touches it.
+  burnLoadLicense().then(() => {
+    if (burnState.screen === 'coach' || burnState.screen === 'settings') burnRender()
+  })
 
   if (window.maxx?.getUpdateStatus) {
     window.maxx.getUpdateStatus().then(burnUpdateApply).catch(() => {})
