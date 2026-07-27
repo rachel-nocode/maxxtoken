@@ -119,7 +119,39 @@ function usageWindowFromDef(data, def) {
   return null
 }
 
+// Mid-2026 API shape: a `limits` array replaces the flat five_hour/seven_day
+// buckets (kind: session | weekly_all | weekly_scoped, scoped per-model).
+function windowsFromLimits(limits) {
+  const windows = []
+  for (const l of limits) {
+    if (!l || typeof l.percent !== 'number') continue
+    if (l.kind === 'session' || l.group === 'session') {
+      windows.push({
+        label: 'Session',
+        kind: '5h',
+        usedPct: Math.round(l.percent),
+        resetAt: toMs(l.resets_at),
+        periodMs: 5 * 3600e3,
+      })
+      continue
+    }
+    const scopeName = cleanText(l.scope?.model?.display_name) || cleanText(l.scope?.surface?.display_name)
+    windows.push({
+      label: l.kind === 'weekly_all' || !scopeName ? 'Weekly' : scopeName,
+      kind: '7d',
+      usedPct: Math.round(l.percent),
+      resetAt: toMs(l.resets_at),
+      periodMs: 7 * 86400e3,
+    })
+  }
+  return windows
+}
+
 function windowsFromUsage(data) {
+  if (Array.isArray(data?.limits) && data.limits.length) {
+    const windows = windowsFromLimits(data.limits)
+    if (windows.length) return windows
+  }
   const defs = [
     { keys: ['five_hour'], label: 'Session', kind: '5h', periodMs: 5 * 3600e3 },
     { keys: ['seven_day'], label: 'Weekly', kind: '7d', periodMs: 7 * 86400e3 },
@@ -555,6 +587,7 @@ module.exports = {
     scanClaudeTokenUsage,
     tokenHistoryDays,
     tokenHistoryLabel,
+    windowsFromLimits,
     windowsFromUsage,
   },
 }

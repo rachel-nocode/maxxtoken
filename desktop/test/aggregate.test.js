@@ -904,6 +904,66 @@ test('claude usage parser exposes CodexBar-style specific buckets', () => {
   assert.equal(windows.find((w) => w.label === 'Daily Routines').usedPct, 0)
 })
 
+test('codex live usage labels a weekly-length primary window as Weekly', () => {
+  const usage = codex._private.parseLiveUsage({
+    plan_type: 'pro',
+    rate_limit: {
+      allowed: true,
+      primary_window: { used_percent: 5, limit_window_seconds: 604800, reset_after_seconds: 536386 },
+      secondary_window: null,
+    },
+    additional_rate_limits: [{
+      limit_name: 'GPT-5.3-Codex-Spark',
+      metered_feature: 'codex_bengalfox',
+      rate_limit: {
+        primary_window: { used_percent: 1, limit_window_seconds: 604800, reset_after_seconds: 535146 },
+        secondary_window: null,
+      },
+    }],
+    credits: { has_credits: false, unlimited: false, balance: '0' },
+  })
+
+  assert.deepEqual(usage.windows.map((w) => [w.label, w.kind, w.usedPct]), [
+    ['Weekly', '7d', 5],
+    ['Spark Weekly', '7d', 1],
+  ])
+})
+
+test('claude usage parser prefers the new limits array over legacy buckets', () => {
+  const windows = claude._private.windowsFromUsage({
+    five_hour: { utilization: 1, resets_at: '2026-07-20T18:49:59Z' },
+    seven_day: { utilization: 0, resets_at: '2026-07-26T01:59:59Z' },
+    seven_day_opus: null,
+    limits: [
+      { kind: 'session', group: 'session', percent: 1, resets_at: '2026-07-20T18:49:59Z', scope: null },
+      { kind: 'weekly_all', group: 'weekly', percent: 12, resets_at: '2026-07-26T01:59:59Z', scope: null },
+      {
+        kind: 'weekly_scoped',
+        group: 'weekly',
+        percent: 34,
+        resets_at: '2026-07-26T01:59:59Z',
+        scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+      },
+    ],
+  })
+
+  assert.deepEqual(windows.map((w) => [w.label, w.kind, w.usedPct]), [
+    ['Session', '5h', 1],
+    ['Weekly', '7d', 12],
+    ['Fable', '7d', 34],
+  ])
+  assert.ok(windows.every((w) => Number.isFinite(w.resetAt)))
+})
+
+test('claude usage parser falls back to legacy buckets when limits is empty', () => {
+  const windows = claude._private.windowsFromUsage({
+    five_hour: { utilization: 2, resets_at: '2026-05-26T12:00:00Z' },
+    seven_day: { utilization: 13, resets_at: '2026-05-30T12:00:00Z' },
+    limits: [],
+  })
+  assert.deepEqual(windows.map((w) => w.label), ['Session', 'Weekly'])
+})
+
 test('burn adapter only renders primary provider windows plus Claude Agent SDK credit', () => {
   const { burnAdaptProvider } = loadBurnAdaptForTest()
   const resetAt = Date.now() + 5 * 3600e3

@@ -22,18 +22,27 @@ function hexMaybeDecode(text) {
   return t
 }
 
+function oauthExpiresAt(candidate) {
+  const at = Number(candidate?.data?.claudeAiOauth?.expiresAt)
+  return Number.isFinite(at) ? at : 0
+}
+
 // Returns { claudeAiOauth: {...} } or null. Never throws.
+// Newer Claude Code versions write only to the keychain, so a stale
+// ~/.claude/.credentials.json can shadow a fresh login — when the file token
+// is expired, also read the keychain and use whichever expires later.
 function readClaudeCredentials() {
-  // 1. plaintext file
+  let fileCreds = null
   try {
     if (fs.existsSync(CLAUDE_CRED_FILE)) {
       const parsed = JSON.parse(fs.readFileSync(CLAUDE_CRED_FILE, 'utf8'))
-      if (parsed && parsed.claudeAiOauth) return { data: parsed, source: 'file' }
+      if (parsed && parsed.claudeAiOauth) fileCreds = { data: parsed, source: 'file' }
     }
   } catch {
     /* try keychain */
   }
-  // 2. macOS keychain (may prompt the user to Allow on first access)
+  if (fileCreds && oauthExpiresAt(fileCreds) > Date.now()) return fileCreds
+  // macOS keychain (may prompt the user to Allow on first access)
   try {
     const raw = execFileSync(
       'security',
@@ -41,11 +50,16 @@ function readClaudeCredentials() {
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     )
     const parsed = JSON.parse(hexMaybeDecode(raw))
-    if (parsed && parsed.claudeAiOauth) return { data: parsed, source: 'keychain' }
+    if (parsed && parsed.claudeAiOauth) {
+      const keychainCreds = { data: parsed, source: 'keychain' }
+      if (!fileCreds || oauthExpiresAt(keychainCreds) >= oauthExpiresAt(fileCreds)) {
+        return keychainCreds
+      }
+    }
   } catch {
     /* not found */
   }
-  return null
+  return fileCreds
 }
 
 function keychainAccount() {

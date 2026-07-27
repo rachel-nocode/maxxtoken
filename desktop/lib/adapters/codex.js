@@ -337,11 +337,17 @@ function codexWindowsFromRateLimit(rateLimit, headers = null) {
     numberHeader(headers, 'x-codex-secondary-used-percent') ?? usedPercentFromWindow(secondaryWindow)
   const windows = []
 
+  // Mid-2026 payloads collapsed to a single weekly primary_window (secondary
+  // null), so label/kind must follow the window's actual period, not its slot.
   if (primaryUsed != null) {
-    windows.push(windowFrom('Session', '5h', primaryUsed, primaryWindow, PERIOD_SESSION_MS))
+    const periodMs = periodMsFromWindow(primaryWindow, PERIOD_SESSION_MS)
+    const kind = kindFromPeriod(periodMs, '5h')
+    windows.push(windowFrom(kind === '7d' ? 'Weekly' : 'Session', kind, primaryUsed, primaryWindow, periodMs))
   }
   if (secondaryUsed != null) {
-    windows.push(windowFrom('Weekly', '7d', secondaryUsed, secondaryWindow, PERIOD_WEEKLY_MS))
+    const periodMs = periodMsFromWindow(secondaryWindow, PERIOD_WEEKLY_MS)
+    const kind = kindFromPeriod(periodMs, '7d')
+    windows.push(windowFrom(kind === '5h' ? 'Session' : 'Weekly', kind, secondaryUsed, secondaryWindow, periodMs))
   }
 
   const known = new Set(['primary_window', 'secondary_window', 'primary', 'secondary', 'credits'])
@@ -360,12 +366,10 @@ function additionalCodexWindows(limits) {
     if (!rateLimit || typeof rateLimit !== 'object') continue
     const primary = windowFromRateLimit('primary_window', rateLimit.primary_window || rateLimit.primary, {
       label: labelForAdditionalLimit(limit, 'primary_window', rateLimit.primary_window || rateLimit.primary),
-      kind: '5h',
       periodMs: PERIOD_SESSION_MS,
     })
     const secondary = windowFromRateLimit('secondary_window', rateLimit.secondary_window || rateLimit.secondary, {
       label: labelForAdditionalLimit(limit, 'secondary_window', rateLimit.secondary_window || rateLimit.secondary),
-      kind: '7d',
       periodMs: PERIOD_WEEKLY_MS,
     })
     if (primary) windows.push(primary)
