@@ -135,8 +135,9 @@ const copilotLoginSessions = new Map()
 const POPOVER_WIDTH = 420
 const POPOVER_HEIGHT = 720
 const POPOVER_COMPACT_HEIGHT = 610
-// Light pull: rate-limit windows + balances. Cheap, runs often.
-const REFRESH_INTERVAL_MS = 5 * 60 * 1000
+// Light pull: rate-limit windows + balances. Match OpenUsage's provider poll
+// cadence so active usage stays within 30 seconds of the provider response.
+const REFRESH_INTERVAL_MS = 30 * 1000
 // Heavy pull: also scans local token-history logs for cost data. Expensive, so
 // it runs far less often (CodexBar uses the same 1-hour cadence for cost data).
 const HEAVY_REFRESH_INTERVAL_MS = 60 * 60 * 1000
@@ -1595,7 +1596,7 @@ if (!gotSingleInstanceLock) {
     createPopover()
     createTray()
     // Prime token/cost data once on launch, then split cadence: light every
-    // 5 min (windows + balances), heavy hourly (also scans token-history logs).
+    // 30s (windows + balances), heavy hourly (also scans token-history logs).
     syncSnapshot({ force: true, heavy: true }).catch(() => {})
     refreshTimer = setInterval(() => syncSnapshot({ force: true, heavy: false }).catch(() => {}), REFRESH_INTERVAL_MS)
     heavyRefreshTimer = setInterval(() => syncSnapshot({ force: true, heavy: true }).catch(() => {}), HEAVY_REFRESH_INTERVAL_MS)
