@@ -42,9 +42,20 @@ function burnWindowCaption(window) {
   return label
 }
 
-function burnPrimaryWindows(windows) {
-  const session = burnFindWindow(windows, '5h')
-  const weekly = burnFindWindow(windows, 'weekly')
+function burnFindPrimaryWindow(windows, kind, providerId) {
+  if (providerId === 'codex') {
+    const label = kind === '5h' ? 'session' : 'weekly'
+    return (windows || []).find((w) => String(w?.label || '').trim().toLowerCase() === label) || null
+  }
+  return burnFindWindow(windows, kind)
+}
+
+function burnPrimaryWindows(windows, providerId) {
+  if (providerId === 'cursor') {
+    return (windows || []).filter((w) => burnFiniteNumber(w?.usedPct) != null).slice(0, 3)
+  }
+  const session = burnFindPrimaryWindow(windows, '5h', providerId)
+  const weekly = burnFindPrimaryWindow(windows, 'weekly', providerId)
   const agentSdk = (windows || []).find((w) => w.kind === 'agent-sdk-credit')
   const primary = [session, weekly].filter(Boolean)
   if (agentSdk) primary.push(agentSdk)
@@ -121,8 +132,8 @@ function burnStatus(provider, windows) {
 
 function burnAdaptProvider(provider, options = {}) {
   const windows = Array.isArray(provider.windows) ? provider.windows : []
-  const session = burnFindWindow(windows, '5h')
-  const weekly = burnFindWindow(windows, 'weekly')
+  const session = burnFindPrimaryWindow(windows, '5h', provider.id)
+  const weekly = burnFindPrimaryWindow(windows, 'weekly', provider.id)
   const used = burnPct(provider.capturedPct)
   const meterSource = session || provider
   const meter = burnMeterForPct(
@@ -132,9 +143,10 @@ function burnAdaptProvider(provider, options = {}) {
   )
   const status = burnStatus(provider, windows)
   // Reset shown on the collapsed row: prefer the soonest window reset.
-  const resets = [...windows.map((w) => w.resetAt), provider.resetAt].filter(Boolean)
+  const resetWindows = provider.id === 'codex' ? burnPrimaryWindows(windows, provider.id) : windows
+  const resets = [...resetWindows.map((w) => w.resetAt), provider.resetAt].filter(Boolean)
   const soonest = resets.length ? Math.min(...resets) : null
-  const displayWindows = burnPrimaryWindows(windows)
+  const displayWindows = burnPrimaryWindows(windows, provider.id)
     .filter((w) => w && (w.kind !== 'cycle' ? true : w?.label))
     .map((w) => ({
       label: burnWindowCaption(w),

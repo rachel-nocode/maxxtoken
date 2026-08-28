@@ -992,6 +992,30 @@ test('burn adapter only renders primary provider windows plus Claude Agent SDK c
   assert.equal(adapted.windowSummary, '5H 2% · 7D 3% · AGENT SDK $200/MO')
 })
 
+test('burn adapter renders every Cursor usage bucket', () => {
+  const { burnAdaptProvider } = loadBurnAdaptForTest()
+  const resetAt = Date.now() + 23 * 86400e3
+  const adapted = burnAdaptProvider({
+    id: 'cursor',
+    name: 'Cursor',
+    plan: 'Ultra',
+    connected: true,
+    capturedPct: 11,
+    resetAt,
+    windows: [
+      { label: 'Total Usage', kind: 'cycle', usedPct: 11, resetAt },
+      { label: 'Cursor Models', kind: 'cycle', usedPct: 10.5, resetAt },
+      { label: 'Other Models', kind: 'cycle', usedPct: 12.7, resetAt },
+    ],
+  })
+
+  assert.deepEqual(adapted.windows.map((w) => [w.label, w.value]), [
+    ['TOTAL USAGE', '11%'],
+    ['CURSOR MODELS', '11%'],
+    ['OTHER MODELS', '13%'],
+  ])
+})
+
 test('burn adapter can show session quota left without changing raw usage sorting fields', () => {
   const { burnAdaptProvider } = loadBurnAdaptForTest()
   const resetAt = Date.now() + 5 * 3600e3
@@ -1042,6 +1066,30 @@ test('burn adapter collapsed meter prefers 5-hour session over weekly headline',
   assert.equal(adapted.meterPct, 12)
   assert.equal(adapted.meterValue, '12%')
   assert.equal(adapted.meterLabel, 'USED')
+})
+
+test('burn adapter does not promote a Codex Spark limit to the missing session window', () => {
+  const { burnAdaptProvider, burnFormatReset } = loadBurnAdaptForTest()
+  const sparkReset = Date.now() + 5 * 3600e3
+  const weeklyReset = sparkReset + 6 * 86400e3
+  const adapted = burnAdaptProvider({
+    id: 'codex',
+    name: 'ChatGPT',
+    plan: 'Pro 5x',
+    connected: true,
+    capturedPct: 2,
+    resetAt: weeklyReset,
+    windows: [
+      { label: 'Weekly', kind: '7d', usedPct: 2, resetAt: weeklyReset },
+      { label: 'Spark', kind: '5h', usedPct: 0, resetAt: sparkReset },
+      { label: 'Spark Weekly', kind: '7d', usedPct: 2, resetAt: weeklyReset },
+    ],
+  })
+
+  assert.equal(adapted.meterPct, 2)
+  assert.deepEqual(JSON.parse(JSON.stringify(adapted.windows.map((w) => [w.label, w.value]))), [['7D', '2%']])
+  assert.equal(adapted.windowSummary, '7D 2%')
+  assert.equal(adapted.reset, burnFormatReset(weeklyReset))
 })
 
 test('burn adapter collapsed left meter prefers 5-hour session remaining', () => {
@@ -2646,6 +2694,26 @@ test('cursor usage summary maps cents and plan percentages', () => {
   assert.equal(usage.autoPercentUsed, 20)
   assert.equal(usage.apiPercentUsed, 30)
   assert.equal(usage.email, 'test@example.com')
+})
+
+test('cursor usage summary names the distinct Ultra quota pools', () => {
+  const usage = cursor._private.parseUsageSummary({
+    billingCycleEnd: '2026-06-01T00:00:00.000Z',
+    membershipType: 'ultra',
+    individualUsage: {
+      plan: {
+        totalPercentUsed: 11,
+        autoPercentUsed: 10.5,
+        apiPercentUsed: 12.7,
+      },
+    },
+  })
+
+  assert.deepEqual(usage.usageBuckets, [
+    { label: 'Total Usage', usedPct: 11, resetAt: Date.parse('2026-06-01T00:00:00.000Z') },
+    { label: 'Cursor Models', usedPct: 10.5, resetAt: Date.parse('2026-06-01T00:00:00.000Z') },
+    { label: 'Other Models', usedPct: 12.7, resetAt: Date.parse('2026-06-01T00:00:00.000Z') },
+  ])
 })
 
 test('cursor dashboard usage maps app auth current-period data', () => {

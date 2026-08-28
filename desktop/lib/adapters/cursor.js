@@ -233,6 +233,16 @@ function priceUSD(value) {
   return match ? Number(match[1]) : null
 }
 
+function cursorUsageBuckets({ totalPct, autoPct, apiPct, resetAt }) {
+  return [
+    { label: 'Total Usage', usedPct: totalPct },
+    { label: 'Cursor Models', usedPct: autoPct },
+    { label: 'Other Models', usedPct: apiPct },
+  ]
+    .filter((bucket) => bucket.usedPct != null)
+    .map((bucket) => ({ ...bucket, resetAt }))
+}
+
 function parseUsageSummary(summary, user = {}) {
   const plan = summary?.individualUsage?.plan || {}
   const onDemand = summary?.individualUsage?.onDemand || {}
@@ -251,6 +261,7 @@ function parseUsageSummary(summary, user = {}) {
     planPercentUsed,
     autoPercentUsed: autoPct,
     apiPercentUsed: apiPct,
+    usageBuckets: cursorUsageBuckets({ totalPct: planPercentUsed, autoPct, apiPct, resetAt }),
     planUsedUSD,
     planLimitUSD,
     onDemandUsedUSD,
@@ -293,6 +304,7 @@ function parseDashboardUsage(currentPeriod = {}, planInfoResponse = {}, user = {
     planPercentUsed: planPercentUsed ?? 0,
     autoPercentUsed: autoPct,
     apiPercentUsed: apiPct,
+    usageBuckets: cursorUsageBuckets({ totalPct: planPercentUsed, autoPct, apiPct, resetAt }),
     planUsedUSD: Number.isFinite(planSpentCents) ? centsToUsd(planSpentCents) : 0,
     planLimitUSD: Number.isFinite(planLimitCents) ? centsToUsd(planLimitCents) : 0,
     monthlyPriceUSD: priceUSD(planInfo.price),

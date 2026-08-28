@@ -1042,33 +1042,11 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
     const monthly = d.monthlyPriceUSD > 0 ? d.monthlyPriceUSD : conf.monthly
     const spent = d.planUsedUSD || 0
     const capturedPct = percent(d.planPercentUsed)
-    const windows = [
-      {
-        label: 'Total',
-        kind: 'cycle',
-        usedPct: capturedPct || 0,
-        resetAt: d.resetAt,
-        periodMs: null,
-      },
-      d.autoPercentUsed == null
-        ? null
-        : {
-            label: 'Auto',
-            kind: 'cycle',
-            usedPct: percent(d.autoPercentUsed) || 0,
-            resetAt: d.resetAt,
-            periodMs: null,
-          },
-      d.apiPercentUsed == null
-        ? null
-        : {
-            label: 'API',
-            kind: 'cycle',
-            usedPct: percent(d.apiPercentUsed) || 0,
-            resetAt: d.resetAt,
-            periodMs: null,
-          },
-    ].filter(Boolean)
+    const windows = (d.usageBuckets || [
+      { label: 'Total Usage', usedPct: capturedPct || 0, resetAt: d.resetAt },
+      d.autoPercentUsed == null ? null : { label: 'Cursor Models', usedPct: percent(d.autoPercentUsed) || 0, resetAt: d.resetAt },
+      d.apiPercentUsed == null ? null : { label: 'Other Models', usedPct: percent(d.apiPercentUsed) || 0, resetAt: d.resetAt },
+    ].filter(Boolean)).map((bucket) => ({ ...bucket, kind: 'cycle', periodMs: null }))
     const urgent = cycle.daysLeft <= 3 && (capturedPct || 0) < 70
     return {
       ...base,
@@ -3456,7 +3434,7 @@ async function snapshot(options = {}) {
   const snapStart = Date.now()
   // Heavy pulls (default) scan local token-history logs; light pulls skip that
   // and carry forward the last heavy scan. Main process schedules heavy hourly,
-  // light every 5 min + on popover open.
+  // light every 30s + on popover open.
   const heavy = options.heavy !== false
   const config = loadConfig()
   const cycle = billingCycle(config.billingDay)

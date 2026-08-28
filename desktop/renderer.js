@@ -383,8 +383,9 @@ function collapsedFallbackLine(pct, kind) {
     </div>`
 }
 
-function pickCollapsedWindows(windows = []) {
+function pickCollapsedWindows(windows = [], providerId = '') {
   const has = (w) => w && Number.isFinite(Number(w.usedPct))
+  if (providerId === 'cursor') return windows.filter(has).slice(0, 3)
   const lower = (w) => String(`${w?.label || ''} ${w?.kind || ''}`).toLowerCase()
   const session = windows.find((w) => has(w) && quotaWarningKind(w) === 'session' && lower(w).includes('session'))
     || windows.find((w) => has(w) && quotaWarningKind(w) === 'session')
@@ -417,7 +418,7 @@ function fallbackUsageRow(pct, kind) {
 }
 
 function collapsedWindowBars(p, fallbackPct, fallbackKind) {
-  const windows = pickCollapsedWindows(p.windows || [])
+  const windows = pickCollapsedWindows(p.windows || [], p.id)
   if (!windows.length) return collapsedFallbackLine(fallbackPct, fallbackKind)
   return `
     <div class="prov-window-bars">

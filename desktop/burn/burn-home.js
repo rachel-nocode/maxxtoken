@@ -10,7 +10,14 @@ function burnProviderRow(p, expanded) {
   const meterLabel = p.meterLabel || 'USED'
 
   const topRow =
-    `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 7 })}">` +
+    `<div class="burn-provider-rail" style="${bstyle({
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      padding: '9px 11px',
+      background: BURN.surface,
+      borderBottom: `1px solid ${BURN.borderHi}`,
+    })}">` +
     burnProvGlyph(p.id, 14, BURN.text) +
     `<span style="${bstyle({ fontFamily: BURN_FONT.sans, fontWeight: 700, fontSize: 13, letterSpacing: -0.1 })}">${burnEsc(p.name)}</span>` +
     `<span style="${bstyle({ fontFamily: BURN_FONT.mono, fontSize: 9.5, color: BURN.text2, letterSpacing: 0.5, textTransform: 'uppercase' })}">${burnEsc(p.plan)}</span>` +
@@ -57,10 +64,12 @@ function burnProviderRow(p, expanded) {
     `</div>`
 
   const collapsed =
-    `<div data-burn-row="${burnEsc(p.id)}" style="${bstyle({ padding: '11px 14px', cursor: 'pointer' })}">` +
+    `<div data-burn-row="${burnEsc(p.id)}" style="${bstyle({ cursor: 'pointer' })}">` +
     topRow +
+    `<div style="${bstyle({ padding: '10px 11px 11px' })}">` +
     burnSegBar({ pct: meterPct, burning }) +
     caption +
+    `</div>` +
     `</div>`
 
   // Detail panel is always in the DOM; the .open class drives the 120ms
@@ -68,7 +77,11 @@ function burnProviderRow(p, expanded) {
   const detail = `<div class="burn-detail">${burnProviderExpanded(p)}</div>`
 
   return (
-    `<div class="burn-prov${expanded ? ' open' : ''}" data-burn-prov="${burnEsc(p.id)}" style="${bstyle({ borderBottom: `1px solid ${BURN.border}`, background: rowBg })}">` +
+    `<div class="burn-prov${expanded ? ' open' : ''}" data-burn-prov="${burnEsc(p.id)}" style="${bstyle({
+      margin: '10px 10px 0',
+      border: `1px solid ${BURN.borderHi}`,
+      background: rowBg,
+    })}">` +
     collapsed +
     detail +
     `</div>`
@@ -200,7 +213,7 @@ function burnRenderHome(state) {
   return (
     burnHeader({ title: 'BURN', hasSignals: typeof optHasSignals === 'function' && optHasSignals(state) }) +
     burnLiveStrip({ streams: providers.length, burning }) +
-    `<div class="burn-body" style="${bstyle({ flex: 1, overflowY: 'auto' })}">${rows}</div>` +
+    `<div class="burn-body" style="${bstyle({ flex: 1, overflowY: 'auto', paddingBottom: 10 })}">${rows}</div>` +
     burnFooter({ items: state.footer, syncing: state.syncing })
   )
 }
