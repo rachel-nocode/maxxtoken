@@ -33,6 +33,36 @@ Save users tokens and help them get the most out of the AI subscriptions they al
 
 Drag into Applications and launch. Auto-updates ship through releases — `Settings → Check for updates`.
 
+## Terminal
+
+The same bars, in your terminal — a btop-style dashboard invoked with `maxxtoken`:
+
+```
+ █▀▄▀█ ▄▀█ ▀▄▀ ▀▄▀ ▀█▀ █▀█ █▄▀ █▀▀ █▄░█
+ █░▀░█ █▀█ █░█ █░█ ░█░ █▄█ █░█ ██▄ █░▀█
+ Sep cycle · 18d left                                  sync 4s ago  ·  via app
+╭─ TOTAL ────────────────────────────────────── Solid. Push harder on Claude. ─╮
+│ ███████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  41% USED │
+│ SPENT $187   LEFT $273   4 plans                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ ● Claude Max 20x ───────────────────────────────────────── Anthropic OAuth ─╮
+│ 63% USED  $126 spent · $74.00 left                                 ⚡ 01h 23m │
+│ SESSION 5H ██████████████████████████████████▌░░░░░░░   82%  resets 01h 23m  │
+│ WEEKLY 7D  ██████████████████▌░░░░░░░░░░░░░░░░░░░░░░░   44%  resets 3d 04h   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ q quit  ·  r refresh  ·  u show left  ·  j/k scroll
+```
+
+```bash
+cd desktop && npm link   # once — installs the `maxxtoken` command
+maxxtoken                # live dashboard (q quits)
+maxxtoken --once         # print one frame and exit (also what pipes get)
+maxxtoken --json         # raw snapshot for scripts
+maxxtoken --ascii --no-color
+```
+
+Data comes from the running menubar app's loopback API when it's open (so keyed providers work), otherwise the CLI reads Claude / Codex / Kimi / Gemini / Cursor directly from their local sign-ins, and falls back to the last cached snapshot. `u` flips between % used and % left, matching the app's "Usage bars" setting.
+
 ## Privacy
 
 - **Local-first.** Reads usage from your local CLI logs — no telemetry, no third party.
