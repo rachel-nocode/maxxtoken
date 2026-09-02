@@ -127,10 +127,10 @@ async function fetchApiSnapshot(port) {
 }
 
 let aggregateModule = null
-async function fetchLiveSnapshot(heavy) {
+async function fetchLiveSnapshot(heavy, aggregate = null) {
   // Lazy: aggregate pulls in every adapter; skip the cost when the API answers.
-  if (!aggregateModule) aggregateModule = require('./aggregate')
-  return aggregateModule.snapshot({ heavy })
+  if (!aggregate && !aggregateModule) aggregateModule = require('./aggregate')
+  return (aggregate || aggregateModule).snapshot({ heavy, persistHistory: false })
 }
 
 function readCache(file) {
@@ -168,8 +168,12 @@ function terminalSize(stream, env = process.env) {
   }
 }
 
+function resolvePort(options, config = loadConfig()) {
+  return options.port || config.localApiPort || 7878
+}
+
 async function runOnce(options, io, renderOptions) {
-  const state = { port: options.port || loadConfig().localApiPort, liveHeavy: true }
+  const state = { port: resolvePort(options), liveHeavy: true }
   const { snapshot, source } = await loadSnapshot(options, state)
   if (options.json) {
     io.stdout.write(`${JSON.stringify({ source, ...snapshot }, null, 2)}\n`)
@@ -184,7 +188,7 @@ function runInteractive(options, io, renderOptions) {
   const stdout = io.stdout
   const stdin = io.stdin
   const state = {
-    port: options.port || loadConfig().localApiPort,
+    port: resolvePort(options),
     liveHeavy: true,
     snapshot: null,
     source: '',
@@ -357,5 +361,5 @@ module.exports = {
   parseArgs,
   detectAscii,
   detectColor,
-  _private: { loadSnapshot, fetchApiSnapshot, readCache, terminalSize, ANSI },
+  _private: { loadSnapshot, fetchApiSnapshot, fetchLiveSnapshot, readCache, terminalSize, resolvePort, ANSI },
 }

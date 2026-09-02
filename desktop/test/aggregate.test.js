@@ -165,6 +165,36 @@ test('config clamps token history window like CodexBar cost history', () => {
   assert.equal(config._private.normalizeTokenHistoryDays('nope'), 30)
 })
 
+test('config preserves a valid local API port and defaults missing values', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'maxxtoken-config-port-'))
+  const file = path.join(tmp, 'config.json')
+  try {
+    fs.writeFileSync(file, JSON.stringify({ localApiPort: 8123 }))
+    assert.equal(config.loadConfig(file).localApiPort, 8123)
+    fs.writeFileSync(file, JSON.stringify({}))
+    assert.equal(config.loadConfig(file).localApiPort, 7878)
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('non-persistent snapshots read usage history without rewriting it', () => {
+  const calls = []
+  const historyApi = {
+    readHistory: () => {
+      calls.push('read')
+      return { samples: [], totals: [], tokens: [] }
+    },
+    recordSnapshot: () => {
+      calls.push('write')
+      return { samples: [], totals: [], tokens: [] }
+    },
+  }
+  const history = _private.historyForSnapshot([], {}, {}, { persistHistory: false }, historyApi)
+  assert.deepEqual(history, { samples: [], totals: [], tokens: [] })
+  assert.deepEqual(calls, ['read'])
+})
+
 test('config normalizes CodexBar-style quota warning thresholds', () => {
   assert.deepEqual(config._private.normalizeQuotaWarningThresholds([20, 50, 20, -4, 500]), [99, 50, 20, 0])
   assert.deepEqual(config._private.normalizeQuotaWarningThresholds([]), [50, 20])

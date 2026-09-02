@@ -135,6 +135,7 @@ test('tui primitives: bars, reset countdowns, number formatting', () => {
   assert.equal(render.bar(50, 10, g, style, 'lime'), '█████░░░░░')
   assert.equal(render.bar(0, 4, g, style, 'lime'), '░░░░')
   assert.equal(render.bar(100, 4, g, style, 'lime'), '████')
+  assert.equal(render.bar(99.5, 10, g, style, 'lime'), '██████████')
   assert.equal(render.bar(null, 4, g, style, 'lime'), '░░░░')
   assert.equal(render.bar(12.5, 4, g, style, 'lime'), '▌░░░') // half a cell
   assert.equal(render.bar(50, 4, render.GLYPHS.ascii, style, 'lime'), '##..')
@@ -209,6 +210,20 @@ test('tui cli parses options and rejects bad ones', () => {
   assert.equal(tui.detectAscii({ LANG: 'en_US.UTF-8' }), false)
   assert.equal(tui.detectAscii({ LANG: 'C' }), true)
   assert.equal(tui.detectAscii({ TERM: 'linux' }), true)
+  assert.equal(tui._private.resolvePort({ port: null }, {}), 7878)
+  assert.equal(tui._private.resolvePort({ port: 8123 }, { localApiPort: 7999 }), 8123)
+})
+
+test('tui marks in-process snapshots as read-only', async () => {
+  let received = null
+  const aggregate = {
+    snapshot: async (options) => {
+      received = options
+      return { providers: [] }
+    },
+  }
+  await tui._private.fetchLiveSnapshot(true, aggregate)
+  assert.deepEqual(received, { heavy: true, persistHistory: false })
 })
 
 test('tui cli --once renders a saved snapshot file and --json echoes it', async () => {

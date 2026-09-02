@@ -104,6 +104,7 @@ function loadConfig(file = FILE) {
       quotaWarningWeeklyEnabled: raw.quotaWarningWeeklyEnabled ?? DEFAULT_CONFIG.quotaWarningWeeklyEnabled,
       trayMetric: normalizeTrayMetric(raw.trayMetric),
       usageMeterMode: normalizeUsageMeterMode(raw.usageMeterMode),
+      localApiPort: clampNumber(raw.localApiPort, 1, 65535, DEFAULT_CONFIG.localApiPort),
       tokenHistoryDays: normalizeTokenHistoryDays(raw.tokenHistoryDays),
       saveModeSuggestions: raw.saveModeSuggestions === true,
       onboardingComplete: raw.onboardingComplete === true,

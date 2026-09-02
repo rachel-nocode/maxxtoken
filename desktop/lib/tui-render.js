@@ -147,8 +147,12 @@ function bar(pct, cells, glyphs, style, toneName) {
   const size = Math.max(1, cells)
   if (pct == null) return style.paint(glyphs.empty.repeat(size), 'faint')
   const exact = (clampPct(pct) / 100) * size
-  const full = Math.floor(exact)
-  const eighths = Math.round((exact - full) * 8)
+  let full = Math.floor(exact)
+  let eighths = Math.round((exact - full) * 8)
+  if (eighths === 8) {
+    full += 1
+    eighths = 0
+  }
   let filled = glyphs.fill.repeat(Math.min(full, size))
   if (full < size && eighths > 0 && glyphs.partial[eighths]) filled += glyphs.partial[eighths]
   const rest = Math.max(0, size - filled.length)
