@@ -5,12 +5,14 @@
   "description": "MaxxToken menu bar app - reverse AI usage tracker that nudges you to use what you pay for",
   "main": "main.js",
   "bin": {
+    "maxxtoken": "bin/maxxtoken.js",
     "maxxtoken-config": "bin/maxxtoken-config.js",
     "maxxtoken-usage": "bin/maxxtoken-usage.js",
     "maxxtoken-logs": "bin/maxxtoken-logs.js"
   },
   "scripts": {
     "start": "electron .",
+    "tui": "node bin/maxxtoken.js",
     "providers": "node bin/maxxtoken-config.js providers",
     "usage": "node bin/maxxtoken-usage.js",
     "logs": "node bin/maxxtoken-logs.js --follow",

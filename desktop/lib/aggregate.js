@@ -3467,7 +3467,7 @@ async function snapshot(options = {}) {
     historyDays: config.tokenHistoryDays,
   }
   const storageTotals = storageTotalsFromProviders(providers)
-  const history = usageHistory.recordSnapshot(providers, { totals, tokenTotals })
+  const history = historyForSnapshot(providers, totals, tokenTotals, options)
   providers = usageHistory.applyInsights(providers, history)
   providers = addProviderSourceLabels(providers)
   providers = providers.map((provider) => (
@@ -3521,6 +3521,11 @@ async function snapshot(options = {}) {
     maxxTarget,
     providers,
   }
+}
+
+function historyForSnapshot(providers, totals, tokenTotals, options = {}, historyApi = usageHistory) {
+  if (options.persistHistory === false) return historyApi.readHistory()
+  return historyApi.recordSnapshot(providers, { totals, tokenTotals })
 }
 
 function totalsFromProviders(providers) {
@@ -3650,5 +3655,6 @@ module.exports = {
     resetQueueFromProviders,
     claudeAgentSdkCreditAmount,
     claudeAgentSdkCreditWindow,
+    historyForSnapshot,
   },
 }
