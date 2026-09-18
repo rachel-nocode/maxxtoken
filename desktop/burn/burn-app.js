@@ -79,6 +79,7 @@ const burnState = {
     density: 'comfortable',
     reduceAnimations: false,
     timeFormat: 'system',
+    combinedUsageExpanded: false,
     globalShortcut: null,
     shortcutStatus: { registered: false },
     paceAlerts: { nearExhaustion: false, runOut: false },
@@ -911,6 +912,10 @@ function burnHandleClick(e) {
   if (reportMetric) {
     burnState.reportMetric = reportMetric.getAttribute('data-burn-report-metric')
     burnRender()
+    return
+  }
+  if (e.target.closest('[data-burn-report-toggle]')) {
+    burnPatchOpenUsagePrefs({ combinedUsageExpanded: !burnState.openUsagePrefs?.combinedUsageExpanded })
     return
   }
   const reportPeriod = e.target.closest('[data-burn-report-period]')

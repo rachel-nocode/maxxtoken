@@ -17,6 +17,7 @@
     "usage": "node bin/maxxtoken-usage.js",
     "logs": "node bin/maxxtoken-logs.js --follow",
     "test": "node --test",
+    "test:electron-popover": "node scripts/run-electron-popover-smoke.js",
     "dist": "npm run release:build",
     "release:build:mac": "electron-builder --mac dmg zip --universal --publish never",
     "release:build:win": "electron-builder --win nsis --x64 --publish never",

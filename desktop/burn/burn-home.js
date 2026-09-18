@@ -358,6 +358,7 @@ function burnReportCard(state) {
   })
   if (!hasAnyHistory) return ''
   const projection = report.projection(state.reportMetric)
+  const expanded = state.openUsagePrefs?.combinedUsageExpanded === true
   const metricOptions = [['cost', 'Cost'], ['tokens', 'Tokens'], ['costPerMTok', 'Cost/MTok']]
   const periodOptions = [['today', 'Today'], ['yesterday', 'Yesterday'], ['30d', '30 days']]
   const metricButton = ([value, label]) => `<button type="button" data-burn-report-metric="${value}" aria-pressed="${state.reportMetric === value}" style="${bstyle({ padding: '5px 7px', borderRadius: 7, border: `1px solid ${state.reportMetric === value ? BURN.accentBtnBorder : BURN.border}`, background: state.reportMetric === value ? BURN.accentBtnBg : 'transparent', color: state.reportMetric === value ? BURN.limeText : BURN.text2, fontFamily: BURN_FONT.mono, fontSize: 9, cursor: 'pointer' })}">${label}</button>`
@@ -382,15 +383,21 @@ function burnReportCard(state) {
         return `<div tabindex="0" aria-label="${burnEsc(`${model.label}. ${detail}`)}" title="${burnEsc(detail)}" style="${bstyle({ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto auto', gap: 8, padding: '4px 0', fontSize: 10 })}"><span style="${bstyle({ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: BURN.text })}">${burnEsc(model.label)}</span><span style="${bstyle({ color: BURN.text2, fontFamily: BURN_FONT.mono })}">${model.tokens == null ? '—' : burnFormatTokensM(model.tokens / 1e6)}</span><span style="${bstyle({ color: model.usd == null ? BURN.text2 : BURN.limeText, fontFamily: BURN_FONT.mono })}">${model.usd == null ? 'unpriced' : `$${model.usd.toFixed(2)}`}</span></div>`
       }).join('')
     : `<div style="${bstyle({ color: BURN.text2, fontSize: 10.5, paddingTop: 5 })}">No period-specific model detail was reported.</div>`
+  const summary = `${periodOptions.find(([value]) => value === state.reportPeriod)?.[1] || '30 days'} · ${burnReportNumber(projection.total, state.reportMetric)}`
+  const toggle = `<button type="button" data-burn-report-toggle aria-expanded="${expanded}" aria-controls="burn-report-details" style="${bstyle({ width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: expanded ? '0 0 10px' : '10px 12px', border: 'none', background: 'transparent', color: BURN.text, cursor: 'pointer', textAlign: 'left' })}"><strong style="${bstyle({ fontSize: 12.5 })}">Combined usage</strong><span style="${bstyle({ flex: 1 })}"></span><span style="${bstyle({ color: BURN.text2, fontFamily: BURN_FONT.mono, fontSize: 9.5, fontWeight: 500, fontVariantNumeric: 'tabular-nums' })}">${burnEsc(summary)}</span>${burnIcon(expanded ? 'chevron-up' : 'chevron-down', 11, BURN.text2)}</button>`
+  if (!expanded) {
+    return `<section id="burn-report-card" aria-label="Combined usage report" style="${bstyle({ margin: '0 10px 10px', border: `1px solid ${BURN.border}`, borderRadius: 12, background: BURN.surface2 })}">${toggle}</section>`
+  }
   return `<section id="burn-report-card" aria-label="Combined usage report" style="${bstyle({ margin: '0 10px 10px', padding: '12px 14px', border: `1px solid ${BURN.borderHi}`, borderRadius: 14, background: BURN.surface2 })}">` +
-    `<div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 6 })}"><strong style="${bstyle({ color: BURN.text, fontSize: 13 })}">Combined usage</strong><span style="${bstyle({ flex: 1 })}"></span>${metricOptions.map(metricButton).join('')}</div>` +
+    toggle +
+    `<div id="burn-report-details"><div style="${bstyle({ display: 'flex', alignItems: 'center', gap: 6 })}"><span style="${bstyle({ flex: 1 })}"></span>${metricOptions.map(metricButton).join('')}</div>` +
     `<div style="${bstyle({ display: 'flex', alignItems: 'baseline', gap: 8, paddingTop: 9 })}"><span style="${bstyle({ color: BURN.limeText, fontFamily: BURN_FONT.mono, fontSize: 22, fontWeight: 700 })}">${burnEsc(burnReportNumber(projection.total, state.reportMetric))}</span><span style="${bstyle({ color: BURN.text2, fontSize: 9.5 })}">${report.coverage.pairedProviders} provider${report.coverage.pairedProviders === 1 ? '' : 's'} with matched priced rows${report.coverage.partial ? ' · partial rates omitted' : ''}</span></div>` +
     `<div style="${bstyle({ display: 'flex', gap: 2, alignItems: 'end', height: 38, paddingTop: 4 })}" role="img" aria-label="Calendar usage trend">${bars}</div>` +
     `<details style="${bstyle({ paddingTop: 4 })}"><summary style="${bstyle({ color: BURN.text3, fontFamily: BURN_FONT.mono, fontSize: 9, cursor: 'pointer' })}">Exact daily counts</summary><div style="${bstyle({ maxHeight: 150, overflowY: 'auto', paddingTop: 4 })}">${dayDetails}</div></details>` +
     `<div style="${bstyle({ display: 'flex', gap: 2, alignItems: 'center', paddingTop: 7 })}">${periodOptions.map(periodButton).join('')}<span style="${bstyle({ flex: 1 })}"></span><button type="button" data-burn-report-models aria-expanded="${state.reportModelsOpen}" style="${burnGhostBtn()}">Models ${state.reportModelsOpen ? '▴' : '▾'}</button><button type="button" data-burn-share="aggregate" style="${burnGhostBtn()}">Copy PNG</button></div>` +
     `<div style="${bstyle({ paddingTop: 7, borderTop: `1px solid ${BURN.border}`, marginTop: 7 })}">${slices || `<span style="${bstyle({ color: BURN.text2, fontSize: 10.5 })}">No ${state.reportMetric} coverage for this period.</span>`}</div>` +
     (state.reportModelsOpen ? `<div style="${bstyle({ paddingTop: 7, borderTop: `1px solid ${BURN.border}`, marginTop: 7 })}">${models}</div>` : '') +
-    `<div style="${bstyle({ color: BURN.text3, fontSize: 9, paddingTop: 7 })}">API-equivalent spend only · subscription totals excluded${report.coverage.partial ? ' · *partial pricing' : ''}</div></section>`
+    `<div style="${bstyle({ color: BURN.text3, fontSize: 9, paddingTop: 7 })}">API-equivalent spend only · subscription totals excluded${report.coverage.partial ? ' · *partial pricing' : ''}</div></div></section>`
 }
 
 function burnRenderHome(state) {

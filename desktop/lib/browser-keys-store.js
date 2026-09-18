@@ -1,4 +1,4 @@
-// Persistent, encrypted cache of derived browser "Safe Storage" cookie keys.
+// Persistent, encrypted cache of derived browser and Claude "Safe Storage" keys.
 //
 // macOS prompts ("<X> Safe Storage" Keychain dialog) whenever a process that
 // isn't the owning browser reads a Chromium cookie-encryption password via the

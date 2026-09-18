@@ -2,7 +2,7 @@ const crypto = require('crypto')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
-const { execFileSync } = require('child_process')
+const claudeSafeStorage = require('./claude-safe-storage')
 
 const CONFIG_KEYS = ['oauth:tokenCacheV2', 'oauth:tokenCache']
 const API_HOST = 'https://api.anthropic.com'
@@ -52,15 +52,18 @@ function decryptSafeStorage(encoded, key) {
   return Buffer.concat([decipher.update(encrypted.subarray(3)), decipher.final()])
 }
 
-function safeStoragePassword(options = {}) {
-  if (typeof options.password === 'string') return options.password
-  try {
-    return execFileSync('security', ['find-generic-password', '-w', '-s', 'Claude Safe Storage', '-a', 'Claude Key'], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
-    }).trim()
-  } catch {
-    return null
-  }
+function encryptedCaches(config) {
+  return CONFIG_KEYS.flatMap((cacheKey) => {
+    const value = config?.[cacheKey]
+    if (typeof value !== 'string' || !value) return []
+    try {
+      const encrypted = Buffer.from(value, 'base64')
+      if (encrypted.length <= 3 || encrypted.subarray(0, 3).toString() !== 'v10' || (encrypted.length - 3) % 16 !== 0) return []
+      return [value]
+    } catch {
+      return []
+    }
+  })
 }
 
 function decodeCache(value, key) {
@@ -138,10 +141,15 @@ function loadDesktopCredential(options = {}) {
   if (!config) return null
   const accountId = String(options.accountId || config.lastKnownAccountUuid || '').toLowerCase()
   if (!accountId || (options.accountId && accountId !== String(config.lastKnownAccountUuid || '').toLowerCase())) return null
-  const password = safeStoragePassword(options)
-  if (!password) return null
-  const key = deriveKey(password)
-  const caches = CONFIG_KEYS.map((cacheKey) => decodeCache(config[cacheKey], key))
+  const organizationId = String(options.organizationId || '').toLowerCase()
+  if (!organizationId) return null
+  const encrypted = encryptedCaches(config)
+  if (!encrypted.length) return null
+  const key = typeof options.password === 'string'
+    ? deriveKey(options.password)
+    : claudeSafeStorage.derivedKey(options)
+  if (!key) return null
+  const caches = encrypted.map((value) => decodeCache(value, key))
   const selected = selectCredential(caches, { accountId, organizationId: options.organizationId, now: options.now })
   if (!selected) return null
   return {
@@ -166,5 +174,5 @@ module.exports = {
   decryptSafeStorage,
   selectCredential,
   loadDesktopCredential,
-  _private: { decodeCache, parseCacheKey },
+  _private: { decodeCache, parseCacheKey, encryptedCaches },
 }

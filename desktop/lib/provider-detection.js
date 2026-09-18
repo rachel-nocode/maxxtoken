@@ -97,9 +97,14 @@ function detectLocalProviders(options = {}) {
   if (claudeEvidence) mark(out, 'claude', 'Claude local data found', claudeEvidence)
   else if (executableExists('claude', execImpl)) mark(out, 'claude', 'Claude CLI found', 'claude', 'installed')
 
+  const configuredGeminiHome = clean(env.GEMINI_CLI_HOME)
+  const geminiDirs = configuredGeminiHome
+    ? [configuredGeminiHome, path.join(configuredGeminiHome, '.gemini')]
+    : [path.join(home, '.gemini')]
   const geminiEvidence = firstExisting([
-    path.join(home, '.gemini', 'oauth_creds.json'),
-    path.join(home, '.gemini', 'history'),
+    ...geminiDirs.map((dir) => path.join(dir, 'oauth_creds.json')),
+    ...geminiDirs.map((dir) => path.join(dir, 'history')),
+    ...geminiDirs.map((dir) => path.join(dir, 'tmp')),
     path.join(home, '.config', 'gemini'),
   ], fsImpl)
   if (geminiEvidence) mark(out, 'gemini', 'Gemini local data found', geminiEvidence)

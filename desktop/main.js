@@ -36,6 +36,7 @@ const { buildCard } = require('./lib/share-card')
 const paceNotifications = require('./lib/pace-notifications')
 const capturePrivacy = require('./lib/capture-privacy')
 const { createHistorySync } = require('./lib/cloud-history-sync')
+const { configurePopoverWindow, popoverWindowOptions, presentPopoverWindow } = require('./lib/popover-window')
 let privacyMonitor = null
 let historySync = null
 let historySyncTimer = null
@@ -279,9 +280,9 @@ function persistDetectedProviderPlans(snap) {
 
 let workerRequestId = 0
 
-// Persisted browser "Safe Storage" keys, injected into each worker so it never
-// re-prompts the macOS Keychain. Loaded once, kept in memory, updated whenever a
-// worker reports a freshly-derived key (or a decline).
+// Persisted browser/Claude "Safe Storage" keys, injected into each worker so it
+// never re-prompts the macOS Keychain. Loaded once, kept in memory, updated
+// whenever a worker reports a freshly-derived key (or a decline).
 let browserKeysCache = null
 function getBrowserKeys() {
   if (!browserKeysCache) browserKeysCache = browserKeysStore.loadAll()
@@ -347,6 +348,10 @@ function snapshotViaWorker(heavy = true, options = {}) {
     }, SNAPSHOT_WORKER_TIMEOUT_MS)
     child.on('message', (message) => {
       if (settled || !message || message.requestId !== requestId) return
+      if (message.type === 'keychain-key-update') {
+        persistBrowserKeys(message.keys)
+        return
+      }
       if (message.type === 'snapshot-progress') {
         publishSnapshotProgress(message.snap)
         return
@@ -466,24 +471,11 @@ function updateTrayAppearance(snap, config = loadConfig()) {
 }
 
 function createPopover() {
-  popover = new BrowserWindow({
+  popover = new BrowserWindow(popoverWindowOptions(process.platform, path.join(__dirname, 'preload.js'), {
     width: POPOVER_WIDTH,
     height: POPOVER_HEIGHT,
-    show: false,
-    frame: false,
-    resizable: false,
-    transparent: true,
-    hasShadow: true,
-    fullscreenable: false,
-    skipTaskbar: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
-  popover.setAlwaysOnTop(true, 'pop-up-menu')
-  popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
+  }))
+  configurePopoverWindow(popover)
   popover.loadFile(path.join(__dirname, 'index.html'))
   popover.on('blur', () => {
     if (popover && popover.isVisible()) {
@@ -566,13 +558,9 @@ async function preparePopoverForOpen() {
 async function showPopover() {
   if (!popover || !tray) return
   const config = loadConfig()
-  popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
-  popover.setAlwaysOnTop(true, 'pop-up-menu')
   await preparePopoverForOpen()
   positionPopover()
-  popover.show()
-  popover.moveTop()
-  popover.focus()
+  presentPopoverWindow(popover)
   // Keep the event as a fallback for a newly loaded renderer; the normal path
   // already prepared hidden state before the first visible paint.
   popover.webContents.send('popover-shown')

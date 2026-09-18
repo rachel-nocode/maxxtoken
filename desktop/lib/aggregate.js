@@ -1980,7 +1980,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
   }
 
   if (id === 'gemini') {
-    const d = gemini.read(cycle)
+    const d = gemini.read(cycle, options)
     if (!d.connected) return { ...base, connected: false, activity: 'none' }
     const capturedPct = Math.min(100, Math.round((d.activeDays / cycle.daysElapsed) * 100))
     const urgent = cycle.daysLeft <= 3 && capturedPct < 70
@@ -1992,7 +1992,17 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
         accuracy: 'estimate',
         usageLabel: 'active',
       }),
-      windows: [],
+      windows: [{
+        label: 'Activity estimate',
+        kind: 'cycle',
+        usedPct: capturedPct,
+        remainingPct: Math.max(0, 100 - capturedPct),
+        resetAt: cycle.endMs,
+        periodMs: cycle.endMs - cycle.startMs,
+        forecastEligible: false,
+        forecastDisabledReason: 'activity-estimate',
+        valueLabel: `${capturedPct}% active`,
+      }],
       extra: [
         { label: 'Sessions', value: String(d.sessions) },
         { label: 'Active days', value: `${d.activeDays} / ${cycle.daysElapsed}` },

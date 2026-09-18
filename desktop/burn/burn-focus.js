@@ -6,7 +6,7 @@
   if (root) root.BurnFocus = api
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   const IDENTITY_ATTRIBUTES = [
-    'data-burn-report-metric', 'data-burn-report-period', 'data-burn-report-models',
+    'data-burn-report-toggle', 'data-burn-report-metric', 'data-burn-report-period', 'data-burn-report-models',
     'data-burn-display-toggle', 'data-burn-toggle', 'data-burn-collapse',
     'data-burn-select', 'data-burn-action', 'data-burn-provider-action',
     'data-burn-metric-action', 'data-burn-credit', 'data-burn-share',

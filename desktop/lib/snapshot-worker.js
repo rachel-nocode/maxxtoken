@@ -2,6 +2,7 @@ const logger = require('./logger')
 const { snapshot } = require('./aggregate')
 const { setProcessOverride } = require('./secrets')
 const { setBrowserKeyStore, takeDiscoveredKeys } = require('./browser-cookies')
+const claudeSafeStorage = require('./claude-safe-storage')
 
 if (process.env.MAXXTOKEN_USER_DATA) {
   logger.init(process.env.MAXXTOKEN_USER_DATA)
@@ -12,6 +13,10 @@ process.on('message', async (message) => {
   try {
     setProcessOverride(message.secrets)
     setBrowserKeyStore(message.browserKeys)
+    claudeSafeStorage.setKeyStore(message.browserKeys)
+    claudeSafeStorage.setDiscoveryListener((service, entry) => {
+      safeSend({ type: 'keychain-key-update', requestId: message.requestId, keys: { [service]: entry } })
+    })
     const config = require('./config').loadConfig()
     logger.setLevel(config.logLevel)
     require('./http').configureProxy(config.proxy, require('./secrets').getProxyCredentials())
@@ -23,7 +28,13 @@ process.on('message', async (message) => {
       previousSnapshot: message.previousSnapshot,
       onProgress: (snap) => safeSend({ type: 'snapshot-progress', requestId: message.requestId, snap }),
     })
-    safeSend({ type: 'snapshot-result', requestId: message.requestId, ok: true, snap, browserKeys: takeDiscoveredKeys() })
+    safeSend({
+      type: 'snapshot-result',
+      requestId: message.requestId,
+      ok: true,
+      snap,
+      browserKeys: { ...takeDiscoveredKeys(), ...claudeSafeStorage.takeDiscoveredKeys() },
+    })
   } catch (err) {
     logger.error('worker', 'snapshot failed', {
       requestId: message.requestId,

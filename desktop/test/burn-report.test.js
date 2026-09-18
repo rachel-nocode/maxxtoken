@@ -2,6 +2,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const vm = require('node:vm')
 
 const BurnReport = require('../burn/burn-report')
 
@@ -57,6 +58,41 @@ test('selected period controls model totals and preserves partial model pricing'
   assert.equal(yesterday.models.find((model) => model.label === 'a').unpriced, true)
 })
 
+test('combined usage is compact by default and reveals the full report on demand', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'burn', 'burn-home.js'), 'utf8')
+  const context = {
+    BurnReport,
+    Date,
+    BURN: {
+      accentBtnBg: '#222', accentBtnBorder: '#555', border: '#333', borderHi: '#444',
+      lime: '#9f3', limeText: '#af4', surface2: '#181818', text: '#fff', text2: '#aaa',
+      text3: '#777', text4: '#444',
+    },
+    BURN_FONT: { mono: 'monospace', sans: 'sans-serif' },
+    bstyle: (styles) => Object.entries(styles).map(([key, value]) => `${key}:${value}`).join(';'),
+    burnEsc: (value) => String(value),
+    burnGhostBtn: () => '',
+    burnIcon: (name) => `<i>${name}</i>`,
+  }
+  vm.createContext(context)
+  vm.runInContext(source, context)
+  const today = new Date().toISOString().slice(0, 10)
+  const base = {
+    lastSnap: { providers: [provider('codex', [{ date: today, totalTokens: 100, costUSD: 1 }])] },
+    reportPeriod: '30d', reportMetric: 'cost', reportModelsOpen: false,
+    openUsagePrefs: { combinedUsageExpanded: false },
+  }
+  const collapsed = context.burnReportCard(base)
+  assert.match(collapsed, /aria-expanded="false"/)
+  assert.match(collapsed, /30 days · \$1\.00/)
+  assert.doesNotMatch(collapsed, /data-burn-report-metric/)
+
+  const expanded = context.burnReportCard({ ...base, openUsagePrefs: { combinedUsageExpanded: true } })
+  assert.match(expanded, /aria-expanded="true"/)
+  assert.match(expanded, /id="burn-report-details"/)
+  assert.match(expanded, /data-burn-report-metric="cost"/)
+})
+
 test('BURN loads active report, settings, sharing, clocks, and credit controls', () => {
   const root = path.join(__dirname, '..')
   const index = fs.readFileSync(path.join(root, 'index.html'), 'utf8')
@@ -67,6 +103,8 @@ test('BURN loads active report, settings, sharing, clocks, and credit controls',
   const css = fs.readFileSync(path.join(root, 'burn', 'burn.css'), 'utf8')
   assert.match(index, /burn\/burn-report\.js/)
   assert.match(home, /data-burn-report-period/)
+  assert.match(home, /data-burn-report-toggle/)
+  assert.match(home, /combinedUsageExpanded/)
   assert.match(home, /data-burn-share=/)
   assert.match(home, /data-burn-clock=/)
   assert.match(home, /data-burn-credit=/)
@@ -78,5 +116,6 @@ test('BURN loads active report, settings, sharing, clocks, and credit controls',
   assert.match(primitives, /role="switch" aria-label=/)
   assert.match(primitives, /data-burn-collapse=.*aria-expanded=/)
   assert.match(app, /getOpenUsagePrefs/)
+  assert.match(app, /combinedUsageExpanded/)
   assert.match(app, /setGlobalShortcut/)
 })
