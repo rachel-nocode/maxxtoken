@@ -70,7 +70,9 @@ function modelRows(tokenUsage) {
 function exportProvider(p) {
   return {
     id: p.id,
-    name: p.name || null,
+    providerFamily: p.providerFamily || p.id,
+    accountId: p.account?.id || null,
+    name: p.account ? String(p.name || p.providerFamily || p.id).split(' · ')[0] : p.name || null,
     plan: p.plan || null,
     connected: !!p.connected,
     activity: p.activity || null,
@@ -81,6 +83,13 @@ function exportProvider(p) {
     capturedPct: int(p.capturedPct),
     status: p.status ? { indicator: p.status.indicator || null, label: p.status.label || null } : null,
     error: p.error || null,
+    resetCredits: p.resetCredits
+      ? {
+          availableCount: int(p.resetCredits.availableCount),
+          expiryAvailable: p.resetCredits.expiryAvailable === true,
+          expiries: (p.resetCredits.credits || []).map((credit) => iso(credit.expiresAt)).filter(Boolean),
+        }
+      : null,
     tokens: tokenBlock(p.tokenUsage),
     models: modelRows(p.tokenUsage),
     dailyHistory: dailyRows(p.tokenUsage),

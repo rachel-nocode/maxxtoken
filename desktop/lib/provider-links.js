@@ -63,6 +63,9 @@ const LINKS = {
     dashboard: 'https://platform.deepseek.com/usage',
     status: 'https://status.deepseek.com',
   },
+  devin: {
+    dashboard: 'https://app.devin.ai/settings/billing',
+  },
   doubao: {
     dashboard:
       'https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement?LLM=%7B%7D&advancedActiveKey=subscribe',

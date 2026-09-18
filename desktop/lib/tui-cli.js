@@ -11,6 +11,8 @@ const { loadConfig } = require('./config')
 const { fetchWithTimeout } = require('./http')
 const widgetSnapshot = require('./widget-snapshot')
 const { renderFrame } = require('./tui-render')
+const { buildLimitsContract, matchesProvider } = require('./limits-contract')
+const { redactSensitive } = require('./secrets')
 
 const SOURCES = new Set(['auto', 'api', 'live', 'cache'])
 const API_TIMEOUT_MS = 1500
@@ -30,12 +32,16 @@ function usage() {
   return [
     'Usage:',
     '  maxxtoken [options]',
+    '  maxxtoken limits [options]',
     '',
     'Live terminal dashboard of your AI plan usage — the menubar app, in ASCII.',
     '',
     'Options:',
     '  --once             Print one frame and exit (default when stdout is not a TTY)',
     '  --json             Print the snapshot as JSON and exit',
+    '  --limits           Print the stable v1 limits contract as JSON and exit',
+    '  --provider <id>    Select a provider/family (repeatable)',
+    '  --force-refresh    Bypass adapter caches and query providers now',
     '  --source <name>    auto | api | live | cache   (default: auto)',
     '  --file <path>      Render a saved widget snapshot (implies --source cache)',
     '  --interval <sec>   Data refresh interval (default: api 10s, live 60s)',
@@ -46,6 +52,8 @@ function usage() {
     '  --no-color         Disable colors (also honours NO_COLOR)',
     '  --color            Force colors even when stdout is not a TTY',
     '  -h, --help         Show this help',
+    '',
+    'Exit codes: 0 success, 1 invalid options, 2 data unavailable, 3 unknown provider, 4 refresh failed.',
     '',
     'Keys:  q quit   r refresh   u toggle used/left   j/k ↑/↓ scroll   g/G top/bottom',
   ].join('\n')
@@ -63,6 +71,9 @@ function parseArgs(argv) {
     ascii: null,
     color: null,
     help: false,
+    limits: false,
+    providerIds: [],
+    forceRefresh: false,
   }
   const args = [...argv]
   for (let i = 0; i < args.length; i += 1) {
@@ -72,8 +83,18 @@ function parseArgs(argv) {
       i += 1
       return args[i]
     }
-    if (arg === '--once') options.once = true
+    if (arg === 'limits' || arg === '--limits') {
+      options.limits = true
+      options.once = true
+    }
+    else if (arg === '--once') options.once = true
     else if (arg === '--json') options.json = true
+    else if (arg === '--provider') {
+      const id = String(next()).trim().toLowerCase()
+      if (!id) throw new Error('--provider requires a non-empty provider id.')
+      if (!options.providerIds.includes(id)) options.providerIds.push(id)
+    }
+    else if (arg === '--force-refresh') options.forceRefresh = true
     else if (arg === '--source') {
       options.source = String(next()).toLowerCase()
       if (!SOURCES.has(options.source)) throw new Error(`Unknown source: ${options.source} (use auto, api, live or cache)`)
@@ -127,10 +148,13 @@ async function fetchApiSnapshot(port) {
 }
 
 let aggregateModule = null
-async function fetchLiveSnapshot(heavy, aggregate = null) {
+async function fetchLiveSnapshot(heavy, aggregate = null, options = {}) {
   // Lazy: aggregate pulls in every adapter; skip the cost when the API answers.
   if (!aggregate && !aggregateModule) aggregateModule = require('./aggregate')
-  return (aggregate || aggregateModule).snapshot({ heavy, persistHistory: false })
+  const snapshotOptions = { heavy, persistHistory: false }
+  if (options.providerIds?.length) snapshotOptions.providerIds = options.providerIds
+  if (options.forceRefresh) snapshotOptions.forceRefresh = true
+  return (aggregate || aggregateModule).snapshot(snapshotOptions)
 }
 
 function readCache(file) {
@@ -139,26 +163,45 @@ function readCache(file) {
   return { ...snap, cached: true }
 }
 
+function filterSnapshot(snapshot, providerIds) {
+  if (!providerIds?.length) return snapshot
+  const available = snapshot?.providers || []
+  const unknown = providerIds.filter((id) => !available.some((provider) => matchesProvider(provider, [id])))
+  const providers = available.filter((provider) => matchesProvider(provider, providerIds))
+  if (unknown.length) {
+    const err = new Error(`Unknown provider: ${unknown.join(', ')}`)
+    err.exitCode = 3
+    throw err
+  }
+  return { ...snapshot, providers }
+}
+
 // Resolve one snapshot for the requested source. In auto mode: api → live,
 // with cache as the last resort. Returns { snapshot, source }.
 async function loadSnapshot(options, state) {
   const port = options.port || state.port
-  const attempts = options.source === 'auto' ? ['api', 'live', 'cache'] : [options.source]
+  const attempts = options.source === 'auto'
+    ? (options.forceRefresh ? ['live'] : ['api', 'live', 'cache'])
+    : [options.source]
   const errors = []
   for (const source of attempts) {
     try {
-      if (source === 'api') return { snapshot: await fetchApiSnapshot(port), source: 'app' }
+      if (source === 'api') return { snapshot: filterSnapshot(await fetchApiSnapshot(port), options.providerIds), source: 'app' }
       if (source === 'live') {
-        const snapshot = await fetchLiveSnapshot(state.liveHeavy !== false)
+        const snapshot = await fetchLiveSnapshot(state.liveHeavy !== false, null, options)
         state.liveHeavy = false
         return { snapshot, source: 'live' }
       }
-      return { snapshot: readCache(options.file), source: 'cache' }
+      return { snapshot: filterSnapshot(readCache(options.file), options.providerIds), source: 'cache' }
     } catch (err) {
       errors.push(`${source}: ${err && err.message ? err.message : String(err)}`)
     }
   }
-  throw new Error(errors.join(' | '))
+  const err = new Error(errors.join(' | '))
+  err.exitCode = errors.some((message) => /Unknown provider:/.test(message))
+    ? 3
+    : (options.forceRefresh ? 4 : (options.source === 'auto' ? 2 : 1))
+  throw err
 }
 
 function terminalSize(stream, env = process.env) {
@@ -175,6 +218,10 @@ function resolvePort(options, config = loadConfig()) {
 async function runOnce(options, io, renderOptions) {
   const state = { port: resolvePort(options), liveHeavy: true }
   const { snapshot, source } = await loadSnapshot(options, state)
+  if (options.limits) {
+    io.stdout.write(`${JSON.stringify(buildLimitsContract(snapshot), null, 2)}\n`)
+    return 0
+  }
   if (options.json) {
     io.stdout.write(`${JSON.stringify({ source, ...snapshot }, null, 2)}\n`)
     return 0
@@ -324,8 +371,8 @@ async function run(argv = [], io = {}) {
   try {
     options = parseArgs(argv)
   } catch (err) {
-    stderr.write(`${err.message || String(err)}\n\n${usage()}\n`)
-    return 1
+    stderr.write(`${redactSensitive(err.message || String(err))}\n\n${usage()}\n`)
+    return Number(err && err.exitCode) || 1
   }
   if (options.help) {
     stdout.write(`${usage()}\n`)
@@ -343,8 +390,8 @@ async function run(argv = [], io = {}) {
     if (options.json || options.once || !isTTY) return await runOnce(options, { stdout, stderr }, renderOptions)
     return await runInteractive(options, { stdout, stderr, stdin }, renderOptions)
   } catch (err) {
-    stderr.write(`${err.message || String(err)}\n`)
-    return 1
+    stderr.write(`${redactSensitive(err.message || String(err))}\n`)
+    return Number(err && err.exitCode) || 1
   }
 }
 

@@ -5,6 +5,8 @@ const { execFileSync } = require('child_process')
 const windsurf = require('./adapters/windsurf')
 const cursor = require('./adapters/cursor')
 const copilotAuth = require('./copilot-auth')
+const antigravity = require('./adapters/antigravity')
+const { PROVIDER_CAPABILITIES, getProviderCapability } = require('./provider-capabilities')
 
 function shQuote(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'"
@@ -35,9 +37,9 @@ function firstExisting(paths, fsImpl = fs) {
   return paths.find((candidate) => exists(candidate, fsImpl)) || null
 }
 
-function mark(out, id, reason, evidence) {
+function mark(out, id, reason, evidence, evidenceType = 'credentials') {
   if (out[id]) return
-  out[id] = { detected: true, reason, evidence }
+  out[id] = { detected: true, reason, evidence, evidenceType }
 }
 
 function clean(value) {
@@ -62,83 +64,13 @@ function markFile(out, id, reason, paths, fsImpl) {
   if (file) mark(out, id, reason, file)
 }
 
-const CLI_BINS = {
-  codex: ['codex'],
-  claude: ['claude'],
-  cursor: ['cursor'],
-  copilot: ['copilot'],
-  windsurf: ['windsurf'],
-  kiro: ['kiro-cli', 'kiro'],
-  opencode: ['opencode'],
-  opencodego: ['opencodego'],
-  alibaba: ['alibaba-coding-plan'],
-  alibabatokenplan: ['alibaba-token-plan', 'alibaba-token', 'bailian-token-plan'],
-  augment: ['auggie'],
-  warp: ['warp'],
-  elevenlabs: ['elevenlabs'],
-  kilo: ['kilo'],
-  kimi: ['kimi'],
-  moonshot: ['moonshot'],
-  doubao: ['doubao'],
-  gemini: ['gemini'],
-  grok: ['grok'],
-  amp: ['amp'],
-  codebuff: ['codebuff'],
-  commandcode: ['commandcode'],
-  crof: ['crof'],
-  venice: ['venice'],
-  stepfun: ['stepfun'],
-  llmproxy: ['llmproxy'],
-  ollama: ['ollama'],
-  abacus: ['abacusai'],
-  factory: ['factory'],
-  antigravity: ['antigravity'],
-  minimax: ['minimax'],
-  manus: ['manus'],
-  vertexai: ['vertexai', 'gcloud'],
-  synthetic: ['synthetic'],
-  mimo: ['mimo'],
-  bedrock: ['aws'],
-  zai: ['zai'],
-  t3chat: ['t3chat'],
-}
+const CLI_BINS = Object.fromEntries(Object.values(PROVIDER_CAPABILITIES)
+  .filter((capability) => capability.discovery.cliBins.length)
+  .map((capability) => [capability.id, capability.discovery.cliBins]))
 
-const ENV_KEYS = {
-  openai: ['OPENAI_ADMIN_KEY', 'OPENAI_API_KEY'],
-  azureopenai: ['AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_ENDPOINT'],
-  alibaba: ['ALIBABA_CODING_PLAN_API_KEY', 'ALIBABA_QWEN_API_KEY', 'DASHSCOPE_API_KEY', 'ALIBABA_CODING_PLAN_COOKIE'],
-  alibabatokenplan: ['ALIBABA_TOKEN_PLAN_COOKIE', 'ALIBABA_TOKEN_PLAN_HOST', 'ALIBABA_TOKEN_PLAN_QUOTA_URL'],
-  warp: ['WARP_API_KEY', 'WARP_TOKEN'],
-  elevenlabs: ['ELEVENLABS_API_KEY', 'XI_API_KEY'],
-  kimi: ['KIMI_API_KEY', 'KIMI_KEY'],
-  kimik2: ['KIMI_K2_API_KEY', 'KIMI_API_KEY', 'KIMI_KEY'],
-  doubao: ['DOUBAO_API_KEY', 'ARK_API_KEY'],
-  grok: ['GROK_COOKIE', 'GROK_SESSION_COOKIE', 'GROK_ACCESS_TOKEN', 'GROK_BEARER_TOKEN', 'GROK_TOKEN'],
-  groq: ['GROQ_API_KEY'],
-  amp: ['AMP_COOKIE', 'AMP_SESSION_COOKIE'],
-  openrouter: ['OPENROUTER_API_KEY'],
-  perplexity: ['PERPLEXITY_API_KEY', 'PPLX_API_KEY'],
-  mistral: ['MISTRAL_COOKIE', 'MISTRAL_SESSION_COOKIE'],
-  deepseek: ['DEEPSEEK_API_KEY'],
-  deepgram: ['DEEPGRAM_API_KEY'],
-  codebuff: ['CODEBUFF_API_KEY'],
-  commandcode: ['COMMAND_CODE_COOKIE', 'COMMANDCODE_COOKIE'],
-  crof: ['CROF_API_KEY'],
-  venice: ['VENICE_API_KEY', 'VENICE_KEY'],
-  stepfun: ['STEPFUN_API_KEY', 'STEPFUN_TOKEN'],
-  llmproxy: ['LLM_PROXY_API_KEY', 'LLM_PROXY_BASE_URL'],
-  ollama: ['OLLAMA_API_KEY', 'OLLAMA_KEY', 'OLLAMA_COOKIE', 'OLLAMA_SESSION_COOKIE'],
-  abacus: ['ABACUS_COOKIE', 'ABACUS_SESSION_COOKIE'],
-  minimax: ['MINIMAX_CODING_API_KEY', 'MINIMAX_API_KEY', 'MINIMAX_COOKIE', 'MINIMAX_AUTHORIZATION_TOKEN'],
-  manus: ['MANUS_SESSION_TOKEN', 'MANUS_SESSION_ID', 'MANUS_COOKIE'],
-  vertexai: ['GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_CLOUD_PROJECT', 'GCLOUD_PROJECT'],
-  synthetic: ['SYNTHETIC_API_KEY', 'SYNTHETIC_COOKIE'],
-  mimo: ['MIMO_COOKIE', 'MIMO_COOKIE_HEADER'],
-  bedrock: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_PROFILE'],
-  zai: ['Z_AI_API_KEY', 'ZAI_API_KEY'],
-  t3chat: ['T3CHAT_COOKIE', 'T3_CHAT_COOKIE', 'T3CHAT_CURL', 'T3_CHAT_CURL'],
-  windsurf: ['WINDSURF_SESSION', 'WINDSURF_DEVIN_SESSION'],
-}
+const ENV_KEYS = Object.fromEntries(Object.values(PROVIDER_CAPABILITIES)
+  .filter((capability) => capability.discovery.envKeys.length)
+  .map((capability) => [capability.id, capability.discovery.envKeys]))
 
 function detectLocalProviders(options = {}) {
   const home = options.home || os.homedir()
@@ -154,7 +86,7 @@ function detectLocalProviders(options = {}) {
   ], fsImpl)
   if (codexAuth) mark(out, 'codex', 'Codex auth found', codexAuth)
   else if (exists(path.join(codexHome, 'sessions'), fsImpl)) mark(out, 'codex', 'Codex sessions found', path.join(codexHome, 'sessions'))
-  else if (executableExists('codex', execImpl)) mark(out, 'codex', 'Codex CLI found', 'codex')
+  else if (executableExists('codex', execImpl)) mark(out, 'codex', 'Codex CLI found', 'codex', 'installed')
 
   const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(home, '.claude')
   const claudeEvidence = firstExisting([
@@ -163,7 +95,7 @@ function detectLocalProviders(options = {}) {
     path.join(home, '.config', 'claude', 'projects'),
   ], fsImpl)
   if (claudeEvidence) mark(out, 'claude', 'Claude local data found', claudeEvidence)
-  else if (executableExists('claude', execImpl)) mark(out, 'claude', 'Claude CLI found', 'claude')
+  else if (executableExists('claude', execImpl)) mark(out, 'claude', 'Claude CLI found', 'claude', 'installed')
 
   const geminiEvidence = firstExisting([
     path.join(home, '.gemini', 'oauth_creds.json'),
@@ -171,13 +103,16 @@ function detectLocalProviders(options = {}) {
     path.join(home, '.config', 'gemini'),
   ], fsImpl)
   if (geminiEvidence) mark(out, 'gemini', 'Gemini local data found', geminiEvidence)
-  else if (executableExists('gemini', execImpl)) mark(out, 'gemini', 'Gemini CLI found', 'gemini')
+  else if (executableExists('gemini', execImpl)) mark(out, 'gemini', 'Gemini CLI found', 'gemini', 'installed')
 
   const antigravityEvidence = firstExisting([
     path.join(home, '.codexbar', 'antigravity', 'oauth_creds.json'),
     path.join(home, '.config', 'antigravity'),
   ], fsImpl)
   if (antigravityEvidence) mark(out, 'antigravity', 'Antigravity auth found', antigravityEvidence)
+  else if (antigravity._private.loadKeychainCredentials({ platform: options.platform, execFileSync: execImpl })) {
+    mark(out, 'antigravity', 'Antigravity login found', 'macOS Keychain')
+  }
 
   const cursorBrowserSession = cursor._private.cookieRecordsFromFiles(cursor._private.browserCookieFiles(home))[0]
   if (cursorBrowserSession) mark(out, 'cursor', 'Cursor browser session found', cursorBrowserSession.sourceLabel)
@@ -212,6 +147,13 @@ function detectLocalProviders(options = {}) {
   const windsurfBrowserSession = windsurf._private.importBrowserSessions({ home, fs: fsImpl })[0]
   if (windsurfBrowserSession) mark(out, 'windsurf', 'Windsurf browser session found', windsurfBrowserSession.sourceLabel)
 
+  markFile(out, 'devin', 'Devin CLI credentials found', [
+    path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'devin', 'credentials.toml'),
+  ], fsImpl)
+  markFile(out, 'devin', 'Devin app login found', [
+    path.join(home, 'Library', 'Application Support', 'Devin', 'User', 'globalStorage', 'state.vscdb'),
+  ], fsImpl)
+
   markFile(out, 'kimi', 'Kimi credentials found', [
     path.join(home, '.kimi', 'credentials', 'kimi-code.json'),
   ], fsImpl)
@@ -242,27 +184,23 @@ function detectLocalProviders(options = {}) {
   for (const [id, bins] of Object.entries(CLI_BINS)) {
     if (out[id]) continue
     const bin = bins.find((candidate) => executableExists(candidate, execImpl))
-    if (bin) mark(out, id, `${displayName(id)} CLI found`, bin)
+    if (bin) mark(out, id, `${displayName(id)} CLI found`, bin, 'installed')
   }
 
   return out
 }
 
 function displayName(id) {
-  return {
-    azureopenai: 'Azure OpenAI',
-    kimik2: 'Kimi K2',
-    opencodego: 'OpenCode Go',
-    t3chat: 'T3 Chat',
-    vertexai: 'Vertex AI',
-    llmproxy: 'LLM Proxy',
-  }[id] || id.charAt(0).toUpperCase() + id.slice(1)
+  return getProviderCapability(id)?.name || id.charAt(0).toUpperCase() + id.slice(1)
 }
 
 function applyDetectionsToConfig(config, detections) {
   const providers = { ...(config.providers || {}) }
+  const optOuts = new Set(config.providerOptOuts || [])
   for (const [id, detection] of Object.entries(detections || {})) {
-    if (!detection?.detected || !providers[id]) continue
+    const capability = getProviderCapability(id)
+    if (!detection?.detected || !providers[id] || optOuts.has(id)) continue
+    if (detection.evidenceType === 'installed' || capability?.status !== 'supported') continue
     providers[id] = { ...providers[id], enabled: true }
   }
   return { ...config, providers }

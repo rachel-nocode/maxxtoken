@@ -8,10 +8,11 @@ const BURN_UI = true
 
 const burnState = {
   screen: 'home', // 'home' | 'missions' | 'mission-setup' | 'settings' | 'optimize'
-  expandedId: null,
+  expandedIds: {},
   providers: [],
   footer: null,
   syncing: false,
+  syncError: '',
   // optimize (signals derived from the raw snapshot by window.OptimizeDetect)
   lastSnap: null,
   optimizeModel: null,
@@ -56,10 +57,45 @@ const burnState = {
   apiKeyState: {},
   settingsEnabled: {},
   settingsOrder: [],
+  metricLayouts: {},
+  trayPins: [],
+  metricOpen: {},
+  layoutUndo: [],
   notifsOpen: true,
   appOpen: false,
-  notifs: { alerts: true, restored: true, quota: true },
+  privacyOpen: false,
+  diagnosticsOpen: false,
+  pricingOpen: false,
+  proxyOpen: false,
+  proxySettings: { enabled: false, url: '', hasCredentials: false },
+  diagnostics: { logLevel: 'info', logPath: null, configPath: null, notice: '' },
+  cliStatus: { installed: false, checking: true },
+  pricingFallbackOptions: {},
+  unknownModelFallback: { enabled: false, models: {} },
+  notifs: { alerts: true, restored: true, quota: true, paceNear: false, paceRunOut: false },
   app: { lightMode: false, openAtLogin: true, saveMode: false },
+  openUsagePrefs: {
+    appearance: 'system',
+    density: 'comfortable',
+    reduceAnimations: false,
+    timeFormat: 'system',
+    globalShortcut: null,
+    shortcutStatus: { registered: false },
+    paceAlerts: { nearExhaustion: false, runOut: false },
+    capturePrivacy: false,
+    sync: { enabled: false },
+    updates: { channel: 'stable', automaticChecks: true },
+  },
+  systemPrefs: { dark: true, reduceMotion: false, increaseContrast: false, reduceTransparency: false, timeFormat: '12h' },
+  syncStatus: null,
+  captureStatus: null,
+  reportPeriod: '30d',
+  reportMetric: 'cost',
+  reportModelsOpen: false,
+  shareTarget: null,
+  shareRedact: { accountLabels: true, spend: false },
+  shareNotice: '',
+  creditClaim: null,
   cookies: {},
   cookieSaved: {}, // providerId -> true briefly after a successful key save
   // Scalar settings backed by the config file (populated from getConfig in
@@ -112,18 +148,253 @@ function burnRender() {
   if (!burnRoot) return
   // Preserve scroll position so re-renders (e.g. expanding a settings group)
   // don't jump the body back to the top.
+  const focusIdentity = typeof BurnFocus !== 'undefined' ? BurnFocus.capture(burnRoot, document.activeElement) : null
   const prevBody = burnRoot.querySelector('.burn-body')
   const prevScroll = prevBody ? prevBody.scrollTop : 0
-  burnRoot.classList.toggle('burn-light', !!burnState.app.lightMode)
+  const appearance = burnState.openUsagePrefs?.appearance || 'system'
+  const light = appearance === 'light' || (appearance === 'system' && !burnState.systemPrefs?.dark)
+  burnState.app.lightMode = light
+  applyBurnTheme(light)
+  burnRoot.classList.toggle('burn-light', light)
+  burnRoot.classList.toggle('burn-compact', burnState.openUsagePrefs?.density === 'compact')
+  burnRoot.classList.toggle('burn-reduce-motion', !!burnState.openUsagePrefs?.reduceAnimations || !!burnState.systemPrefs?.reduceMotion)
+  burnRoot.classList.toggle('burn-high-contrast', !!burnState.systemPrefs?.increaseContrast)
+  burnRoot.classList.toggle('burn-reduce-transparency', !!burnState.systemPrefs?.reduceTransparency)
   burnRoot.innerHTML = burnShell(burnScreenHtml())
   burnAfterRender()
   const newBody = burnRoot.querySelector('.burn-body')
   if (newBody) newBody.scrollTop = prevScroll
+  if (focusIdentity && typeof BurnFocus !== 'undefined') BurnFocus.restore(burnRoot, focusIdentity)
+}
+
+function burnPatchOpenUsagePrefs(patch) {
+  const current = burnState.openUsagePrefs || {}
+  burnState.openUsagePrefs = {
+    ...current,
+    ...patch,
+    paceAlerts: { ...(current.paceAlerts || {}), ...(patch.paceAlerts || {}) },
+    sync: { ...(current.sync || {}), ...(patch.sync || {}) },
+    updates: { ...(current.updates || {}), ...(patch.updates || {}) },
+  }
+  burnState.justSaved = false
+  burnRender()
+  if (window.maxx?.setOpenUsagePrefs) {
+    Promise.resolve(window.maxx.setOpenUsagePrefs(patch)).then((saved) => {
+      if (saved) burnState.openUsagePrefs = { ...burnState.openUsagePrefs, ...saved }
+      burnRender()
+    }).catch((err) => {
+      burnState.syncError = burnSafeError(err?.message || err)
+      burnRender()
+    })
+  }
+}
+
+function burnPatchUpdatePreferences(patch) {
+  const current = burnState.openUsagePrefs?.updates || { channel: 'stable', automaticChecks: true }
+  burnState.openUsagePrefs.updates = { ...current, ...patch }
+  burnRender()
+  const save = window.maxx?.setUpdatePreferences
+  if (!save) {
+    burnPatchOpenUsagePrefs({ updates: patch })
+    return
+  }
+  Promise.resolve(save(patch)).then((saved) => {
+    if (saved) burnState.openUsagePrefs.updates = { ...burnState.openUsagePrefs.updates, ...saved }
+    burnRender()
+  }).catch((err) => {
+    burnState.update = { ...burnState.update, status: 'error', error: burnSafeError(err?.message || err) }
+    burnRender()
+  })
+}
+
+async function burnSetGlobalShortcut(accelerator) {
+  const method = window.maxx?.setGlobalShortcut || window.maxx?.registerGlobalShortcut
+  if (!method) return
+  try {
+    const result = await method(accelerator)
+    burnState.openUsagePrefs.globalShortcut = result?.accelerator || null
+    burnState.openUsagePrefs.shortcutStatus = {
+      registered: !!result?.accelerator,
+      error: result?.ok === false ? (result.error || 'Shortcut unavailable') : null,
+    }
+    burnRender()
+  } catch (err) {
+    burnState.openUsagePrefs.shortcutStatus = { registered: false, error: burnSafeError(err?.message || err) }
+    burnRender()
+  }
+}
+
+async function burnSetHistorySync(enabled) {
+  if (!window.maxx?.setHistorySync) {
+    burnPatchOpenUsagePrefs({ sync: { enabled } })
+    return
+  }
+  burnState.openUsagePrefs.sync = { ...(burnState.openUsagePrefs.sync || {}), enabled }
+  burnState.syncStatus = { ...(burnState.syncStatus || {}), enabled, syncing: true }
+  burnRender()
+  try {
+    burnState.syncStatus = await window.maxx.setHistorySync({ enabled })
+    burnState.openUsagePrefs.sync.enabled = !!burnState.syncStatus?.enabled
+  } catch (err) {
+    burnState.syncStatus = { enabled: !enabled, syncing: false, error: burnSafeError(err?.message || err) }
+    burnState.openUsagePrefs.sync.enabled = !enabled
+  }
+  burnRender()
+}
+
+function burnHydrateResetConfig(config) {
+  if (!config) return
+  burnState.config = config
+  const prefs = config.openUsagePrefs || {}
+  burnState.openUsagePrefs = {
+    ...burnState.openUsagePrefs,
+    ...prefs,
+    paceAlerts: { ...(burnState.openUsagePrefs.paceAlerts || {}), ...(prefs.paceAlerts || {}) },
+    sync: { ...(burnState.openUsagePrefs.sync || {}), ...(prefs.sync || {}) },
+    updates: { ...(burnState.openUsagePrefs.updates || {}), ...(prefs.updates || {}) },
+  }
+  burnState.settingsEnabled = Object.fromEntries(Object.entries(config.providers || {}).map(([id, provider]) => [id, provider.enabled !== false]))
+  burnState.settingsOrder = Array.isArray(config.providerOrder) ? [...config.providerOrder] : []
+  burnState.metricLayouts = config.metricLayouts || {}
+  burnState.trayPins = Array.isArray(config.trayPins) ? config.trayPins : []
+  burnState.expandedIds = Object.fromEntries((config.expandedProviderIds || []).map((id) => [id, true]))
+  const threshold = (raw) => (Array.isArray(raw) ? raw : [50, 20]).map(Number).filter(Number.isFinite).slice(0, 2).join(',') || '50,20'
+  burnState.cfg = {
+    trayMetric: config.trayMetric || 'burnbar',
+    usageMeterMode: config.usageMeterMode || 'used',
+    tokenHistoryDays: String(config.tokenHistoryDays || 30),
+    sessionThreshold: threshold(config.quotaWarningSessionThresholds || config.quotaWarningThresholds),
+    weeklyThreshold: threshold(config.quotaWarningWeeklyThresholds || config.quotaWarningThresholds),
+    alertHours: String(config.maxxAlertHours || 48),
+    alertReservePct: String(config.maxxAlertReservePct || 25),
+  }
+  burnState.notifs = {
+    alerts: config.maxxAlertsEnabled !== false,
+    restored: config.sessionQuotaNotificationsEnabled !== false,
+    quota: config.quotaWarningNotificationsEnabled === true,
+  }
+  burnState.app.openAtLogin = config.openAtLogin !== false
+  burnState.app.saveMode = config.saveModeSuggestions === true
+  burnState.unknownModelFallback = config.unknownModelFallback || { enabled: false, models: {} }
+}
+
+function burnTimeFormat() {
+  const selected = burnState.openUsagePrefs?.timeFormat || 'system'
+  if (selected === '12h' || selected === '24h') return selected
+  if (burnState.systemPrefs?.timeFormat === '24h') return '24h'
+  try {
+    const cycle = new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hourCycle
+    return cycle === 'h23' || cycle === 'h24' ? '24h' : '12h'
+  } catch (e) {
+    return '12h'
+  }
+}
+
+function burnFormatExactTime(timestamp, verb = 'Resets') {
+  const value = Number(timestamp)
+  if (!Number.isFinite(value)) return `${verb} unavailable`
+  const date = new Date(value)
+  const today = new Date()
+  const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
+  const key = (item) => `${item.getFullYear()}-${item.getMonth()}-${item.getDate()}`
+  const day = key(date) === key(today) ? 'today' : key(date) === key(tomorrow) ? 'tomorrow' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return `${verb} ${day} at ${date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: burnTimeFormat() === '12h' })}`
+}
+
+function burnFormatCountdown(timestamp, verb = 'Resets') {
+  const value = Number(timestamp)
+  if (!Number.isFinite(value)) return `${verb} unavailable`
+  const seconds = Math.max(0, Math.floor((value - Date.now()) / 1000))
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const secs = seconds % 60
+  if (days) return `${verb} in ${days}d ${String(hours).padStart(2, '0')}h`
+  return `${verb} in ${String(hours).padStart(2, '0')}h ${String(minutes).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`
+}
+
+function burnClockText(timestamp, verb) {
+  return burnState.openUsagePrefs?.resetDisplay === 'exact'
+    ? burnFormatExactTime(timestamp, verb)
+    : burnFormatCountdown(timestamp, verb)
+}
+
+function burnTickVisibleClocks() {
+  if (!burnRoot) return
+  burnRoot.querySelectorAll('[data-burn-clock]').forEach((node) => {
+    const raw = node.getAttribute('data-burn-clock')
+    if (!raw) return
+    const at = Number(raw)
+    if (!Number.isFinite(at)) return
+    const verb = node.getAttribute('data-burn-clock-verb') || 'Resets'
+    node.textContent = burnClockText(at, verb)
+  })
+}
+
+async function burnShareCard() {
+  const target = burnState.shareTarget
+  if (!target || !burnState.lastSnap) return
+  const method = window.maxx?.shareCard || window.maxx?.copyBurnCardPng
+  if (!method) {
+    burnState.shareNotice = 'PNG sharing is unavailable in this build.'
+    burnRender()
+    return
+  }
+  const payload = {
+    ...target,
+    period: burnState.reportPeriod,
+    metric: burnState.reportMetric,
+    theme: burnState.app.lightMode ? 'light' : 'dark',
+    redact: { ...burnState.shareRedact },
+  }
+  try {
+    const result = await method(payload)
+    burnState.shareNotice = result?.ok === false ? (result.error || 'Could not copy PNG.') : 'PNG copied to clipboard.'
+  } catch (err) {
+    burnState.shareNotice = burnSafeError(err?.message || err)
+  }
+  burnRender()
+}
+
+async function burnPrepareCredit(providerId, creditId) {
+  const method = window.maxx?.prepareCodexResetCredit || window.maxx?.prepareResetCredit
+  if (!method) return
+  burnState.creditClaim = { status: 'checking', providerId, creditId }
+  burnRender()
+  try {
+    const prepared = await method({ providerInstanceId: providerId, creditId })
+    burnState.creditClaim = prepared?.ok
+      ? { status: 'confirm', providerId, creditId, prepared }
+      : { status: 'error', providerId, creditId, error: prepared?.error || 'This reset credit is not eligible.' }
+  } catch (err) {
+    burnState.creditClaim = { status: 'error', providerId, creditId, error: burnSafeError(err?.message || err) }
+  }
+  burnRender()
+}
+
+async function burnRedeemCredit() {
+  const claim = burnState.creditClaim
+  const method = window.maxx?.redeemCodexResetCredit || window.maxx?.redeemResetCredit
+  if (!['confirm', 'retry'].includes(claim?.status) || !method) return
+  burnState.creditClaim = { ...claim, status: 'redeeming' }
+  burnRender()
+  try {
+    const result = await method({ ...claim.prepared, confirmed: true })
+    if (result?.snapshot) burnApplySnapshot(result.snapshot)
+    const definitive = ['no_credit', 'nothing_to_reset', 'cancelled', 'ineligible', 'account_changed', 'identity_mismatch'].includes(result?.code)
+    burnState.creditClaim = result?.ok
+      ? { status: 'done', providerId: claim.providerId, creditId: claim.creditId, message: result.alreadyRedeemed ? 'Already redeemed; usage refreshed.' : 'Reset credit redeemed.' }
+      : !definitive
+        ? { status: 'retry', providerId: claim.providerId, creditId: claim.creditId, prepared: claim.prepared, error: result?.error || 'Credit outcome is uncertain; retry the same request to refresh usage.' }
+        : { status: 'error', providerId: claim.providerId, creditId: claim.creditId, error: result?.error || result?.code || 'Could not redeem this credit.' }
+  } catch (err) {
+    burnState.creditClaim = { status: 'retry', providerId: claim.providerId, creditId: claim.creditId, prepared: claim.prepared, error: burnSafeError(err?.message || err) }
+  }
+  burnRender()
 }
 
 function burnGo(screen) {
   burnState.screen = screen
-  if (screen !== 'home') burnState.expandedId = null
   burnRender()
   if (screen === 'missions' && !burnState.ideasLoaded && !burnState.ideasLoading) burnLoadIdeas()
   if (screen === 'coach' && !burnState.coachModel && !burnState.coachLoading) burnLoadCoach()
@@ -269,10 +540,167 @@ async function burnStartBacklog(index) {
 }
 
 function burnApplySnapshot(snap) {
-  burnState.providers = burnAdaptProviders(snap, { usageMeterMode: burnState.cfg?.usageMeterMode || 'used' })
+  const hasInstances = (snap?.providers || []).some((provider) => provider?.providerFamily && provider.id !== provider.providerFamily)
+  const needsInstanceConfig = hasInstances && !burnState._instanceConfigReloaded && !burnState.layoutUndo.length && window.maxx?.getConfig
+  if (needsInstanceConfig) burnState._instanceConfigReloaded = true
+  burnState.lastSnap = snap
+  burnState.syncing = snap?.refresh?.inProgress === true
+  burnState.providers = burnAdaptProviders(snap, { usageMeterMode: burnState.cfg?.usageMeterMode || 'used', metricLayouts: burnState.metricLayouts, now: Date.now() })
+  burnReconcileMetricLayouts(!needsInstanceConfig)
   burnState.footer = burnAdaptFooter(snap)
+  burnState.syncError = ''
   burnComputeOptimize(snap)
   burnRender()
+  if (needsInstanceConfig) {
+    window.maxx.getConfig().then((config) => {
+      if (!config) return
+      burnState.config = config
+      burnState.metricLayouts = config.metricLayouts || burnState.metricLayouts
+      burnState.trayPins = Array.isArray(config.trayPins) ? config.trayPins : burnState.trayPins
+      burnRevalidateSnapshot(false)
+      burnReconcileMetricLayouts(true)
+      burnRender()
+    }).catch(() => {})
+  }
+}
+
+function burnRevalidateSnapshot(render = true) {
+  if (!burnState.lastSnap) return
+  burnState.providers = burnAdaptProviders(burnState.lastSnap, {
+    usageMeterMode: burnState.cfg?.usageMeterMode || 'used',
+    metricLayouts: burnState.metricLayouts,
+    now: Date.now(),
+  })
+  burnState.footer = burnAdaptFooter(burnState.lastSnap)
+  if (render) burnRender()
+}
+
+function burnReconcileMetricLayouts(persist = true) {
+  let changed = false
+  const next = { ...(burnState.metricLayouts || {}) }
+  for (const provider of burnState.providers || []) {
+    if (!provider.metricLayout) continue
+    if (JSON.stringify(next[provider.id] || null) !== JSON.stringify(provider.metricLayout)) changed = true
+    next[provider.id] = provider.metricLayout
+  }
+  burnState.metricLayouts = next
+  if (changed && persist) burnSchedulePreferenceSave()
+}
+
+function burnPreferenceSnapshot() {
+  return {
+    metricLayouts: JSON.parse(JSON.stringify(burnState.metricLayouts || {})),
+    trayPins: JSON.parse(JSON.stringify(burnState.trayPins || [])),
+  }
+}
+
+function burnPushLayoutUndo() {
+  burnState.layoutUndo.push(burnPreferenceSnapshot())
+  if (burnState.layoutUndo.length > 30) burnState.layoutUndo.shift()
+}
+
+function burnRestoreLayoutSnapshot(snapshot) {
+  if (!snapshot) return
+  burnState.metricLayouts = snapshot.metricLayouts || {}
+  burnState.trayPins = snapshot.trayPins || []
+  burnRevalidateSnapshot(false)
+  burnSchedulePreferenceSave()
+  burnRender()
+}
+
+function burnMetricPlacement(providerId, metricId) {
+  const layout = burnState.metricLayouts?.[providerId] || {}
+  if ((layout.hidden || []).includes(metricId)) return 'hidden'
+  if ((layout.primary || []).includes(metricId)) return 'primary'
+  return 'expanded'
+}
+
+function burnSetMetricPlacement(providerId, metricId, placement) {
+  const layout = burnState.metricLayouts?.[providerId]
+  if (!layout || !layout.order.includes(metricId)) return
+  burnPushLayoutUndo()
+  const next = { ...layout, primary: layout.primary.filter((id) => id !== metricId), hidden: layout.hidden.filter((id) => id !== metricId) }
+  if (placement === 'primary') next.primary.push(metricId)
+  if (placement === 'hidden') next.hidden.push(metricId)
+  burnState.metricLayouts = { ...burnState.metricLayouts, [providerId]: next }
+  burnRevalidateSnapshot(false)
+  burnSchedulePreferenceSave()
+  burnRender()
+}
+
+function burnMoveMetric(providerId, metricId, direction) {
+  const layout = burnState.metricLayouts?.[providerId]
+  if (!layout) return
+  const order = [...layout.order]
+  const from = order.indexOf(metricId)
+  const to = from + direction
+  if (from < 0 || to < 0 || to >= order.length) return
+  burnPushLayoutUndo()
+  order.splice(to, 0, order.splice(from, 1)[0])
+  burnState.metricLayouts = { ...burnState.metricLayouts, [providerId]: { ...layout, order } }
+  burnRevalidateSnapshot(false)
+  burnSchedulePreferenceSave()
+  burnRender()
+}
+
+function burnSetMetricPin(providerId, metricId, style) {
+  burnPushLayoutUndo()
+  const pins = (burnState.trayPins || []).filter((pin) => !(pin.providerId === providerId && pin.metricId === metricId))
+  if (style !== 'none') {
+    const existing = pins.filter((pin) => pin.providerId === providerId)
+    if (existing.length >= 2) {
+      const remove = existing[0]
+      pins.splice(pins.findIndex((pin) => pin.providerId === remove.providerId && pin.metricId === remove.metricId), 1)
+    }
+    pins.push({ providerId, metricId, style: style === 'text' ? 'text' : 'bar' })
+    burnState.cfg.trayMetric = 'pins'
+  }
+  burnState.trayPins = pins
+  if (!pins.length && burnState.cfg.trayMetric === 'pins') burnState.cfg.trayMetric = 'burnbar'
+  burnSchedulePreferenceSave()
+  burnRender()
+}
+
+function burnResetProviderLayout(providerId) {
+  burnPushLayoutUndo()
+  const layouts = { ...(burnState.metricLayouts || {}) }
+  delete layouts[providerId]
+  burnState.metricLayouts = layouts
+  burnState.trayPins = (burnState.trayPins || []).filter((pin) => pin.providerId !== providerId)
+  if (!burnState.trayPins.length && burnState.cfg.trayMetric === 'pins') burnState.cfg.trayMetric = 'burnbar'
+  burnRevalidateSnapshot(false)
+  burnReconcileMetricLayouts()
+  burnSchedulePreferenceSave()
+  burnRender()
+}
+
+function burnResetAllLayouts() {
+  burnPushLayoutUndo()
+  burnState.metricLayouts = {}
+  burnState.trayPins = []
+  if (burnState.cfg.trayMetric === 'pins') burnState.cfg.trayMetric = 'burnbar'
+  burnRevalidateSnapshot(false)
+  burnReconcileMetricLayouts()
+  burnSchedulePreferenceSave()
+  burnRender()
+}
+
+function burnSchedulePreferenceSave() {
+  if (!window.maxx?.saveBurnPreferences) return
+  if (burnState._preferenceTimer) clearTimeout(burnState._preferenceTimer)
+  burnState._preferenceTimer = setTimeout(async () => {
+    try {
+      const saved = await window.maxx.saveBurnPreferences({
+        metricLayouts: burnState.metricLayouts,
+        trayPins: burnState.trayPins,
+        expandedProviderIds: Object.keys(burnState.expandedIds).filter((id) => burnState.expandedIds[id]),
+        trayMetric: burnState.cfg?.trayMetric,
+      })
+      if (saved) burnState.config = saved
+    } catch (err) {
+      console.error('[burn] preference save failed', err)
+    }
+  }, 150)
 }
 
 // Derive Optimize signals from the raw snapshot (no new data pipe). Pure +
@@ -342,6 +770,7 @@ async function burnOptPrimaryAction(sig) {
 async function burnSync() {
   if (burnState.syncing || !window.maxx?.syncNow) return
   burnState.syncing = true
+  burnState.syncError = ''
   burnRender()
   let snap = null
   try {
@@ -349,6 +778,7 @@ async function burnSync() {
     if (snap && snap.providers) burnApplySnapshot(snap)
   } catch (err) {
     console.error('[burn] sync failed', err)
+    burnState.syncError = 'Refresh failed. Showing the last successful data.'
   } finally {
     burnState.syncing = false
     // applySnapshot already re-rendered when a usable snapshot came back;
@@ -462,6 +892,70 @@ function burnHandleClick(e) {
     return
   }
 
+  const displayToggle = e.target.closest('[data-burn-display-toggle]')
+  if (displayToggle) {
+    e.preventDefault()
+    e.stopPropagation()
+    const kind = displayToggle.getAttribute('data-burn-display-toggle')
+    if (kind === 'usage') {
+      burnState.cfg.usageMeterMode = burnState.cfg.usageMeterMode === 'left' ? 'used' : 'left'
+      burnRevalidateSnapshot(false)
+    } else if (kind === 'reset') {
+      burnPatchOpenUsagePrefs({ resetDisplay: burnState.openUsagePrefs?.resetDisplay === 'exact' ? 'countdown' : 'exact' })
+    }
+    burnRender()
+    return
+  }
+
+  const reportMetric = e.target.closest('[data-burn-report-metric]')
+  if (reportMetric) {
+    burnState.reportMetric = reportMetric.getAttribute('data-burn-report-metric')
+    burnRender()
+    return
+  }
+  const reportPeriod = e.target.closest('[data-burn-report-period]')
+  if (reportPeriod) {
+    burnState.reportPeriod = reportPeriod.getAttribute('data-burn-report-period')
+    burnRender()
+    return
+  }
+  if (e.target.closest('[data-burn-report-models]')) {
+    burnState.reportModelsOpen = !burnState.reportModelsOpen
+    burnRender()
+    return
+  }
+
+  const share = e.target.closest('[data-burn-share]')
+  if (share) {
+    const value = share.getAttribute('data-burn-share')
+    if (value === 'close') {
+      burnState.shareTarget = null
+      burnState.shareNotice = ''
+      burnRender()
+    } else if (value === 'copy') burnShareCard()
+    else {
+      const [kind, providerId] = value.split('|')
+      burnState.shareTarget = { kind, providerId: providerId || undefined }
+      burnState.shareNotice = ''
+      burnRender()
+    }
+    return
+  }
+
+  const credit = e.target.closest('[data-burn-credit]')
+  if (credit) {
+    const [action, providerId, creditId] = (credit.getAttribute('data-burn-credit') || '').split('|')
+    if (action === 'prepare') burnPrepareCredit(providerId, creditId)
+    else if (action === 'confirm') burnRedeemCredit()
+    else if (action === 'cancel') { burnState.creditClaim = null; burnRender() }
+    return
+  }
+
+  if (e.target.closest('[data-burn-shortcut-clear]')) {
+    burnSetGlobalShortcut(null)
+    return
+  }
+
   const coachToggle = e.target.closest('[data-coach-toggle]')
   if (coachToggle) {
     const id = coachToggle.getAttribute('data-coach-toggle')
@@ -494,8 +988,26 @@ function burnHandleClick(e) {
   const toggle2 = e.target.closest('[data-burn-toggle]')
   if (toggle2) {
     const [scope, key] = toggle2.getAttribute('data-burn-toggle').split(':')
-    if (scope === 'prov') burnState.settingsEnabled[key] = burnState.settingsEnabled[key] === false
+    if (scope === 'prov') {
+      const provider = (burnState.providers || []).find((item) => item.id === key)
+      const family = provider?._raw?.providerFamily || key
+      const current = burnState.settingsEnabled[key] !== undefined ? burnState.settingsEnabled[key] : burnState.settingsEnabled[family]
+      const next = current === false
+      burnState.settingsEnabled[family] = next
+      for (const item of burnState.providers || []) {
+        if ((item._raw?.providerFamily || item.id) === family) burnState.settingsEnabled[item.id] = next
+      }
+    }
     else if (scope === 'notif') burnState.notifs[key] = !burnState.notifs[key]
+    else if (scope === 'pref') {
+      if (key === 'paceNear') burnPatchOpenUsagePrefs({ paceAlerts: { nearExhaustion: !burnState.openUsagePrefs?.paceAlerts?.nearExhaustion } })
+      else if (key === 'paceRunOut') burnPatchOpenUsagePrefs({ paceAlerts: { runOut: !burnState.openUsagePrefs?.paceAlerts?.runOut } })
+      else if (key === 'capturePrivacy') burnPatchOpenUsagePrefs({ capturePrivacy: !burnState.openUsagePrefs?.capturePrivacy })
+      else if (key === 'reduceAnimations') burnPatchOpenUsagePrefs({ reduceAnimations: !burnState.openUsagePrefs?.reduceAnimations })
+      else if (key === 'sync') burnSetHistorySync(!burnState.openUsagePrefs?.sync?.enabled)
+      else if (key === 'updateAutomaticChecks') burnPatchUpdatePreferences({ automaticChecks: !burnState.openUsagePrefs?.updates?.automaticChecks })
+      return
+    }
     else if (scope === 'app') {
       burnState.app[key] = !burnState.app[key]
       if (key === 'lightMode') {
@@ -519,6 +1031,10 @@ function burnHandleClick(e) {
     else if (key === 'app') burnState.appOpen = !burnState.appOpen
     else if (key === 'updates') burnState.updatesOpen = !burnState.updatesOpen
     else if (key === 'license') burnState.licenseOpen = !burnState.licenseOpen
+    else if (key === 'privacy') burnState.privacyOpen = !burnState.privacyOpen
+    else if (key === 'diagnostics') burnState.diagnosticsOpen = !burnState.diagnosticsOpen
+    else if (key === 'pricing') burnState.pricingOpen = !burnState.pricingOpen
+    else if (key === 'proxy') burnState.proxyOpen = !burnState.proxyOpen
     burnRender()
     return
   }
@@ -536,6 +1052,66 @@ function burnHandleClick(e) {
     else if (which === 'start-mission') burnStartMission()
     else if (which === 'reveal-config') window.maxx?.openConfigFile?.()
     else if (which === 'reveal-log') window.maxx?.openDebugLog?.()
+    else if (which === 'copy-log-path') {
+      window.maxx?.copyLogPath?.().then(() => {
+        burnState.diagnostics.notice = 'Log path copied'
+        burnRender()
+      }).catch((err) => {
+        burnState.diagnostics.notice = burnSafeError(err?.message || err)
+        burnRender()
+      })
+    }
+    else if (which === 'save-proxy' || which === 'clear-proxy-auth') {
+      const proxy = burnState.proxySettings
+      const payload = { enabled: proxy.enabled, url: proxy.url }
+      if (which === 'clear-proxy-auth') payload.credentials = {}
+      else if (proxy.username || proxy.password) payload.credentials = { username: proxy.username || '', password: proxy.password || '' }
+      window.maxx?.setProxySettings?.(payload).then((value) => {
+        burnState.proxySettings = { ...value, username: '', password: '', notice: 'Proxy settings applied.' }
+        burnRender()
+      }).catch(() => {
+        burnState.proxySettings.notice = 'Could not apply proxy settings. Check the address and secure storage access.'
+        burnRender()
+      })
+    }
+    else if (which === 'install-cli') {
+      if (!window.maxx?.installCli) return
+      burnState.cliStatus = { ...burnState.cliStatus, checking: true, error: '' }
+      burnRender()
+      window.maxx.installCli().then((status) => {
+        burnState.cliStatus = { ...status, checking: false }
+        burnRender()
+      }).catch((err) => {
+        burnState.cliStatus = { installed: false, checking: false, error: burnSafeError(err?.message || err) }
+        burnRender()
+      })
+    }
+    else if (which === 'uninstall-cli') {
+      if (!window.maxx?.uninstallCli) return
+      burnState.cliStatus = { ...burnState.cliStatus, checking: true, error: '' }
+      burnRender()
+      window.maxx.uninstallCli().then((status) => {
+        burnState.cliStatus = { ...(status || {}), checking: false }
+        burnRender()
+      }).catch((err) => {
+        burnState.cliStatus = { ...burnState.cliStatus, checking: false, error: burnSafeError(err?.message || err) }
+        burnRender()
+      })
+    }
+    else if (which === 'reset-settings') {
+      window.maxx?.resetSettings?.().then((result) => {
+        if (result?.cancelled) return
+        burnHydrateResetConfig(result?.config || burnState.config)
+        burnState.diagnostics.notice = result?.ok === false ? burnSafeError(result.error) : 'Settings reset. Credentials were preserved.'
+        burnState.diagnostics.logLevel = burnState.config?.logLevel || 'info'
+        burnState.unknownModelFallback = burnState.config?.unknownModelFallback || { enabled: false, models: {} }
+        burnState.proxySettings = { ...burnState.config?.proxy, hasCredentials: burnState.proxySettings.hasCredentials }
+        burnRender()
+      }).catch((err) => {
+        burnState.diagnostics.notice = burnSafeError(err?.message || err)
+        burnRender()
+      })
+    }
     else if (which === 'export-usage') burnExportUsage()
     else if (which === 'mode-new') { burnState.missionMode = 'new'; burnRender() }
     else if (which === 'mode-backlog') { burnState.missionMode = 'backlog'; burnRender() }
@@ -569,6 +1145,45 @@ function burnHandleClick(e) {
       if (burnState.lastSnap) burnComputeOptimize(burnState.lastSnap)
       burnRender()
     }
+    return
+  }
+
+  const providerAction = e.target.closest('[data-burn-provider-action]')
+  if (providerAction) {
+    const raw = providerAction.getAttribute('data-burn-provider-action') || ''
+    const split = raw.indexOf(':')
+    const kind = raw.slice(0, split)
+    const id = raw.slice(split + 1)
+    if (kind === 'refresh' && window.maxx?.refreshProvider) {
+      const provider = (burnState.providers || []).find((item) => item.id === id)
+      if (provider?._raw) {
+        provider._raw.refreshState = 'refreshing'
+        provider._raw.refreshError = null
+      }
+      burnRender()
+      window.maxx.refreshProvider(id).then((snap) => snap && burnApplySnapshot(snap)).catch((err) => {
+        if (provider?._raw) {
+          provider._raw.refreshState = 'error'
+          provider._raw.refreshError = burnSafeError(err?.message || err)
+        }
+        burnRender()
+      })
+    } else if (kind === 'account' || kind === 'status') {
+      const provider = (burnState.providers || []).find((item) => item.id === id)
+      window.maxx?.openProviderLink?.(provider?._raw?.providerFamily || id, kind === 'account' ? 'dashboard' : 'status')
+    }
+    return
+  }
+
+  const metricAction = e.target.closest('[data-burn-metric-action]')
+  if (metricAction) {
+    const [kind, providerId, metricId] = (metricAction.getAttribute('data-burn-metric-action') || '').split('|')
+    if (kind === 'up') burnMoveMetric(providerId, metricId, -1)
+    else if (kind === 'down') burnMoveMetric(providerId, metricId, 1)
+    else if (kind === 'open') { burnState.metricOpen[providerId] = !burnState.metricOpen[providerId]; burnRender() }
+    else if (kind === 'reset') burnResetProviderLayout(providerId)
+    else if (kind === 'reset-all') burnResetAllLayouts()
+    else if (kind === 'undo') burnRestoreLayoutSnapshot(burnState.layoutUndo.pop())
     return
   }
 
@@ -697,9 +1312,25 @@ function burnHandleClick(e) {
     const id = toggle.getAttribute('data-burn-chevron') || toggle.getAttribute('data-burn-row')
     const provEl = burnRoot.querySelector(`[data-burn-prov="${id}"]`)
     const isOpen = !!provEl && provEl.classList.contains('open')
-    burnRoot.querySelectorAll('.burn-prov.open').forEach((el) => el.classList.remove('open'))
-    if (provEl && !isOpen) provEl.classList.add('open')
-    burnState.expandedId = isOpen ? null : id
+    if (provEl && !isOpen) {
+      provEl.classList.add('open')
+      provEl.querySelector('[data-burn-row]')?.setAttribute('aria-expanded', 'true')
+      const detail = provEl.querySelector('.burn-detail')
+      if (detail) {
+        detail.setAttribute('aria-hidden', 'false')
+        detail.removeAttribute('inert')
+      }
+    } else if (provEl) {
+      provEl.classList.remove('open')
+      provEl.querySelector('[data-burn-row]')?.setAttribute('aria-expanded', 'false')
+      const detail = provEl.querySelector('.burn-detail')
+      if (detail) {
+        detail.setAttribute('aria-hidden', 'true')
+        detail.setAttribute('inert', '')
+      }
+    }
+    burnState.expandedIds[id] = !isOpen
+    burnSchedulePreferenceSave()
     // Resize once expanded (immediate) and again after the 120ms collapse.
     burnResize()
     setTimeout(burnResize, 150)
@@ -735,6 +1366,11 @@ async function burnToggleSaveMode() {
 // Goal textarea: update state + char-count meta in place (no re-render, keeps
 // focus and caret).
 function burnHandleInput(e) {
+  const proxy = e.target.closest('[data-burn-proxy]')
+  if (proxy) {
+    burnState.proxySettings[proxy.getAttribute('data-burn-proxy')] = proxy.type === 'checkbox' ? proxy.checked : proxy.value
+    return
+  }
   const goal = e.target.closest('[data-burn-goal]')
   if (goal) {
     burnState.missionGoal = goal.value
@@ -758,13 +1394,52 @@ function burnHandleInput(e) {
 // shows the new value, and re-rendering would close the dropdown. Values are
 // committed to the config file on Save (burnSaveSettings).
 function burnHandleChange(e) {
+  const redact = e.target.closest('[data-burn-share-redact]')
+  if (redact) {
+    burnState.shareRedact[redact.getAttribute('data-burn-share-redact')] = !!redact.checked
+    return
+  }
   const sel = e.target.closest('[data-burn-select]')
   if (!sel) return
   const key = sel.getAttribute('data-burn-select')
-  if (key.startsWith('warn:')) {
-    burnState.provAlert[key.slice(5)] = sel.value
+  if (key.startsWith('metric|')) {
+    const [, providerId, metricId] = key.split('|')
+    burnSetMetricPlacement(providerId, metricId, sel.value)
+  } else if (key.startsWith('pin|')) {
+    const [, providerId, metricId] = key.split('|')
+    burnSetMetricPin(providerId, metricId, sel.value)
+  } else if (key.startsWith('warn:')) {
+    const id = key.slice(5)
+    const provider = (burnState.providers || []).find((item) => item.id === id)
+    const family = provider?._raw?.providerFamily || id
+    burnState.provAlert[family] = sel.value
+    for (const item of burnState.providers || []) {
+      if ((item._raw?.providerFamily || item.id) === family) burnState.provAlert[item.id] = sel.value
+    }
+  } else if (['appearance', 'density', 'timeFormat', 'resetDisplay'].includes(key)) {
+    burnPatchOpenUsagePrefs({ [key]: sel.value })
+    return
+  } else if (key === 'updateChannel') {
+    burnPatchUpdatePreferences({ channel: sel.value })
+    return
+  } else if (key === 'logLevel') {
+    burnState.diagnostics.logLevel = sel.value
+    window.maxx?.setLogLevel?.(sel.value).then((value) => {
+      burnState.diagnostics = { ...burnState.diagnostics, ...(value || {}), notice: 'Log level updated' }
+      burnRender()
+    }).catch((err) => {
+      burnState.diagnostics.notice = burnSafeError(err?.message || err)
+      burnRender()
+    })
+    return
+  } else if (key === 'fallbackEnabled') {
+    burnState.unknownModelFallback.enabled = sel.value === 'on'
+  } else if (key.startsWith('fallback:')) {
+    const providerId = key.slice('fallback:'.length)
+    burnState.unknownModelFallback.models = { ...(burnState.unknownModelFallback.models || {}), [providerId]: sel.value }
   } else {
     burnState.cfg[key] = sel.value
+    if (key === 'usageMeterMode') burnRevalidateSnapshot(false)
   }
   burnState.justSaved = false
 }
@@ -782,10 +1457,13 @@ async function burnSaveSettings() {
   const order = burnSettingsProviders(burnState).map((p) => p.id)
   const providers = { ...(base.providers || {}) }
   for (const id of order) {
-    const warn = burnState.provAlert[id] || 'inherit'
-    providers[id] = {
-      ...providers[id],
-      enabled: burnState.settingsEnabled[id] !== false,
+    const display = (burnState.providers || []).find((provider) => provider.id === id)
+    const family = display?._raw?.providerFamily || id
+    const warn = burnState.provAlert[id] || burnState.provAlert[family] || 'inherit'
+    const enabledValue = burnState.settingsEnabled[id] !== undefined ? burnState.settingsEnabled[id] : burnState.settingsEnabled[family]
+    providers[family] = {
+      ...providers[family],
+      enabled: enabledValue !== false,
       alertsEnabled: warn === 'off' ? false : undefined,
       alertReservePct: warn === 'inherit' || warn === 'off' ? undefined : Number(warn),
     }
@@ -806,9 +1484,13 @@ async function burnSaveSettings() {
     quotaWarningSessionThresholds: sessionThr,
     quotaWarningWeeklyThresholds: weeklyThr,
     trayMetric: cfg.trayMetric || 'burnbar',
+    trayPins: burnState.trayPins,
+    metricLayouts: burnState.metricLayouts,
+    expandedProviderIds: Object.keys(burnState.expandedIds).filter((id) => burnState.expandedIds[id]),
     usageMeterMode: cfg.usageMeterMode || 'used',
     tokenHistoryDays: Number(cfg.tokenHistoryDays) || 30,
     saveModeSuggestions: burnState.app.saveMode === true,
+    unknownModelFallback: burnState.unknownModelFallback,
     providerOrder: order,
     providers,
   }
@@ -892,7 +1574,10 @@ function burnResize() {
     if (child.classList.contains('burn-body')) {
       const cs = getComputedStyle(child)
       h += parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
-      for (const gc of child.children) h += gc.offsetHeight
+      for (const gc of child.children) {
+        const gcs = getComputedStyle(gc)
+        h += gc.offsetHeight + (parseFloat(gcs.marginTop) || 0) + (parseFloat(gcs.marginBottom) || 0)
+      }
     } else {
       h += child.offsetHeight
     }
@@ -901,11 +1586,85 @@ function burnResize() {
 }
 
 function burnPreparePopoverOpen() {
+  burnRevalidateSnapshot(false)
   if (burnState.screen !== 'home' && burnState.screen !== 'mission-setup') burnGo('home')
   // Background revalidation may have moved the license state since the last
   // open (e.g. GRACE ↔ LICENSED, refund → REVOKED). Refresh quietly.
   burnLoadLicense().catch(() => {})
   return Promise.resolve(burnResize()).catch(() => {})
+}
+
+function burnHandleKeydown(e) {
+  if (e.target?.matches?.('[data-burn-shortcut]')) {
+    if (e.key === 'Tab') return
+    e.preventDefault()
+    if (e.key === 'Escape') { e.target.blur(); return }
+    const modifiers = []
+    if (e.metaKey || e.ctrlKey) modifiers.push('CommandOrControl')
+    if (e.altKey) modifiers.push('Alt')
+    if (e.shiftKey) modifiers.push('Shift')
+    const aliases = { ' ': 'Space', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' }
+    const key = aliases[e.key] || (e.key.length === 1 ? e.key.toUpperCase() : e.key)
+    if (!['Meta', 'Control', 'Alt', 'Shift'].includes(key) && modifiers.length) burnSetGlobalShortcut([...modifiers, key].join('+'))
+    return
+  }
+  if ((e.key === 'Enter' || e.key === ' ') && e.target?.matches?.('[role="button"][data-burn-display-toggle]')) {
+    e.preventDefault()
+    e.target.click()
+    return
+  }
+  if ((e.key === 'Enter' || e.key === ' ') && e.target?.matches?.('[role="button"][data-burn-row]')) {
+    e.preventDefault()
+    e.target.click()
+    return
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    if (e.target?.matches?.('input, textarea, select')) {
+      e.target.blur()
+      return
+    }
+    if (burnState.shareTarget) {
+      burnState.shareTarget = null
+      burnState.shareNotice = ''
+      burnRender()
+      return
+    }
+    if (burnState.screen === 'home') window.maxx?.close?.()
+    else burnGo('home')
+    return
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+    e.preventDefault()
+    burnGo('settings')
+    return
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'r') {
+    e.preventDefault()
+    burnSync()
+    return
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    burnState.appOpen = true
+    burnGo('settings')
+    return
+  }
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 's') {
+    e.preventDefault()
+    if (burnState.screen !== 'home') burnGo('home')
+    burnState.shareTarget = { kind: 'aggregate' }
+    burnState.shareNotice = ''
+    burnRender()
+    return
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && burnState.screen === 'settings') {
+    const snapshot = burnState.layoutUndo.pop()
+    if (snapshot) {
+      e.preventDefault()
+      burnRestoreLayoutSnapshot(snapshot)
+    }
+  }
 }
 
 function burnAfterRender() {
@@ -943,11 +1702,67 @@ async function burnInit() {
   burnRoot.addEventListener('click', burnHandleClick)
   burnRoot.addEventListener('input', burnHandleInput)
   burnRoot.addEventListener('change', burnHandleChange)
+  document.addEventListener('keydown', burnHandleKeydown)
   // Restore the persisted theme (shared key with the legacy renderer).
   try { burnState.app.lightMode = localStorage.getItem('maxxtoken-theme') === 'light' } catch (e) {}
   burnOptLoadStore()
   applyBurnTheme(burnState.app.lightMode)
   burnRender()
+
+  if (window.maxx?.getOpenUsagePrefs) {
+    try {
+      const prefs = await window.maxx.getOpenUsagePrefs()
+      if (prefs) {
+        burnState.openUsagePrefs = {
+          ...burnState.openUsagePrefs,
+          ...prefs,
+          paceAlerts: { ...burnState.openUsagePrefs.paceAlerts, ...(prefs.paceAlerts || {}) },
+          sync: { ...burnState.openUsagePrefs.sync, ...(prefs.sync || {}) },
+          updates: { ...burnState.openUsagePrefs.updates, ...(prefs.updates || {}) },
+        }
+        const system = prefs.systemPreferences || {}
+        burnState.systemPrefs = {
+          ...burnState.systemPrefs,
+          dark: system.dark ?? burnState.systemPrefs.dark,
+          reduceMotion: system.reducedMotion ?? system.reduceMotion ?? false,
+          increaseContrast: system.highContrast ?? system.increaseContrast ?? false,
+          reduceTransparency: system.reducedTransparency ?? system.reduceTransparency ?? false,
+          timeFormat: system.timeFormat || burnState.systemPrefs.timeFormat,
+        }
+        burnRender()
+      }
+    } catch (err) {
+      console.error('[burn] getOpenUsagePrefs failed', err)
+    }
+  }
+  if (window.maxx?.getSystemPreferences) {
+    window.maxx.getSystemPreferences().then((system) => {
+      burnState.systemPrefs = {
+        ...burnState.systemPrefs,
+        ...system,
+        reduceMotion: system?.reducedMotion ?? system?.reduceMotion ?? burnState.systemPrefs.reduceMotion,
+        increaseContrast: system?.highContrast ?? system?.increaseContrast ?? burnState.systemPrefs.increaseContrast,
+        reduceTransparency: system?.reducedTransparency ?? system?.reduceTransparency ?? burnState.systemPrefs.reduceTransparency,
+      }
+      burnRender()
+    }).catch(() => {})
+  }
+  if (window.maxx?.onSystemPreferences) {
+    window.maxx.onSystemPreferences((system) => {
+      burnState.systemPrefs = {
+        ...burnState.systemPrefs,
+        ...system,
+        reduceMotion: system?.reducedMotion ?? system?.reduceMotion ?? burnState.systemPrefs.reduceMotion,
+        increaseContrast: system?.highContrast ?? system?.increaseContrast ?? burnState.systemPrefs.increaseContrast,
+        reduceTransparency: system?.reducedTransparency ?? system?.reduceTransparency ?? burnState.systemPrefs.reduceTransparency,
+      }
+      burnRender()
+    })
+  }
+  if (window.maxx?.getSyncStatus) window.maxx.getSyncStatus().then((status) => { burnState.syncStatus = status; if (burnState.screen === 'settings') burnRender() }).catch(() => {})
+  if (window.maxx?.getCapturePrivacyStatus) window.maxx.getCapturePrivacyStatus().then((status) => { burnState.captureStatus = status; if (burnState.screen === 'settings') burnRender() }).catch(() => {})
+  if (window.maxx?.onHistorySyncStatus) window.maxx.onHistorySyncStatus((status) => { burnState.syncStatus = status; if (burnState.screen === 'settings') burnRender() })
+  if (window.maxx?.onCapturePrivacyStatus) window.maxx.onCapturePrivacyStatus((status) => { burnState.captureStatus = status; if (burnState.screen === 'settings') burnRender() })
 
   // License state mirrors main's licenseState; gates the Coach screen only —
   // the free tracker never touches it.
@@ -968,6 +1783,9 @@ async function burnInit() {
       burnState.config = await window.maxx.getConfig()
       const c = burnState.config || {}
       const provs = c.providers || {}
+      burnState.metricLayouts = c.metricLayouts || {}
+      burnState.trayPins = Array.isArray(c.trayPins) ? c.trayPins : []
+      burnState.expandedIds = Object.fromEntries((c.expandedProviderIds || []).map((id) => [id, true]))
       for (const id in provs) {
         if (burnState.settingsEnabled[id] === undefined) {
           burnState.settingsEnabled[id] = provs[id]?.enabled !== false
@@ -1000,7 +1818,8 @@ async function burnInit() {
       }
       burnState.app.openAtLogin = c.openAtLogin !== false
       burnState.app.saveMode = c.saveModeSuggestions === true
-      if (burnState.lastSnap) burnState.providers = burnAdaptProviders(burnState.lastSnap, { usageMeterMode: burnState.cfg.usageMeterMode })
+      burnState.unknownModelFallback = c.unknownModelFallback || { enabled: false, models: {} }
+      if (burnState.lastSnap) burnState.providers = burnAdaptProviders(burnState.lastSnap, { usageMeterMode: burnState.cfg.usageMeterMode, metricLayouts: burnState.metricLayouts })
       if (burnState.lastSnap) burnComputeOptimize(burnState.lastSnap)
       if (burnState.screen === 'settings' || burnState.screen === 'optimize') burnRender()
     } catch (err) {
@@ -1015,6 +1834,31 @@ async function burnInit() {
         if (burnState.screen === 'settings') burnRender()
       })
       .catch(() => {})
+  }
+  if (window.maxx?.getDiagnostics) {
+    window.maxx.getProxySettings?.().then((value) => {
+      burnState.proxySettings = { ...(value || {}) }
+      if (burnState.screen === 'settings') burnRender()
+    }).catch(() => {})
+    window.maxx.getDiagnostics().then((value) => {
+      burnState.diagnostics = { ...burnState.diagnostics, ...(value || {}) }
+      if (burnState.screen === 'settings') burnRender()
+    }).catch(() => {})
+  }
+  if (window.maxx?.getCliStatus) {
+    window.maxx.getCliStatus().then((value) => {
+      burnState.cliStatus = { ...(value || {}), checking: false }
+      if (burnState.screen === 'settings') burnRender()
+    }).catch((err) => {
+      burnState.cliStatus = { installed: false, checking: false, error: burnSafeError(err?.message || err) }
+      if (burnState.screen === 'settings') burnRender()
+    })
+  }
+  if (window.maxx?.getPricingFallbackOptions) {
+    window.maxx.getPricingFallbackOptions().then((value) => {
+      burnState.pricingFallbackOptions = value || {}
+      if (burnState.screen === 'settings') burnRender()
+    }).catch(() => {})
   }
 
   // Reopening the popover resets to the home/usage screen — the renderer keeps
@@ -1037,6 +1881,12 @@ async function burnInit() {
       console.error('[burn] getSnapshot failed', err)
     }
   }
+
+  // Keep reset/freshness labels honest without another provider request.
+  setInterval(() => {
+    if (burnState.screen === 'home' && burnState.lastSnap) burnRevalidateSnapshot(true)
+  }, 60000)
+  setInterval(burnTickVisibleClocks, 1000)
 }
 
 if (document.readyState === 'loading') {

@@ -16,6 +16,7 @@ try {
 const app = electron && typeof electron === 'object' ? electron.app : null
 const safeStorage = electron && typeof electron === 'object' ? electron.safeStorage : null
 let processOverride = null
+const PROXY_CREDENTIALS_KEY = '__networkProxyCredentials'
 
 function filePath() {
   if (!app || typeof app.getPath !== 'function') return null
@@ -74,8 +75,52 @@ function allKeys() {
   return loadAll()
 }
 
+function getProxyCredentials() {
+  const value = loadAll()[PROXY_CREDENTIALS_KEY]
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { username: null, password: null }
+  return {
+    username: typeof value.username === 'string' && value.username ? value.username : null,
+    password: typeof value.password === 'string' && value.password ? value.password : null,
+  }
+}
+
+function setProxyCredentials(value) {
+  const all = loadAll()
+  const username = typeof value?.username === 'string' ? value.username : ''
+  const password = typeof value?.password === 'string' ? value.password : ''
+  if (username || password) all[PROXY_CREDENTIALS_KEY] = { username, password }
+  else delete all[PROXY_CREDENTIALS_KEY]
+  saveAll(all)
+}
+
+function redactSensitive(value, source = loadAll()) {
+  let text = String(value || '')
+  const strings = []
+  const visit = (item) => {
+    if (typeof item === 'string' && item.length >= 4) strings.push(item)
+    else if (item && typeof item === 'object') Object.values(item).forEach(visit)
+  }
+  visit(source)
+  for (const secret of [...new Set(strings)].sort((a, b) => b.length - a.length)) {
+    text = text.split(secret).join('[redacted]').split(encodeURIComponent(secret)).join('[redacted]')
+  }
+  return text
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]{8,}/gi, 'Bearer [redacted]')
+    .replace(/\b(sk-(?:ant-)?|gh[pousr]_)[A-Za-z0-9_-]{12,}/gi, '$1[redacted]')
+}
+
 function setProcessOverride(keys) {
   processOverride = keys && typeof keys === 'object' ? { ...keys } : null
 }
 
-module.exports = { getKey, setKey, hasKey, allKeys, setProcessOverride }
+module.exports = {
+  getKey,
+  setKey,
+  hasKey,
+  allKeys,
+  getProxyCredentials,
+  setProxyCredentials,
+  redactSensitive,
+  setProcessOverride,
+  PROXY_CREDENTIALS_KEY,
+}

@@ -2,7 +2,7 @@ const { test } = require('node:test')
 const assert = require('node:assert')
 const og = require('../lib/adapters/opencode-go')
 
-const { parseRscUsageWindows, parseSubscription } = og._private
+const { parseRscUsageWindows, parseSubscription, parseOfficialUsage, fetchOfficialUsage } = og._private
 const { readLocalUsageFromDb, localDbCandidates } = og._private
 
 test('opencode go reads local opencode.db usage windows by providerID and timestamps', () => {
@@ -37,6 +37,49 @@ test('local db usage path candidates include opencode.db locations', () => {
   const candidates = localDbCandidates('/tmp/home', { XDG_DATA_HOME: '/tmp/xdg' })
   assert.equal(candidates.includes('/tmp/xdg/opencode/opencode.db'), true)
   assert.equal(candidates.includes('/tmp/home/.local/share/opencode/opencode.db'), true)
+})
+
+test('official usage maps account windows from the existing OpenCode login', () => {
+  const now = Date.parse('2026-09-16T18:00:00.000Z')
+  const usage = parseOfficialUsage({
+    usage: {
+      rolling: { status: 'ok', percent: 12, resetsAt: '2026-09-16T20:00:00.000Z' },
+      weekly: { status: 'ok', percent: 34, resetsAt: '2026-09-20T00:00:00.000Z' },
+      monthly: { status: 'ok', percent: 56, resetsAt: '2026-10-01T00:00:00.000Z' },
+    },
+  }, now)
+
+  assert.equal(usage.connected, true)
+  assert.equal(usage.rolling.usedPct, 12)
+  assert.equal(usage.weekly.usedPct, 34)
+  assert.equal(usage.monthly.usedPct, 56)
+  assert.equal(usage.rolling.resetInSec, 7200)
+  assert.equal(usage.usageSource, 'official API')
+})
+
+test('official usage request keeps the discovered key in the authorization header', async () => {
+  let request
+  const usage = await fetchOfficialUsage('fixture-key', {
+    now: Date.parse('2026-09-16T18:00:00.000Z'),
+    fetchWithTimeout: async (url, options) => {
+      request = { url, options }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          usage: {
+            rolling: { percent: 1, resetsAt: '2026-09-16T20:00:00.000Z' },
+            weekly: { percent: 2, resetsAt: '2026-09-20T00:00:00.000Z' },
+            monthly: { percent: 3, resetsAt: '2026-10-01T00:00:00.000Z' },
+          },
+        }),
+      }
+    },
+  })
+
+  assert.equal(request.url, 'https://opencode.ai/zen/go/v1/usage')
+  assert.equal(request.options.headers.Authorization, 'Bearer fixture-key')
+  assert.equal(usage.weekly.usedPct, 2)
 })
 
 // A page carries BOTH the pre-hydration placeholder (usagePercent:0) and the

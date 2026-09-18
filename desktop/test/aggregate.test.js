@@ -1338,6 +1338,9 @@ test('widget snapshot exports compact token-maxxing state and keeps enabled prov
               date: '2026-05-21',
               total: 123,
               costUSD: 0.04,
+              costAccuracy: 'estimate',
+              pricingSource: 'models.dev',
+              pricingSources: ['models.dev'],
               requests: 6,
               modelBreakdowns: [{ model: 'claude-opus-4-7', input: 80, cached: 10, output: 10, total: 100, costUSD: 0.03, costAccuracy: 'estimate', requests: 4 }],
             },
@@ -1373,6 +1376,8 @@ test('widget snapshot exports compact token-maxxing state and keeps enabled prov
   assert.equal(compact.providers[0].tokenUsage.topModels[0].pricingSource, 'models.dev')
   assert.equal(compact.providers[0].dailyUsage[0].dayKey, '2026-05-21')
   assert.equal(compact.providers[0].dailyUsage[0].totalTokens, 123)
+  assert.equal(compact.providers[0].dailyUsage[0].costAccuracy, 'estimate')
+  assert.equal(compact.providers[0].dailyUsage[0].pricingSource, 'models.dev')
   assert.equal(compact.providers[0].dailyUsage[0].topModels[0].costUSD, 0.03)
   assert.equal(compact.totals.tokenTrend.deltaCostUSD, 0.02)
   assert.equal(compact.totals.tokens.dailyCost.latest.costUSD, 0.04)
@@ -1414,6 +1419,30 @@ test('widget snapshot preserves daily token totals from split token fields', () 
   assert.equal(compact.providers[0].dailyUsage[0].totalTokens, 363)
   assert.equal(compact.providers[0].tokenUsage.dailyUsage[0].totalTokens, 363)
   assert.equal(compact.providers[0].dailyUsage[0].costUSD, 0.13)
+})
+
+test('widget snapshot retains 30-day cost coverage and null pricing provenance', () => {
+  const days = Array.from({ length: 35 }, (_, index) => ({
+    date: `2026-05-${String(31 - index).padStart(2, '0')}`,
+    total: 100,
+    costUSD: index ? null : 1.25,
+    pricedCostUSD: index ? null : 1.25,
+    pricedTokens: index ? null : 80,
+    unpricedTokens: index ? null : 20,
+    costCoverage: index ? null : 'partial',
+    costAccuracy: index ? null : 'estimate',
+    pricingSources: index ? [] : ['models.dev'],
+    unpricedModels: index ? [] : ['future-model'],
+    modelBreakdowns: [{ model: 'future-model', total: 20, costUSD: null, pricingSource: null }],
+  }))
+  const compact = widgetSnapshot.buildWidgetSnapshot({
+    providers: [{ id: 'claude', tokenUsage: { total: 3500, dailyBreakdown: days } }],
+  })
+  assert.equal(compact.providers[0].dailyUsage.length, 30)
+  assert.equal(compact.providers[0].dailyUsage[0].pricedTokens, 80)
+  assert.equal(compact.providers[0].dailyUsage[0].unpricedModels[0], 'future-model')
+  assert.equal(compact.providers[0].dailyUsage[1].costUSD, null)
+  assert.equal(compact.providers[0].dailyUsage[1].topModels[0].costUSD, null)
 })
 
 test('cached provider fallback keeps last good usage when a transient poll fails', () => {
@@ -1470,7 +1499,7 @@ test('carryForwardTokenUsage fills null tokenUsage from cache on light pulls', (
   ]
   const cache = {
     providers: [
-      { id: 'claude', tokenUsage: { total: 12345, topModels: [{ model: 'sonnet' }], dailyUsage: [{ date: '2026-05-30', total: 12345 }] } },
+      { id: 'claude', tokenUsage: { total: 12345, topModels: [{ model: 'sonnet', costUSD: null }], dailyUsage: [{ date: '2026-05-30', total: 12345, costUSD: null, pricedTokens: null }] } },
       { id: 'kimi', tokenUsage: { total: 5 } },
     ],
   }
@@ -1479,8 +1508,8 @@ test('carryForwardTokenUsage fills null tokenUsage from cache on light pulls', (
 
   // claude was null + connected → carried forward (and compacted to modelBreakdowns/dailyBreakdown).
   assert.equal(out[0].tokenUsage.total, 12345)
-  assert.deepEqual(out[0].tokenUsage.modelBreakdowns, [{ model: 'sonnet' }])
-  assert.deepEqual(out[0].tokenUsage.dailyBreakdown, [{ date: '2026-05-30', total: 12345 }])
+  assert.deepEqual(out[0].tokenUsage.modelBreakdowns, [{ model: 'sonnet', costUSD: null }])
+  assert.deepEqual(out[0].tokenUsage.dailyBreakdown, [{ date: '2026-05-30', total: 12345, costUSD: null, pricedTokens: null }])
   // codex already had fresh tokenUsage → untouched.
   assert.equal(out[1].tokenUsage.total, 999)
   // kimi is disconnected → never carried, stays null.
@@ -1691,7 +1720,7 @@ test('pace helper reports deficit and runout when usage is ahead of elapsed wind
   assert.equal(pace.exhaustsAt, now + 0.875 * 86400000)
 })
 
-test('pace helper stays quiet right after reset', () => {
+test('pace helper forecasts immediately after reset', () => {
   const now = Date.parse('2026-05-21T12:00:00Z')
   const pace = _private.paceForWindow({
     label: 'Weekly',
@@ -1701,7 +1730,9 @@ test('pace helper stays quiet right after reset', () => {
     periodMs: 7 * 86400000,
   }, now)
 
-  assert.equal(pace, null)
+  assert.equal(pace.expectedUsedPercent, 1)
+  assert.equal(pace.projectedAtResetPercent, 70)
+  assert.equal(pace.projectedLeftPercent, 30)
 })
 
 test('maxx target prioritizes high-value reserve before reset', () => {

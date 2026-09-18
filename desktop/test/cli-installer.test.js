@@ -1,0 +1,60 @@
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const test = require('node:test')
+
+const installer = require('../lib/cli-installer')
+
+test('CLI installer creates a version-matched managed wrapper and removes it', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maxxtoken-cli-'))
+  const executablePath = path.join(home, "MaxxToken's App")
+  fs.writeFileSync(executablePath, '')
+  const options = { home, platform: 'darwin', executablePath, version: '1.2.3', env: { PATH: path.join(home, '.local', 'bin') } }
+  const installed = installer.installCli(options)
+  assert.equal(installed.installed, true)
+  assert.equal(installed.versionMatched, true)
+  assert.equal(installed.pathConfigured, true)
+  assert.equal(installed.healthy, true)
+  assert.equal(installed.executableMatched, true)
+  assert.equal(fs.statSync(installed.path).mode & 0o111, 0o111)
+  const wrapper = fs.readFileSync(installed.path, 'utf8')
+  assert.match(wrapper, /MaxxToken managed CLI v1\.2\.3/)
+  assert.match(wrapper, /--cli "\$@"/)
+  assert.match(wrapper, /MaxxToken'"'"'s App/)
+  assert.equal(installer.uninstallCli(options).removed, true)
+  assert.equal(fs.existsSync(installed.path), false)
+})
+
+test('CLI installer refuses unmanaged collisions', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maxxtoken-cli-'))
+  const target = installer.defaultCliPath({ home, platform: 'linux' })
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, 'user owned')
+  assert.throws(() => installer.installCli({ home, platform: 'linux', executablePath: '/opt/MaxxToken', version: '1.0.0' }), /unmanaged/)
+  assert.throws(() => installer.uninstallCli({ home, platform: 'linux' }), /unmanaged/)
+})
+
+test('CLI status reports moved or missing packaged executables as unhealthy', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maxxtoken-cli-'))
+  const executablePath = path.join(home, 'MaxxToken')
+  fs.writeFileSync(executablePath, '')
+  const options = { home, platform: 'linux', executablePath, version: '1.0.0' }
+  installer.installCli(options)
+  fs.unlinkSync(executablePath)
+  const missing = installer.getCliStatus(options)
+  assert.equal(missing.installed, true)
+  assert.equal(missing.versionMatched, true)
+  assert.equal(missing.executableExists, false)
+  assert.equal(missing.healthy, false)
+  const moved = installer.getCliStatus({ ...options, executablePath: path.join(home, 'Other') })
+  assert.equal(moved.executableMatched, false)
+  assert.equal(moved.healthy, false)
+})
+
+test('Windows CLI installer emits a versioned command wrapper', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maxxtoken-cli-'))
+  const status = installer.installCli({ home, localAppData: home, platform: 'win32', executablePath: 'C:\\Apps\\MaxxToken.exe', version: '2.0.0', env: {} })
+  assert.equal(status.installedVersion, '2.0.0')
+  assert.match(fs.readFileSync(status.path, 'utf8'), /--cli %\*/)
+})

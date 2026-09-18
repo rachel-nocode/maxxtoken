@@ -105,6 +105,9 @@ function samplesFromProviders(providers, now = Date.now()) {
       if (!Number.isFinite(usedPct)) continue
       samples.push({
         providerId: provider.id,
+        providerFamily: provider.providerFamily || provider.id,
+        accountId: provider.account?.id || null,
+        accountIdentityStamp: provider.account?.identityStamp || null,
         providerName: provider.name,
         windowLabel: window.label || window.kind || 'Window',
         kind: window.kind || 'cycle',

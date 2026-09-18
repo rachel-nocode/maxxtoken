@@ -33,6 +33,8 @@ function candidatePaths(providerId, env = process.env) {
     opencode: [path.join(home, '.config', 'opencode')],
     opencodego: [path.join(home, '.config', 'opencode')],
     copilot: [path.join(home, '.config', 'github-copilot')],
+    devin: [path.join(home, '.local', 'share', 'devin'), path.join(home, 'Library', 'Application Support', 'Devin')],
+    antigravity: [path.join(home, '.gemini')],
   }
   return unique(catalog[providerId] || [])
 }

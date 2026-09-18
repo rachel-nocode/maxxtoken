@@ -1,7 +1,9 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const crypto = require('crypto')
 const { execFileSync } = require('child_process')
+const { PersistentEventCache, cacheIdentity } = require('../event-cache')
 const { fetchWithTimeout } = require('../http')
 
 const SESSIONS = path.join(os.homedir(), '.codex', 'sessions')
@@ -10,6 +12,8 @@ const KEYCHAIN_SERVICE = 'Codex Auth'
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const REFRESH_URL = 'https://auth.openai.com/oauth/token'
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
+const CONSUME_RESET_CREDIT_URL = `${RESET_CREDITS_URL}/consume`
 const RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses'
 // Only this model is accepted on the Codex/ChatGPT-account responses endpoint;
 // gpt-5 / gpt-5-codex are rejected ("not supported when using Codex with a
@@ -23,7 +27,10 @@ const PRIORITY_DB = path.join(os.homedir(), '.codex', 'logs_2.sqlite')
 
 let tokenScanCache = { historyDays: null, pathSignature: null, signature: null, scannedAt: 0, usage: null }
 
-function authPaths() {
+function authPaths(options = {}) {
+  if (Array.isArray(options.authHomes) && options.authHomes.length) {
+    return [...new Set(options.authHomes.map((home) => path.join(home, AUTH_FILE)))]
+  }
   if (process.env.CODEX_HOME) return [path.join(process.env.CODEX_HOME, AUTH_FILE)]
   return [
     path.join(os.homedir(), '.config', 'codex', AUTH_FILE),
@@ -53,9 +60,9 @@ function parseAuth(text) {
   return null
 }
 
-function authCandidates() {
+function authCandidates(options = {}) {
   const out = []
-  for (const file of authPaths()) {
+  for (const file of authPaths(options)) {
     try {
       if (!fs.existsSync(file)) continue
       const auth = parseAuth(fs.readFileSync(file, 'utf8'))
@@ -64,7 +71,7 @@ function authCandidates() {
       /* try the next source */
     }
   }
-  try {
+  if (options.includeKeychain !== false) try {
     const raw = execFileSync(
       'security',
       ['find-generic-password', '-w', '-s', KEYCHAIN_SERVICE],
@@ -387,32 +394,105 @@ function additionalCodexWindows(limits) {
   return windows
 }
 
-function parseLiveUsage(data, headers = null) {
+function parseExpiry(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value < 1e12 ? value * 1000 : value
+  const parsed = Date.parse(String(value || ''))
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function resetCreditUrgency(expiresAt, now = Date.now()) {
+  if (!Number.isFinite(expiresAt)) return 'unknown'
+  const left = expiresAt - now
+  if (left <= 0) return 'expired'
+  if (left <= 48 * 3600000) return 'urgent'
+  if (left <= 7 * 24 * 3600000) return 'soon'
+  return 'normal'
+}
+
+function parseResetCredits(dedicated, embedded = null, options = {}) {
+  const now = Number(options.now) || Date.now()
+  const dedicatedCount = dedicated?.available_count
+  const source = dedicatedCount != null && dedicatedCount !== '' && Number.isFinite(Number(dedicatedCount)) ? dedicated : embedded
+  const count = numberValue(source?.available_count)
+  if (count == null || count < 0) return null
+  const credits = Array.isArray(dedicated?.credits)
+    ? dedicated.credits.flatMap((credit) => {
+        const status = cleanText(credit?.status)?.toLowerCase() || 'available'
+        if (status !== 'available') return []
+        const id = cleanText(credit?.id || credit?.credit_id)
+        const expiresAt = parseExpiry(credit?.expires_at)
+        if (!id) return []
+        return [{ id, expiresAt, status, urgency: resetCreditUrgency(expiresAt, now) }]
+      }).sort((a, b) => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity))
+    : []
+  return {
+    availableCount: Math.max(0, Math.floor(count)),
+    credits,
+    expiryAvailable: credits.some((credit) => Number.isFinite(credit.expiresAt)),
+    ...(options.error ? { error: String(options.error) } : {}),
+  }
+}
+
+function cleanText(value) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  return text || null
+}
+
+function parseLiveUsage(data, headers = null, resetCreditsPayload = undefined, resetCreditsError = null) {
   const rateLimit = data?.rate_limit || {}
   const windows = [
     ...codexWindowsFromRateLimit(rateLimit, headers),
     ...additionalCodexWindows(data?.additional_rate_limits),
   ]
+  const resetCredits = parseResetCredits(resetCreditsPayload, data?.rate_limit_reset_credits, { error: resetCreditsError })
   return {
     connected: true,
     planType: planLabel(data?.plan_type) || data?.plan_type || null,
     lastActive: Date.now(),
     windows,
     extra: [{ label: 'Source', value: 'live Codex usage' }, ...creditsExtra(data)],
+    resetCredits,
   }
 }
 
-async function fetchUsage(accessToken, accountId) {
+async function fetchUsage(accessToken, accountId, fetcher = fetchWithTimeout) {
   const headers = {
     Authorization: 'Bearer ' + accessToken,
     Accept: 'application/json',
     'User-Agent': 'MaxxToken',
   }
   if (accountId) headers['ChatGPT-Account-Id'] = accountId
-  return fetchWithTimeout(USAGE_URL, { headers }, 10000)
+  return fetcher(USAGE_URL, { headers }, 10000)
 }
 
-async function readLiveWithAuth(state) {
+async function fetchResetCredits(accessToken, accountId, fetcher = fetchWithTimeout) {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: 'application/json',
+    'User-Agent': 'MaxxToken',
+    'OpenAI-Beta': 'codex-1',
+    originator: 'Codex Desktop',
+  }
+  if (accountId) headers['ChatGPT-Account-Id'] = accountId
+  return fetcher(RESET_CREDITS_URL, { headers }, 10000)
+}
+
+async function consumeResetCredit(accessToken, accountId, creditId, redeemRequestId, fetcher = fetchWithTimeout) {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    'User-Agent': 'MaxxToken',
+    'OpenAI-Beta': 'codex-1',
+    originator: 'Codex Desktop',
+  }
+  if (accountId) headers['ChatGPT-Account-Id'] = accountId
+  return fetcher(CONSUME_RESET_CREDIT_URL, {
+    method: 'POST', headers, body: JSON.stringify({ credit_id: creditId, redeem_request_id: redeemRequestId }),
+  }, 15000)
+}
+
+async function readLiveWithAuth(state, options = {}) {
   if (state.auth.OPENAI_API_KEY && !state.auth.tokens?.access_token) {
     throw new Error('Codex usage is not available for API-key auth.')
   }
@@ -424,14 +504,27 @@ async function readLiveWithAuth(state) {
   }
 
   const accountId = state.auth.tokens?.account_id
-  let resp = await fetchUsage(accessToken, accountId)
+  if (options.account?.accountId && String(accountId || '').toLowerCase() !== String(options.account.accountId).toLowerCase()) {
+    throw new Error('Codex credential belongs to a different account.')
+  }
+  let resp = await fetchUsage(accessToken, accountId, options.fetcher || fetchWithTimeout)
   if (resp.status === 401 || resp.status === 403) {
     const refreshed = await refreshToken(state)
-    if (refreshed) resp = await fetchUsage(refreshed, accountId)
+    if (refreshed) resp = await fetchUsage(refreshed, accountId, options.fetcher || fetchWithTimeout)
   }
   if (!resp.ok) throw new Error(`Codex usage request failed (${resp.status}).`)
 
-  const result = parseLiveUsage(await resp.json(), resp.headers)
+  const usageBody = await resp.json()
+  let resetCreditsPayload
+  let resetCreditsError = null
+  try {
+    const resets = await fetchResetCredits(accessToken, accountId, options.fetcher || fetchWithTimeout)
+    if (resets.ok) resetCreditsPayload = await resets.json()
+    else resetCreditsError = `Reset-credit timeline unavailable (${resets.status}).`
+  } catch {
+    resetCreditsError = 'Reset-credit timeline unavailable.'
+  }
+  const result = parseLiveUsage(usageBody, resp.headers, resetCreditsPayload, resetCreditsError)
   if (!result.planType) {
     const raw = planFromIdToken(state.auth.tokens?.id_token)
     if (raw) result.planType = planLabel(raw) || raw
@@ -439,11 +532,14 @@ async function readLiveWithAuth(state) {
   return result
 }
 
-async function readLive() {
+async function readLive(options = {}) {
   let lastError = null
-  for (const state of authCandidates()) {
+  for (const state of authCandidates({
+    authHomes: options.account?.authHomes,
+    includeKeychain: options.account ? options.account.isDefault : true,
+  })) {
     try {
-      return await readLiveWithAuth(state)
+      return await readLiveWithAuth(state, options)
     } catch (error) {
       lastError = error
     }
@@ -457,23 +553,40 @@ function rolloutFiles(options = {}) {
   const limit = typeof options === 'number' ? options : options.limit ?? 8
   const sinceMs = typeof options === 'object' ? options.sinceMs : null
   const found = []
+  const visited = new Set()
   function walk(dir) {
+    let canonical
+    try { canonical = fs.realpathSync(dir) } catch { return }
+    if (visited.has(canonical)) return
+    visited.add(canonical)
     let entries
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true })
+      entries = fs.readdirSync(canonical, { withFileTypes: true })
     } catch {
       return
     }
     for (const e of entries) {
-      const full = path.join(dir, e.name)
+      const full = path.join(canonical, e.name)
       if (e.isDirectory()) walk(full)
-      else if (e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) {
-        const mtime = fs.statSync(full).mtimeMs
-        if (!sinceMs || mtime >= sinceMs) found.push({ full, mtime })
+      else if (e.isSymbolicLink()) {
+        let followed
+        try { followed = fs.statSync(full) } catch { continue }
+        if (followed.isDirectory()) walk(full)
+        else if (followed.isFile() && e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) {
+          const resolved = fs.realpathSync(full)
+          if (!sinceMs || followed.mtimeMs >= sinceMs) found.push({ full: resolved, mtime: followed.mtimeMs })
+        }
+      } else if (e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) {
+        const resolved = fs.realpathSync(full)
+        const mtime = fs.statSync(resolved).mtimeMs
+        if (!sinceMs || mtime >= sinceMs) found.push({ full: resolved, mtime })
       }
     }
   }
-  walk(SESSIONS)
+  const roots = Array.isArray(options.logHomes) && options.logHomes.length
+    ? options.logHomes.flatMap((home) => [path.join(home, 'sessions'), path.join(home, 'archived_sessions')])
+    : [SESSIONS, path.join(path.dirname(SESSIONS), 'archived_sessions')]
+  for (const root of [...new Set(roots)]) walk(root)
   const sorted = found.sort((a, b) => b.mtime - a.mtime)
   return (Number.isFinite(limit) ? sorted.slice(0, limit) : sorted).map((f) => f.full)
 }
@@ -517,16 +630,135 @@ function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value))
 }
 
+function piSessionRoot(options = {}) {
+  const env = options.env || process.env
+  return path.resolve(String(env.PI_CODING_AGENT_SESSION_DIR || path.join(options.home || os.homedir(), '.pi', 'agent', 'sessions')))
+}
+
+function jsonlFilesUnder(root, sinceMs = 0) {
+  const files = []
+  const visited = new Set()
+  function walk(directory) {
+    let canonical
+    try { canonical = fs.realpathSync(directory) } catch { return }
+    if (visited.has(canonical)) return
+    visited.add(canonical)
+    let entries
+    try { entries = fs.readdirSync(canonical, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      const full = path.join(canonical, entry.name)
+      if (entry.isDirectory()) {
+        walk(full)
+        continue
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue
+      try {
+        const stat = fs.statSync(full)
+        if (!sinceMs || stat.mtimeMs >= sinceMs) files.push(fs.realpathSync(full))
+      } catch { /* file disappeared */ }
+    }
+  }
+  walk(root)
+  return [...new Set(files)].sort()
+}
+
+function parsePiCodexUsage(text) {
+  const entries = []
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (!line.includes('"usage"')) continue
+    let row
+    try { row = JSON.parse(line) } catch { continue }
+    const message = row?.message
+    const usage = message?.usage
+    if (row?.type !== 'message' || message?.role !== 'assistant' || message?.provider !== 'openai-codex' || !usage) continue
+    const when = Date.parse(row.timestamp)
+    if (!Number.isFinite(when)) continue
+    const input = toTokenInt(usage.input)
+    const cached = toTokenInt(usage.cacheRead) + toTokenInt(usage.cacheWrite)
+    const output = toTokenInt(usage.output)
+    const total = toTokenInt(usage.totalTokens) || input + cached + output
+    if (!total) continue
+    const recordedCost = Number(usage?.cost?.total)
+    entries.push({
+      id: typeof row.id === 'string' ? row.id : null,
+      when,
+      day: dateKeyFrom(row.timestamp),
+      model: typeof message.model === 'string' && message.model.trim() ? message.model.trim().replace(/^openai\//i, '') : 'unknown',
+      serviceTier: usage.speed === 'fast' ? 'priority' : 'standard',
+      isFast: usage.speed === 'fast',
+      input,
+      cached,
+      output,
+      total,
+      ...(Number.isFinite(recordedCost) && recordedCost > 0 ? { recordedCostUSD: recordedCost } : {}),
+    })
+  }
+  return entries
+}
+
+function readPiCodexUsage(options = {}) {
+  const historyDays = tokenHistoryDays(options.tokenHistoryDays)
+  const sinceMs = tokenHistorySince(historyDays, Number(options.now) || Date.now())
+  const files = options.piFiles || jsonlFilesUnder(piSessionRoot(options), sinceMs)
+  const cache = options.disableEventCache ? null : new PersistentEventCache({
+    namespace: 'codex-pi',
+    schemaVersion: 1,
+    root: options.eventCacheRoot,
+    ttlMs: options.eventCacheTTL,
+    identity: cacheIdentity('codex-pi', options.account, historyDays),
+  })
+  const entries = []
+  for (const file of files) {
+    try {
+      entries.push(...(cache ? cache.get(file, parsePiCodexUsage) : parsePiCodexUsage(fs.readFileSync(file, 'utf8'))))
+    } catch { /* unreadable pi session */ }
+  }
+  cache?.finish(files)
+  const seen = new Set()
+  const events = entries.filter((entry) => entry.when >= sinceMs).filter((entry) => {
+    if (!entry.id) return true
+    if (seen.has(entry.id)) return false
+    seen.add(entry.id)
+    return true
+  })
+  if (!events.length) return null
+  const usages = events.map((event) => ({
+    input: event.input,
+    cached: event.cached,
+    output: event.output,
+    total: event.total,
+    events: 1,
+    priorityEvents: event.isFast ? 1 : 0,
+    lastActive: event.when,
+    accountingEvents: [event],
+    modelBreakdowns: [{ model: event.model, input: event.input, cached: event.cached, output: event.output, total: event.total, events: 1 }],
+    serviceTierBreakdowns: [{ serviceTier: event.serviceTier, input: event.input, cached: event.cached, output: event.output, total: event.total, events: 1 }],
+    dailyBreakdown: [{ date: event.day, input: event.input, cached: event.cached, output: event.output, total: event.total, events: 1, modelBreakdowns: [{ model: event.model, input: event.input, cached: event.cached, output: event.output, total: event.total, events: 1 }] }],
+  }))
+  const result = aggregateTokenUsages(usages)
+  return result ? { ...result, source: 'pi Codex sessions', historyDays } : null
+}
+
 function readLocal(options = {}) {
   // Light pulls skip the full rollout enumeration + token scan; they only need
   // the most recent files for rate-limit windows.
   const tokenFiles = options.skipTokenHistory
     ? []
-    : rolloutFiles({ limit: Infinity, sinceMs: tokenHistorySince(options.tokenHistoryDays) })
-  const files = tokenFiles.length ? tokenFiles : rolloutFiles()
-  if (!files.length) return { connected: false }
+    : rolloutFiles({ limit: Infinity, sinceMs: tokenHistorySince(options.tokenHistoryDays), logHomes: options.account?.logHomes })
+  const files = tokenFiles.length ? tokenFiles : rolloutFiles({ logHomes: options.account?.logHomes })
+  const piTokenUsage = options.skipTokenHistory || options.account?.allowsUnattributedHistory === false
+    ? null
+    : readPiCodexUsage(options)
+  if (!files.length) {
+    return piTokenUsage
+      ? { connected: true, lastActive: piTokenUsage.lastActive, windows: [], tokenUsage: piTokenUsage }
+      : { connected: false }
+  }
 
-  const tokenUsage = options.skipTokenHistory ? null : readTokenUsage(tokenFiles.length ? tokenFiles : files, options)
+  const nativeTokenUsage = options.skipTokenHistory ? null : readTokenUsage(tokenFiles.length ? tokenFiles : files, options)
+  const tokenUsage = nativeTokenUsage && piTokenUsage
+    ? { ...aggregateTokenUsages([nativeTokenUsage, piTokenUsage]), source: 'local Codex and pi sessions', historyDays: tokenHistoryDays(options.tokenHistoryDays) }
+    : nativeTokenUsage || piTokenUsage
   let rl = null
   let mtime = 0
   for (const f of files) {
@@ -931,6 +1163,7 @@ function parseCodexTokenUsage(text, options = {}) {
   let forkedFromId = null
   let events = 0
   let priorityEvents = 0
+  const accountingEvents = []
   const priorityTurnIds = new Set()
 
   for (const line of String(text).split(/\r?\n/)) {
@@ -1029,6 +1262,17 @@ function parseCodexTokenUsage(text, options = {}) {
     addBreakdown(byDay, day, delta)
     addBreakdown(byServiceTier, serviceTier, delta)
     if (day && model) addBreakdown(byDayModel, `${day}\u0000${model}`, delta)
+    accountingEvents.push({
+      when: Number.isFinite(eventMs) ? eventMs : null,
+      day,
+      model,
+      serviceTier,
+      isFast: serviceTier === 'priority',
+      input: delta.input,
+      cached: delta.cached,
+      output: delta.output,
+      total: delta.input + delta.cached + delta.output,
+    })
     events++
     if (priorityTurn) {
       priorityEvents++
@@ -1061,6 +1305,7 @@ function parseCodexTokenUsage(text, options = {}) {
     total,
     events,
     priorityEvents,
+    accountingEvents,
     ...(sessionId ? { sessionId } : {}),
     ...(forkedFromId ? { forkedFromId } : {}),
     ...(priorityTurnIds.size ? { priorityTurnCount: priorityTurnIds.size } : {}),
@@ -1085,6 +1330,7 @@ function mergeTokenUsage(target, usage) {
   target.events += usage.events || 0
   target.priorityEvents += usage.priorityEvents || 0
   target.priorityTurnCount += usage.priorityTurnCount || 0
+  if (Array.isArray(usage.accountingEvents)) target.accountingEvents.push(...usage.accountingEvents)
   if (usage.lastActive) target.lastActive = Math.max(target.lastActive || 0, usage.lastActive)
   for (const row of usage.modelBreakdowns || []) {
     addBreakdown(target.byModel, row.model || row.modelName, row)
@@ -1116,9 +1362,39 @@ function aggregateTokenUsages(usages) {
     byDay: new Map(),
     byDayModel: new Map(),
     byServiceTier: new Map(),
+    accountingEvents: [],
   }
   for (const usage of usages) mergeTokenUsage(aggregate, usage)
   if (!aggregate.events) return null
+  const uniqueEvents = []
+  const seenEvents = new Set()
+  for (const event of aggregate.accountingEvents) {
+    const key = [event.when, event.day, event.model, event.serviceTier, event.input, event.cached, event.output].join('\u0000')
+    if (seenEvents.has(key)) continue
+    seenEvents.add(key)
+    uniqueEvents.push(event)
+  }
+  if (uniqueEvents.length && uniqueEvents.length !== aggregate.accountingEvents.length) {
+    aggregate.input = 0
+    aggregate.cached = 0
+    aggregate.output = 0
+    aggregate.total = 0
+    aggregate.events = uniqueEvents.length
+    aggregate.priorityEvents = 0
+    aggregate.byModel = new Map()
+    aggregate.byDay = new Map()
+    aggregate.byDayModel = new Map()
+    aggregate.byServiceTier = new Map()
+    for (const event of uniqueEvents) {
+      addTokens(aggregate, event)
+      aggregate.total += event.total
+      addBreakdown(aggregate.byModel, event.model, event)
+      addBreakdown(aggregate.byDay, event.day, event)
+      addBreakdown(aggregate.byServiceTier, event.serviceTier, event)
+      if (event.day && event.model) addBreakdown(aggregate.byDayModel, `${event.day}\u0000${event.model}`, event)
+      if (event.serviceTier === 'priority') aggregate.priorityEvents++
+    }
+  }
   const modelBreakdowns = breakdownRows(aggregate.byModel, 'model')
   const serviceTierBreakdowns = breakdownRows(aggregate.byServiceTier, 'serviceTier')
   const dailyBreakdown = breakdownRows(aggregate.byDay, 'date')
@@ -1141,6 +1417,7 @@ function aggregateTokenUsages(usages) {
     total: aggregate.total,
     events: aggregate.events,
     priorityEvents: aggregate.priorityEvents,
+    accountingEvents: uniqueEvents,
     lastActive: aggregate.lastActive,
     ...(aggregate.priorityTurnCount ? { priorityTurnCount: aggregate.priorityTurnCount } : {}),
     ...(modelBreakdowns.length ? {
@@ -1192,16 +1469,6 @@ function readTokenUsage(files = rolloutFiles(), options = {}) {
   const historyDays = tokenHistoryDays(options.tokenHistoryDays)
   const metas = tokenFileMetas(files)
   const pathSignature = tokenPathSignature(metas, options)
-  if (
-    !options.forceRefresh &&
-    tokenScanCache.historyDays === historyDays &&
-    tokenScanCache.pathSignature === pathSignature &&
-    tokenScanCache.usage &&
-    Date.now() - tokenScanCache.scannedAt < TOKEN_SCAN_CACHE_MS
-  ) {
-    return clone(tokenScanCache.usage)
-  }
-
   const signature = tokenScanSignature(metas, options)
   if (
     !options.forceRefresh &&
@@ -1217,16 +1484,45 @@ function readTokenUsage(files = rolloutFiles(), options = {}) {
   const sinceMs = tokenHistorySince(options.tokenHistoryDays)
   const priorityTurns = options.priorityTurns || codexPriorityTurns({ ...options, sinceMs })
   const inheritedTotalsResolver = options.inheritedTotalsResolver || makeInheritedTotalsResolver(metas.map((meta) => meta.file))
+  const metadataByFile = new Map()
+  const fileBySession = new Map()
+  for (const meta of metas) {
+    const metadata = sessionMetadataFromFile(meta.file)
+    metadataByFile.set(meta.file, metadata)
+    if (metadata?.sessionId && !fileBySession.has(metadata.sessionId)) fileBySession.set(metadata.sessionId, meta)
+  }
+  const priorityMeta = priorityTraceMeta(options)
+  const eventCache = options.disableEventCache ? null : new PersistentEventCache({
+    namespace: 'codex',
+    schemaVersion: 2,
+    root: options.eventCacheRoot,
+    ttlMs: options.eventCacheTTL,
+    identity: cacheIdentity('codex', options.account, historyDays),
+  })
   let newest = null
   for (const meta of metas) {
     const file = meta.file
-    let text
+    let usage
     try {
-      text = fs.readFileSync(file, 'utf8')
+      const metadata = metadataByFile.get(file)
+      const parent = metadata?.forkedFromId ? fileBySession.get(metadata.forkedFromId) : null
+      const contextKey = [
+        priorityMeta.databasePath,
+        priorityMeta.mtimeMs,
+        priorityMeta.size,
+        parent?.file || '',
+        parent?.mtimeMs || 0,
+        parent?.size || 0,
+      ].join(':')
+      usage = eventCache
+        ? eventCache.get(file, (text) => {
+            const parsed = parseCodexTokenUsage(text, { sinceMs, priorityTurns, inheritedTotalsResolver })
+            return parsed ? [parsed] : []
+          }, { contextKey })[0]
+        : parseCodexTokenUsage(fs.readFileSync(file, 'utf8'), { sinceMs, priorityTurns, inheritedTotalsResolver })
     } catch {
       continue
     }
-    const usage = parseCodexTokenUsage(text, { sinceMs, priorityTurns, inheritedTotalsResolver })
     if (!usage) continue
     if (usage.sessionId) {
       if (seenSessionIds.has(usage.sessionId)) continue
@@ -1239,6 +1535,7 @@ function readTokenUsage(files = rolloutFiles(), options = {}) {
     })
     newest = newest || path.basename(file)
   }
+  eventCache?.finish(metas.map((meta) => meta.file))
   const usage = aggregateTokenUsages(usages)
   if (!usage) return null
   const result = {
@@ -1347,12 +1644,12 @@ async function generate(prompt, options = {}) {
 
 async function read(options = {}) {
   try {
-    const live = await readLive()
+    const live = await readLive(options)
     // Heavy: scanning the rollout files for token history only on heavy pulls.
     if (options.skipTokenHistory) {
       if (live.windows.length) return live
     } else {
-      const files = rolloutFiles({ limit: Infinity, sinceMs: tokenHistorySince(options.tokenHistoryDays) })
+      const files = rolloutFiles({ limit: Infinity, sinceMs: tokenHistorySince(options.tokenHistoryDays), logHomes: options.account?.logHomes })
       const tokenUsage = readTokenUsage(files, options)
       if (live.windows.length) return tokenUsage ? { ...live, tokenUsage } : live
     }
@@ -1370,8 +1667,132 @@ async function read(options = {}) {
   return readLocal(options)
 }
 
+const preparedResetClaims = new Map()
+const RESET_CLAIM_TTL_MS = 15 * 60 * 1000
+
+function prunePreparedResetClaims(now = Date.now()) {
+  for (const [key, value] of preparedResetClaims) {
+    if (!Number.isFinite(value.preparedAt) || now - value.preparedAt > RESET_CLAIM_TTL_MS) preparedResetClaims.delete(key)
+  }
+}
+
+function resetClaimCandidates(account) {
+  return authCandidates({
+    authHomes: account?.authHomes,
+    includeKeychain: account ? account.isDefault : true,
+  }).filter((state) => {
+    const candidateId = cleanText(state.auth?.tokens?.account_id)?.toLowerCase()
+    return state.auth?.tokens?.access_token && (!account?.accountId || candidateId === String(account.accountId).toLowerCase())
+  })
+}
+
+async function eligibleResetCredit(account, creditId, options = {}) {
+  let lastStatus = null
+  for (const state of resetClaimCandidates(account)) {
+    const token = state.auth.tokens.access_token
+    const accountId = state.auth.tokens.account_id
+    const response = await fetchResetCredits(token, accountId, options.fetcher || fetchWithTimeout)
+    lastStatus = response.status
+    if (response.status === 401 || response.status === 403) continue
+    if (!response.ok) throw new Error(`Reset-credit request failed (${response.status}).`)
+    const payload = await response.json()
+    const parsed = parseResetCredits(payload, null, { now: options.now })
+    const credit = parsed?.credits.find((item) => item.id === creditId)
+    if (!parsed?.availableCount || !credit || credit.status !== 'available' || credit.urgency === 'expired') {
+      return { eligible: false, code: 'no_credit', resetCredits: parsed }
+    }
+    const usageResponse = await fetchUsage(token, accountId, options.fetcher || fetchWithTimeout)
+    if (usageResponse.status === 401 || usageResponse.status === 403) continue
+    if (!usageResponse.ok) throw new Error(`Codex usage request failed (${usageResponse.status}).`)
+    const usagePayload = await usageResponse.json()
+    const windows = codexWindowsFromRateLimit(usagePayload?.rate_limit || {}, usageResponse.headers)
+    if (!windows.some((window) => ['5h', '7d'].includes(window.kind) && Number(window.usedPct) >= 90)) {
+      return { eligible: false, code: 'nothing_to_reset', resetCredits: parsed }
+    }
+    return { eligible: true, state, credit, resetCredits: parsed }
+  }
+  throw new Error(lastStatus ? `Codex authentication failed (${lastStatus}).` : 'No matching Codex login is available.')
+}
+
+async function prepareResetCredit(account, creditId, options = {}) {
+  prunePreparedResetClaims(Number(options.now) || Date.now())
+  if (!account?.id || !account?.accountId || !cleanText(creditId)) throw new Error('A specific Codex account and credit are required.')
+  const checked = await eligibleResetCredit(account, creditId, options)
+  if (!checked.eligible) return { ok: false, code: checked.code, resetCredits: checked.resetCredits }
+  const redeemRequestId = options.redeemRequestId || crypto.randomUUID()
+  const prepared = {
+    providerInstanceId: account.id,
+    identityStamp: account.identityStamp,
+    accountId: account.accountId,
+    creditId,
+    redeemRequestId,
+    expiresAt: checked.credit.expiresAt,
+    preparedAt: Number(options.now) || Date.now(),
+  }
+  preparedResetClaims.set(redeemRequestId, prepared)
+  return { ok: true, providerInstanceId: account.id, creditId, redeemRequestId, expiresAt: checked.credit.expiresAt }
+}
+
+async function redeemResetCredit(account, request, options = {}) {
+  prunePreparedResetClaims(Number(options.now) || Date.now())
+  if (request?.confirmed !== true) throw new Error('Reset-credit redemption requires explicit confirmation.')
+  const key = cleanText(request.redeemRequestId)
+  const prepared = key ? preparedResetClaims.get(key) : null
+  if (!prepared || prepared.creditId !== request.creditId || prepared.providerInstanceId !== request.providerInstanceId) {
+    throw new Error('Reset-credit confirmation is missing or expired.')
+  }
+  if (!account || prepared.identityStamp !== account.identityStamp || prepared.accountId !== account.accountId) {
+    throw new Error('Codex account changed before redemption. Refresh and try again.')
+  }
+
+  let checked
+  if (prepared.matchedState) {
+    checked = { eligible: true, state: prepared.matchedState }
+  } else {
+    checked = await eligibleResetCredit(account, prepared.creditId, options)
+    if (!checked.eligible) return { ok: false, code: 'no_credit', resetCredits: checked.resetCredits }
+    prepared.matchedState = checked.state
+  }
+
+  const candidates = [checked.state, ...resetClaimCandidates(account).filter((state) => state !== checked.state)]
+  let response = null
+  for (const state of candidates) {
+    response = await consumeResetCredit(
+      state.auth.tokens.access_token,
+      state.auth.tokens.account_id,
+      prepared.creditId,
+      prepared.redeemRequestId,
+      options.fetcher || fetchWithTimeout,
+    )
+    if (response.status !== 401 && response.status !== 403) break
+  }
+  if (!response?.ok) throw new Error(`Reset-credit redemption failed (${response?.status || 'network'}).`)
+  const body = await response.json()
+  const code = cleanText(body?.code)
+  if (!['reset', 'already_redeemed', 'nothing_to_reset', 'no_credit'].includes(code)) {
+    throw new Error('Reset-credit redemption returned an unknown result.')
+  }
+  const usage = ['reset', 'already_redeemed', 'nothing_to_reset', 'no_credit'].includes(code)
+    ? await read({ ...options, account, forceRefresh: true })
+    : null
+  const refreshFailed = !usage?.connected || Boolean(usage?.error)
+  return {
+    ok: (code === 'reset' || code === 'already_redeemed') && !refreshFailed,
+    code,
+    alreadyRedeemed: code === 'already_redeemed',
+    refreshPending: refreshFailed,
+    ...(refreshFailed ? { error: 'Credit response received, but refreshed limits are unavailable.' } : {}),
+    usage,
+  }
+}
+
 module.exports = {
   read,
+  authCandidates,
+  fetchResetCredits,
+  consumeResetCredit,
+  prepareResetCredit,
+  redeemResetCredit,
   generate,
   canGenerate,
   _private: {
@@ -1379,6 +1800,7 @@ module.exports = {
     aggregateTokenUsages,
     codexPriorityTurns,
     parseCodexTokenUsage,
+    parsePiCodexUsage,
     parseCodexCompletedTraceRow,
     parseCodexPriorityTraceRow,
     parseCodexTokenSnapshots,
@@ -1387,8 +1809,18 @@ module.exports = {
     additionalCodexWindows,
     codexWindowsFromRateLimit,
     creditsExtra,
+    parseResetCredits,
+    resetCreditUrgency,
+    fetchResetCredits,
+    consumeResetCredit,
+    eligibleResetCredit,
+    prepareResetCredit,
+    redeemResetCredit,
+    resetClaimCandidates,
+    prunePreparedResetClaims,
     parseLiveUsage,
     readTokenUsage,
+    readPiCodexUsage,
     resetTokenScanCacheForTesting,
     rolloutFiles,
     sessionMetadataFromRow,

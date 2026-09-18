@@ -11,9 +11,45 @@
   font: inherit;
 }
 
-.burn-root button:focus-visible {
-  outline: 1px solid rgba(182, 255, 60, 0.5);
-  outline-offset: 1px;
+.burn-root :is(button, select, input, textarea):focus-visible {
+  outline: 2px solid #b6ff3c;
+  outline-offset: 2px;
+}
+
+.burn-root button:not(:disabled) {
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, opacity 140ms ease;
+}
+
+.burn-root button:not(:disabled):hover {
+  filter: brightness(1.08);
+}
+
+.burn-root [data-burn-display-toggle] {
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.burn-root button:disabled {
+  cursor: default !important;
+  opacity: 0.55;
+}
+
+@media (max-width: 380px) {
+  .burn-root .burn-footer-plan-prefix {
+    display: none !important;
+  }
+}
+
+@media (max-width: 340px) {
+  .burn-root .burn-footer-action {
+    min-width: 24px !important;
+    margin-left: 6px !important;
+    padding-left: 8px !important;
+  }
+
+  .burn-root .burn-footer-action-text {
+    display: none !important;
+  }
 }
 
 /* Sync spinner — functional loading feedback while a manual refresh runs. */
@@ -56,10 +92,16 @@
 .burn-detail {
   overflow: hidden;
   max-height: 0;
-  transition: max-height 120ms ease;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: max-height 160ms ease, opacity 120ms ease;
 }
 .burn-prov.open .burn-detail {
   max-height: 2000px;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 .burn-chev-up {
   display: none;
@@ -93,8 +135,8 @@
 
 /* ---- Light mode ---- only color overrides for things inline styles and the
    JS palette can't reach (the dot glow, scrollbar chrome, focus ring). */
-.burn-root.burn-light button:focus-visible {
-  outline: 1px solid rgba(85, 127, 15, 0.5);
+.burn-root.burn-light :is(button, select, input, textarea):focus-visible {
+  outline-color: #557f0f;
 }
 .burn-root.burn-light .burn-live-dot {
   background: #557f0f;
@@ -106,4 +148,68 @@
 }
 .burn-root.burn-light ::-webkit-scrollbar-thumb:hover {
   background: #b8b1a0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .burn-root *,
+  .burn-root *::before,
+  .burn-root *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.burn-root.burn-reduce-motion *,
+.burn-root.burn-reduce-motion *::before,
+.burn-root.burn-reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+.burn-root.burn-compact .burn-prov {
+  margin-bottom: 6px !important;
+}
+
+.burn-root.burn-compact .burn-prov > :first-child {
+  padding-top: 10px !important;
+  padding-bottom: 9px !important;
+}
+
+.burn-root.burn-compact .burn-body {
+  font-size: 0.94em;
+}
+
+.burn-root.burn-compact .burn-body :is([data-burn-collapse], [data-burn-report-models], [data-burn-share], [data-burn-action]) {
+  padding-top: 5px !important;
+  padding-bottom: 5px !important;
+}
+
+.burn-root.burn-compact .burn-body [data-burn-drag] > div:first-child {
+  padding-top: 7px !important;
+  padding-bottom: 7px !important;
+}
+
+.burn-root.burn-compact .burn-body section {
+  padding-top: 9px !important;
+  padding-bottom: 9px !important;
+}
+
+.burn-root.burn-high-contrast {
+  --burn-contrast-outline: currentColor;
+}
+
+.burn-root.burn-high-contrast :is(button, select, input, textarea) {
+  border-color: currentColor !important;
+}
+
+.burn-root.burn-reduce-transparency {
+  background: #121212;
+}
+
+.burn-root.burn-light.burn-reduce-transparency {
+  background: #f5f4f0;
 }

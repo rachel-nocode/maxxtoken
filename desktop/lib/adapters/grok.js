@@ -6,8 +6,10 @@ const { fetchWithTimeout } = require('../http')
 
 const DEFAULT_HISTORY_DAYS = 30
 const GROK_WEB_BILLING_URL = 'https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig'
+const GROK_CLI_BILLING_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits'
 const USER_AGENT = 'MaxxToken'
 const OIDC_EARLY_REFRESH_MS = 5 * 60 * 1000
+const MAX_PLAUSIBLE_TOKENS = 1_000_000_000_000
 
 function grokHome(options = {}) {
   return options.grokHome || options.env?.GROK_HOME || process.env.GROK_HOME || path.join(os.homedir(), '.grok')
@@ -222,7 +224,14 @@ async function resolveCredentialsFresh(root, options = {}) {
 }
 
 function dayKey(ms) {
-  return new Date(ms).toISOString().slice(0, 10)
+  const date = new Date(ms)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function boundedToken(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return 0
+  return Math.min(MAX_PLAUSIBLE_TOKENS, Math.floor(n))
 }
 
 function emptyBucket(extra = {}) {
@@ -394,6 +403,217 @@ function scanGrokSignals(root, now = Date.now(), historyDays = DEFAULT_HISTORY_D
     source: 'local Grok signals',
     lastActive,
   }
+}
+
+function timestampFromCompletedTurn(object, params) {
+  for (const meta of [params?._meta, object?._meta]) {
+    const ms = Number(meta?.agentTimestampMs)
+    if (Number.isFinite(ms) && ms > 0) return ms
+  }
+  const seconds = Number(object?.timestamp)
+  if (Number.isFinite(seconds) && seconds > 0) return seconds < 1e12 ? seconds * 1000 : seconds
+  return parseTime(object?.timestamp)
+}
+
+function completedTurnEntries(object) {
+  const params = object?.params && typeof object.params === 'object' ? object.params : null
+  const update = params?.update || object?.update
+  const usage = update?.usage
+  const modelUsage = usage?.modelUsage
+  const timestamp = timestampFromCompletedTurn(object, params)
+  if (update?.sessionUpdate !== 'turn_completed' || !modelUsage || typeof modelUsage !== 'object' || !timestamp) return []
+  const eventID = clean(params?._meta?.eventId || object?._meta?.eventId)
+  const models = Object.entries(modelUsage).filter(([, value]) => value && typeof value === 'object')
+  return models.flatMap(([rawModel, values]) => {
+    const model = clean(rawModel)
+    const inputTotal = boundedToken(values.inputTokens)
+    const cachedRead = Math.min(boundedToken(values.cachedReadTokens), inputTotal)
+    const cachedWrite = Math.min(boundedToken(values.cacheCreationTokens), Math.max(0, inputTotal - cachedRead))
+    const output = boundedToken(values.outputTokens)
+    if (!model || (!inputTotal && !output)) return []
+    const ticks = Number(values.costUsdTicks ?? (models.length === 1 ? usage.costUsdTicks : null))
+    const costUSD = Number.isFinite(ticks) && ticks >= 0 ? ticks / 10_000_000_000 : null
+    return [{
+      eventID,
+      timestamp,
+      model,
+      input: Math.max(0, inputTotal - cachedRead - cachedWrite),
+      cached: cachedRead + cachedWrite,
+      output,
+      total: inputTotal + output,
+      costUSD,
+    }]
+  })
+}
+
+function parseCompletedTurnJSONL(text) {
+  const entries = []
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (!line.includes('turn_completed')) continue
+    try {
+      entries.push(...completedTurnEntries(JSON.parse(line)))
+    } catch {
+      /* malformed events are isolated */
+    }
+  }
+  return entries
+}
+
+function aggregateCompletedTurns(entries, now = Date.now(), historyDays = DEFAULT_HISTORY_DAYS) {
+  const cutoff = now - Math.max(1, Number(historyDays) || DEFAULT_HISTORY_DAYS) * 86400000
+  const seen = new Set()
+  const accepted = []
+  for (const entry of entries) {
+    if (entry.timestamp < cutoff || entry.timestamp > now) continue
+    if (entry.eventID) {
+      const key = `${entry.eventID}\u0000${entry.model}`
+      if (seen.has(key)) continue
+      seen.add(key)
+    }
+    accepted.push(entry)
+  }
+  if (!accepted.length) return null
+
+  const totals = emptyBucket({ costUSD: 0, pricedRows: 0, unpricedModels: new Set() })
+  const byDay = new Map()
+  const byModel = new Map()
+  const byDayModel = new Map()
+  let lastActive = 0
+  const add = (bucket, row) => {
+    addTokens(bucket, { ...row, sessions: 1, requests: 1 })
+    if (row.costUSD == null) bucket.unpricedModels.add(row.model)
+    else {
+      bucket.costUSD += row.costUSD
+      bucket.pricedRows += 1
+    }
+  }
+  const costBucket = (extra) => emptyBucket({ ...extra, costUSD: 0, pricedRows: 0, unpricedModels: new Set() })
+  const finalize = (bucket) => {
+    const { pricedRows, unpricedModels, ...value } = bucket
+    return {
+      ...value,
+      costUSD: pricedRows ? value.costUSD : null,
+      costAccuracy: pricedRows ? 'measured' : null,
+      pricingSource: pricedRows ? 'Grok completed turns' : null,
+      unpricedModels: [...unpricedModels].sort(),
+    }
+  }
+  for (const row of accepted) {
+    add(totals, row)
+    lastActive = Math.max(lastActive, row.timestamp)
+    const day = dayKey(row.timestamp)
+    const dayBucket = byDay.get(day) || costBucket({ date: day })
+    add(dayBucket, row)
+    byDay.set(day, dayBucket)
+    const modelBucket = byModel.get(row.model) || costBucket({ model: row.model })
+    add(modelBucket, row)
+    byModel.set(row.model, modelBucket)
+    const dayModelKey = `${day}\u0000${row.model}`
+    const dayModelBucket = byDayModel.get(dayModelKey) || costBucket({ model: row.model })
+    add(dayModelBucket, row)
+    byDayModel.set(dayModelKey, dayModelBucket)
+  }
+  const dailyBreakdown = [...byDay.values()]
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .map((day) => ({
+      ...finalize(day),
+      modelBreakdowns: [...byDayModel.entries()]
+        .filter(([key]) => key.startsWith(`${day.date}\u0000`))
+        .map(([, value]) => finalize(value))
+        .sort((a, b) => b.total - a.total),
+    }))
+  const modelBreakdowns = [...byModel.values()].map(finalize).sort((a, b) => b.total - a.total)
+  const totalCost = finalize(totals)
+  return {
+    input: totals.input,
+    cached: totals.cached,
+    output: totals.output,
+    total: totals.total,
+    costUSD: totalCost.costUSD,
+    costAccuracy: totalCost.costAccuracy,
+    pricingSource: totalCost.pricingSource,
+    unpricedModels: totalCost.unpricedModels,
+    sessions: accepted.length,
+    requests: accepted.length,
+    modelBreakdowns,
+    modelNames: modelBreakdowns.map((row) => row.model),
+    dailyBreakdown,
+    historyDays: dailyBreakdown.length,
+    period: `${Math.max(1, Number(historyDays) || DEFAULT_HISTORY_DAYS)}d`,
+    source: 'Grok completed turns',
+    lastActive,
+  }
+}
+
+function scanGrokCompletedTurns(root, now = Date.now(), historyDays = DEFAULT_HISTORY_DAYS) {
+  const entries = []
+  const sessionsDir = path.join(root, 'sessions')
+  function walk(dir) {
+    let children
+    try {
+      children = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const child of children) {
+      const file = path.join(dir, child.name)
+      if (child.isDirectory()) walk(file)
+      else if (child.isFile() && child.name === 'updates.jsonl') {
+        try {
+          entries.push(...parseCompletedTurnJSONL(fs.readFileSync(file, 'utf8')))
+        } catch {
+          /* one unreadable transcript must not discard other history */
+        }
+      }
+    }
+  }
+  walk(sessionsDir)
+  return aggregateCompletedTurns(entries, now, historyDays)
+}
+
+function parseCliBilling(json) {
+  const config = json?.config
+  const period = config?.currentPeriod
+  if (!config || !period || typeof period.type !== 'string') throw new Error('Grok billing response changed')
+  const start = parseTime(period.start)
+  const end = parseTime(period.end)
+  if (!start || !end || end <= start) throw new Error('Grok billing response changed')
+  let usedPercent = 0
+  if (Object.hasOwn(config, 'creditUsagePercent')) {
+    usedPercent = Number(config.creditUsagePercent)
+    if (!Number.isFinite(usedPercent)) throw new Error('Grok billing response changed')
+  }
+  let paygCap = 0
+  if (Object.hasOwn(config, 'onDemandCap')) {
+    paygCap = Number(config.onDemandCap?.val ?? 0)
+    if (!Number.isFinite(paygCap)) throw new Error('Grok billing response changed')
+  }
+  return {
+    usedPercent: Math.max(0, Math.min(100, usedPercent)),
+    resetsAt: end,
+    periodStart: start,
+    periodType: period.type,
+    periodMs: end - start,
+    paygCap: Math.max(0, paygCap),
+    paygEnabled: paygCap > 0,
+    source: 'Grok CLI billing',
+  }
+}
+
+async function fetchCliBilling(accessToken, options = {}) {
+  if (!accessToken) return null
+  const request = options.fetchImpl || fetchWithTimeout
+  const response = await request(options.cliBillingEndpoint || GROK_CLI_BILLING_URL, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'X-XAI-Token-Auth': 'xai-grok-cli',
+      Accept: 'application/json',
+      'User-Agent': USER_AGENT,
+    },
+  }, options.timeoutMs || 10000)
+  if (response.status === 401 || response.status === 403) throw new Error('Grok CLI session rejected. Run `grok login`.')
+  if (!response.ok) throw new Error(`Grok billing request failed with HTTP ${response.status}`)
+  return parseCliBilling(await response.json())
 }
 
 function readVarint(bytes, cursor) {
@@ -663,7 +883,9 @@ async function read(cycle, options = {}) {
     }
   } catch {}
 
-  const tokenUsage = scanGrokSignals(root, options.now || Date.now(), options.tokenHistoryDays || DEFAULT_HISTORY_DAYS)
+  const now = options.now || Date.now()
+  const tokenUsage = scanGrokCompletedTurns(root, now, options.tokenHistoryDays || DEFAULT_HISTORY_DAYS)
+    || scanGrokSignals(root, now, options.tokenHistoryDays || DEFAULT_HISTORY_DAYS)
   for (const day of tokenUsage?.dailyBreakdown || []) {
     const ms = Date.parse(`${day.date}T12:00:00Z`)
     if (Number.isFinite(ms) && ms >= cycle.startMs) activeDays.add(new Date(ms).toDateString())
@@ -672,7 +894,9 @@ async function read(cycle, options = {}) {
   let billing = null
   let error = null
   try {
-    billing = await fetchWebBilling(credentials, options)
+    billing = credentials.accessToken
+      ? await fetchCliBilling(credentials.accessToken, options)
+      : await fetchWebBilling(credentials, options)
   } catch (err) {
     error = err && err.message ? err.message : String(err)
   }
@@ -701,6 +925,13 @@ module.exports = {
     authNeedsRefresh,
     parseGrokWebBillingResponse,
     fetchWebBilling,
+    parseCliBilling,
+    fetchCliBilling,
+    parseCompletedTurnJSONL,
+    completedTurnEntries,
+    aggregateCompletedTurns,
+    dayKey,
+    scanGrokCompletedTurns,
     scanGrokSignals,
     scanSignalFile,
     tokensFromSignal,

@@ -1,7 +1,7 @@
 {
   "name": "maxxtoken-menubar",
   "private": true,
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "MaxxToken menu bar app - reverse AI usage tracker that nudges you to use what you pay for",
   "main": "main.js",
   "bin": {
@@ -17,10 +17,17 @@
     "usage": "node bin/maxxtoken-usage.js",
     "logs": "node bin/maxxtoken-logs.js --follow",
     "test": "node --test",
-    "dist": "electron-builder",
-    "release": "electron-builder --publish always"
+    "dist": "npm run release:build",
+    "release:build:mac": "electron-builder --mac dmg zip --universal --publish never",
+    "release:build:win": "electron-builder --win nsis --x64 --publish never",
+    "release:build": "npm run release:build:mac && npm run release:build:win",
+    "release:refresh-manifests": "node scripts/refresh-release-manifests.js",
+    "release:validate:build": "node scripts/validate-release.js --build-only",
+    "release:validate": "node scripts/validate-release.js",
+    "release": "npm run release:validate"
   },
   "build": {
+    "beforePack": "native/before-pack.js",
     "appId": "audio.witch.maxxtoken",
     "productName": "MaxxToken",
     "files": [
@@ -36,14 +43,36 @@
       "package.json"
     ],
     "mac": {
-      "target": [
-        "dmg",
-        "zip"
+      "extraResources": [
+        {
+          "from": "native/bin/screen-capture-probe",
+          "to": "screen-capture-probe"
+        }
       ],
+      "binaries": [
+        "Contents/Resources/screen-capture-probe"
+      ],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}-mac.${ext}",
       "category": "public.app-category.productivity",
       "icon": "assets/icon.icns",
+      "minimumSystemVersion": "12.0",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
+      "signIgnore": "\\.pak$",
       "extendInfo": {
         "LSUIElement": true
       }
@@ -68,7 +97,7 @@
       "createStartMenuShortcut": true,
       "shortcutName": "MaxxToken"
     },
-    "afterPack": "build/after-pack.js",
+    "afterPack": "native/after-pack.js",
     "publish": {
       "provider": "github",
       "owner": "rachel-nocode",
@@ -77,7 +106,6 @@
     "dmg": {
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "title": "MaxxToken ${version}",
-      "background": "build/dmg-background.png",
       "icon": "assets/icon.icns",
       "iconSize": 112,
       "window": {
@@ -104,6 +132,10 @@
     "electron-builder": "^26.8.1"
   },
   "dependencies": {
-    "electron-updater": "^6.8.3"
+    "electron-updater": "^6.8.3",
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
+    "node-fetch": "^2.7.0",
+    "socks-proxy-agent": "^8.0.5"
   }
 }

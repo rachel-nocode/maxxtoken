@@ -1,15 +1,25 @@
+const crypto = require('crypto')
 const fs = require('fs')
+const http = require('http')
+const https = require('https')
 const os = require('os')
 const path = require('path')
+const { execFileSync } = require('child_process')
 
 const { getKey } = require('../secrets')
 const { fetchWithTimeout } = require('../http')
+const conversationHistory = require('./antigravity-history')
 
 const BASE = 'https://cloudcode-pa.googleapis.com'
 const LOAD_CODE_ASSIST = `${BASE}/v1internal:loadCodeAssist`
 const FETCH_MODELS = `${BASE}/v1internal:fetchAvailableModels`
 const RETRIEVE_QUOTA = `${BASE}/v1internal:retrieveUserQuota`
+const RETRIEVE_QUOTA_SUMMARY = `${BASE}/v1internal:retrieveUserQuotaSummary`
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
+const LS_SERVICE = 'exa.language_server_pb.LanguageServerService'
+const SESSION_MS = 5 * 60 * 60 * 1000
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+const refreshedAccessTokens = new Map()
 
 function clean(value) {
   const text = String(value || '').trim()
@@ -41,20 +51,169 @@ function parseCredentials(raw) {
   if (!text) return null
   if (!text.startsWith('{')) return { accessToken: text }
   try {
-    const json = JSON.parse(text)
-    return {
-      accessToken: clean(json.access_token || json.accessToken),
-      refreshToken: clean(json.refresh_token || json.refreshToken),
-      expiryDate: parseDate(json.expiry_date ?? json.expiresAt),
-      idToken: clean(json.id_token || json.idToken),
-      email: clean(json.email),
-      projectID: clean(json.project_id || json.projectId),
-      clientID: clean(json.client_id || json.clientId),
-      clientSecret: clean(json.client_secret || json.clientSecret),
-    }
+    return parseCredentialObject(JSON.parse(text))
   } catch {
     return null
   }
+}
+
+function parseCredentialObject(json) {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return null
+  const direct = {
+    accessToken: clean(json.access_token || json.accessToken),
+    refreshToken: clean(json.refresh_token || json.refreshToken),
+    expiryDate: parseDate(json.expiry ?? json.expiry_date ?? json.expires_at ?? json.expiresAt),
+    idToken: clean(json.id_token || json.idToken),
+    email: clean(json.email),
+    projectID: clean(json.project_id || json.projectId),
+    clientID: clean(json.client_id || json.clientId),
+    clientSecret: clean(json.client_secret || json.clientSecret),
+  }
+  if (direct.accessToken || direct.refreshToken) return direct
+  for (const key of ['token', 'tokens', 'oauth', 'oauth2', 'credentials', 'auth']) {
+    const nested = parseCredentialObject(json[key])
+    if (nested) return nested
+  }
+  return null
+}
+
+function unwrapGoKeyring(raw) {
+  const text = clean(raw)
+  if (!text) return null
+  const prefix = 'go-keyring-base64:'
+  if (!text.startsWith(prefix)) return text
+  try {
+    return clean(Buffer.from(text.slice(prefix.length), 'base64').toString('utf8'))
+  } catch {
+    return null
+  }
+}
+
+function parseKeychainCredentials(raw) {
+  const text = unwrapGoKeyring(raw)
+  if (!text) return null
+  if (text.startsWith('Bearer ')) return parseCredentials(text.slice('Bearer '.length))
+  return parseCredentials(text)
+}
+
+function loadKeychainCredentials(options = {}) {
+  const platform = options.platform || process.platform
+  if (platform !== 'darwin') return null
+  const execImpl = options.execFileSync || execFileSync
+  try {
+    const raw = execImpl(
+      '/usr/bin/security',
+      ['find-generic-password', '-s', 'gemini', '-a', 'antigravity', '-w'],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 4000,
+        maxBuffer: 1024 * 1024,
+      },
+    )
+    return parseKeychainCredentials(raw)
+  } catch {
+    return null
+  }
+}
+
+function parseCommandFlag(command, flag) {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = String(command || '').match(new RegExp(`(?:^|\\s)${escaped}(?:=|\\s+)(?:"([^"]+)"|'([^']+)'|([^\\s]+))`))
+  return clean(match && (match[1] || match[2] || match[3]))
+}
+
+function parseLanguageServerProcesses(output) {
+  const candidates = []
+  for (const rawLine of String(output || '').split(/\r?\n/)) {
+    const match = rawLine.match(/^\s*(\d+)\s+(.+)$/)
+    if (!match) continue
+    const command = match[2]
+    const lower = command.toLowerCase()
+    const isLanguageServer = /(?:^|[/\\])language_server(?:_[^/\\\s]+)?(?:\s|$)/i.test(command)
+    const isAgy = /(?:^|[/\\])agy(?:\s|$)/i.test(command)
+    if (!isLanguageServer && !isAgy) continue
+    if (isLanguageServer && !lower.includes('antigravity')) continue
+    const port = number(parseCommandFlag(command, '--extension_server_port'))
+    if (!port || port <= 0 || port >= 65536) continue
+    const csrf =
+      parseCommandFlag(command, '--extension_server_csrf_token') ||
+      parseCommandFlag(command, '--csrf_token')
+    if (!csrf) continue
+    candidates.push({ pid: Number(match[1]), port, csrf })
+  }
+  return candidates
+}
+
+function parseListeningPorts(output) {
+  const ports = new Set()
+  for (const match of String(output || '').matchAll(/TCP\s+(?:\[[^\]]+\]|[^:\s]+):(\d+)\s+\(LISTEN\)/g)) {
+    const port = number(match[1])
+    if (port > 0 && port < 65536) ports.add(port)
+  }
+  return [...ports]
+}
+
+function listeningPorts(pid, execImpl = execFileSync) {
+  try {
+    const output = execImpl('/usr/sbin/lsof', ['-nP', '-a', '-p', String(pid), '-iTCP', '-sTCP:LISTEN'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 4000,
+      maxBuffer: 1024 * 1024,
+    })
+    return parseListeningPorts(output)
+  } catch {
+    return []
+  }
+}
+
+function discoverLanguageServers(options = {}) {
+  const execImpl = options.execFileSync || execFileSync
+  try {
+    const output = execImpl('/bin/ps', ['-ax', '-o', 'pid=,command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 4000,
+      maxBuffer: 4 * 1024 * 1024,
+    })
+    return parseLanguageServerProcesses(output).map((candidate) => ({
+      ...candidate,
+      ports: listeningPorts(candidate.pid, execImpl),
+    }))
+  } catch {
+    return []
+  }
+}
+
+function antigravityBinaryCandidates(options = {}) {
+  const env = options.env || process.env
+  const home = options.home || os.homedir()
+  return [
+    env.ANTIGRAVITY_LANGUAGE_SERVER_PATH,
+    '/Applications/Antigravity.app/Contents/Resources/bin/language_server',
+    path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'bin', 'language_server'),
+  ].filter(Boolean)
+}
+
+function extractBundledOAuthClients(value) {
+  const text = Buffer.isBuffer(value) ? value.toString('latin1') : String(value || '')
+  const ids = [...new Set([...text.matchAll(/[0-9]+-[a-z0-9_-]+\.apps\.googleusercontent\.com/gi)].map((match) => match[0]))]
+  const secrets = [...new Set([...text.matchAll(/GOCSPX-[A-Za-z0-9_-]{28}/g)].map((match) => match[0]))]
+  return ids.flatMap((clientID) => secrets.map((clientSecret) => ({ clientID, clientSecret })))
+}
+
+function loadBundledOAuthClients(options = {}) {
+  const fsImpl = options.fs || fs
+  for (const file of antigravityBinaryCandidates(options)) {
+    try {
+      const clients = extractBundledOAuthClients(fsImpl.readFileSync(file))
+      if (clients.length) return clients
+    } catch {
+      /* try the next installed-app location */
+    }
+  }
+  return []
 }
 
 function defaultCredentialsPath() {
@@ -69,16 +228,44 @@ function loadFileCredentials(file = defaultCredentialsPath()) {
   }
 }
 
-function resolveCredentials() {
+function resolveCredentials(options = {}) {
+  const envSource = options.env || process.env
   const env =
-    parseCredentials(process.env.ANTIGRAVITY_OAUTH_CREDENTIALS_JSON) ||
-    parseCredentials(process.env.ANTIGRAVITY_ACCESS_TOKEN) ||
-    parseCredentials(process.env.ANTIGRAVITY_TOKEN)
-  return parseCredentials(getKey('antigravity')) || env || loadFileCredentials()
+    parseCredentials(envSource.ANTIGRAVITY_OAUTH_CREDENTIALS_JSON) ||
+    parseCredentials(envSource.ANTIGRAVITY_ACCESS_TOKEN) ||
+    parseCredentials(envSource.ANTIGRAVITY_TOKEN)
+  const native = loadKeychainCredentials(options)
+  if (native) return { ...native, source: 'keychain', oauthClients: loadBundledOAuthClients(options) }
+  const savedKey = Object.prototype.hasOwnProperty.call(options, 'savedKey') ? options.savedKey : getKey('antigravity')
+  const saved = parseCredentials(savedKey) || env || loadFileCredentials(options.credentialsPath)
+  return saved ? { ...saved, source: 'manual' } : null
 }
 
 function shouldRefresh(credentials, now = Date.now()) {
   return credentials?.expiryDate && credentials.expiryDate - now <= 60000
+}
+
+function refreshTokenFingerprint(refreshToken) {
+  const token = clean(refreshToken)
+  return token ? crypto.createHash('sha256').update(token).digest('hex') : null
+}
+
+function withCachedAccessToken(credentials, now = Date.now()) {
+  const fingerprint = refreshTokenFingerprint(credentials?.refreshToken)
+  const cached = fingerprint ? refreshedAccessTokens.get(fingerprint) : null
+  if (!cached || cached.expiryDate - now <= 60000) return credentials
+  return { ...credentials, ...cached }
+}
+
+function cacheRefreshedAccessToken(credentials) {
+  const fingerprint = refreshTokenFingerprint(credentials?.refreshToken)
+  if (!fingerprint || !credentials?.accessToken || !credentials?.expiryDate) return
+  if (refreshedAccessTokens.size >= 8) refreshedAccessTokens.clear()
+  refreshedAccessTokens.set(fingerprint, {
+    accessToken: credentials.accessToken,
+    idToken: credentials.idToken,
+    expiryDate: credentials.expiryDate,
+  })
 }
 
 function decodeJWT(token) {
@@ -155,36 +342,149 @@ async function postJSON(endpoint, accessToken, body, timeoutMs = 10000) {
   return text.trim() ? JSON.parse(text) : {}
 }
 
-async function refreshAccessToken(credentials) {
-  if (!credentials?.refreshToken || !credentials?.clientID || !credentials?.clientSecret) {
+function loopbackRequest(url, init = {}, timeoutMs = 4000) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url)
+    const transport = parsed.protocol === 'https:' ? https : http
+    const req = transport.request({
+      protocol: parsed.protocol,
+      hostname: '127.0.0.1',
+      port: parsed.port,
+      path: parsed.pathname,
+      method: init.method || 'GET',
+      headers: init.headers || {},
+      rejectUnauthorized: false,
+      timeout: timeoutMs,
+    }, (res) => {
+      const chunks = []
+      res.on('data', (chunk) => chunks.push(chunk))
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8')
+        resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          text: async () => body,
+        })
+      })
+    })
+    req.on('timeout', () => req.destroy(new Error('Antigravity language server timed out')))
+    req.on('error', reject)
+    if (init.body) req.write(init.body)
+    req.end()
+  })
+}
+
+async function callLanguageServer(candidate, method, request = loopbackRequest) {
+  const scheme = candidate.scheme || 'http'
+  const endpoint = `${scheme}://127.0.0.1:${candidate.port}/${LS_SERVICE}/${method}`
+  try {
+    const res = await request(
+      endpoint,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Connect-Protocol-Version': '1',
+          'x-codeium-csrf-token': candidate.csrf,
+        },
+        body: JSON.stringify({
+          metadata: {
+            ideName: 'antigravity',
+            extensionName: 'antigravity',
+            ideVersion: 'unknown',
+            locale: 'en',
+          },
+        }),
+      },
+      4000,
+    )
+    if (!res.ok) return null
+    const text = await res.text()
+    return text.trim() ? JSON.parse(text) : {}
+  } catch {
+    return null
+  }
+}
+
+function planFromLocalStatus(response) {
+  const status = response?.userStatus || response?.response?.userStatus
+  return clean(status?.userTier?.name || status?.planStatus?.planInfo?.planName)
+}
+
+async function readLocalUsage(options = {}) {
+  const candidates = options.candidates || discoverLanguageServers(options)
+  const request = options.localRequest || loopbackRequest
+  for (const candidate of candidates) {
+    const endpoints = []
+    for (const port of candidate.ports || []) {
+      endpoints.push({ ...candidate, port, scheme: 'https' }, { ...candidate, port, scheme: 'http' })
+    }
+    endpoints.push({ ...candidate, scheme: 'http' })
+    for (const endpoint of endpoints) {
+      const summary = await callLanguageServer(endpoint, 'RetrieveUserQuotaSummary', request)
+      if (!summary) continue
+      const windows = parseQuotaSummary(summary)
+      if (!windows) continue
+      const status = await callLanguageServer(endpoint, 'GetUserStatus', request)
+      return {
+        connected: true,
+        source: 'language-server',
+        modelQuotas: [],
+        windows,
+        accountPlan: planFromLocalStatus(status),
+        projectID: null,
+        lastActive: Date.now(),
+      }
+    }
+  }
+  return null
+}
+
+async function refreshAccessToken(credentials, options = {}) {
+  const clients = []
+  if (credentials?.clientID && credentials?.clientSecret) {
+    clients.push({ clientID: credentials.clientID, clientSecret: credentials.clientSecret })
+  }
+  for (const client of credentials?.oauthClients || loadBundledOAuthClients(options)) {
+    if (!clients.some((item) => item.clientID === client.clientID && item.clientSecret === client.clientSecret)) clients.push(client)
+  }
+  if (!credentials?.refreshToken || !clients.length) {
     throw new Error('Antigravity refresh token or OAuth client is missing')
   }
-  const form = new URLSearchParams({
-    client_id: credentials.clientID,
-    client_secret: credentials.clientSecret,
-    refresh_token: credentials.refreshToken,
-    grant_type: 'refresh_token',
-  })
-  const res = await fetchWithTimeout(
-    TOKEN_URL,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: form.toString(),
-    },
-    10000,
-  )
-  const text = await res.text()
-  if (!res.ok) throw new Error('Antigravity Google auth expired')
-  const json = JSON.parse(text)
-  const accessToken = clean(json.access_token)
-  if (!accessToken) throw new Error('Could not parse Antigravity refresh response')
-  return {
-    ...credentials,
-    accessToken,
-    idToken: clean(json.id_token) || credentials.idToken,
-    expiryDate: number(json.expires_in) ? Date.now() + number(json.expires_in) * 1000 : credentials.expiryDate,
+  const request = options.fetchWithTimeout || fetchWithTimeout
+  for (const client of clients) {
+    const form = new URLSearchParams({
+      client_id: client.clientID,
+      client_secret: client.clientSecret,
+      refresh_token: credentials.refreshToken,
+      grant_type: 'refresh_token',
+    })
+    try {
+      const res = await request(
+        TOKEN_URL,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: form.toString(),
+        },
+        10000,
+      )
+      const text = await res.text()
+      if (!res.ok) continue
+      const json = JSON.parse(text)
+      const accessToken = clean(json.access_token)
+      if (!accessToken) continue
+      return {
+        ...credentials,
+        accessToken,
+        idToken: clean(json.id_token) || credentials.idToken,
+        expiryDate: number(json.expires_in) ? Date.now() + number(json.expires_in) * 1000 : credentials.expiryDate,
+      }
+    } catch {
+      /* try the next client embedded in the installed app */
+    }
   }
+  throw new Error('Antigravity Google auth expired')
 }
 
 function parseModelQuotas(response) {
@@ -201,6 +501,44 @@ function parseModelQuotas(response) {
       }
     })
     .filter(Boolean)
+}
+
+const SUMMARY_BUCKETS = [
+  { bucketID: 'gemini-5h', label: 'Session', periodMs: SESSION_MS },
+  { bucketID: 'gemini-weekly', label: 'Weekly', periodMs: WEEK_MS },
+  { bucketID: '3p-5h', label: 'Claude', periodMs: SESSION_MS },
+  { bucketID: '3p-weekly', label: 'Claude Weekly', periodMs: WEEK_MS },
+]
+
+function parseQuotaSummary(response) {
+  const groups = response?.response?.groups || response?.groups
+  if (!Array.isArray(groups)) return null
+  const buckets = groups.flatMap((group) => (Array.isArray(group?.buckets) ? group.buckets : []))
+  const byID = new Map()
+  for (const bucket of buckets) {
+    const id = clean(bucket?.bucketId)
+    if (!id || byID.has(id)) continue
+    const remainingFraction = number(bucket.remainingFraction)
+    if (remainingFraction == null) continue
+    byID.set(id, {
+      remainingFraction,
+      resetAt: parseDate(bucket.resetTime),
+    })
+  }
+  return SUMMARY_BUCKETS.flatMap((spec) => {
+    const bucket = byID.get(spec.bucketID)
+    if (!bucket) return []
+    const remainingPct = clampPct(bucket.remainingFraction * 100)
+    return [{
+      label: spec.label,
+      modelLabel: spec.label,
+      modelId: spec.bucketID,
+      usedPct: clampPct(100 - remainingPct),
+      remainingPct,
+      resetAt: bucket.resetAt,
+      periodMs: spec.periodMs,
+    }]
+  })
 }
 
 function parseQuotaBuckets(response) {
@@ -320,6 +658,7 @@ function selectedWindows(modelQuotas) {
           usedPct: clampPct(100 - remainingPercent(quota)),
           remainingPct: remainingPercent(quota),
           resetAt: quota.resetAt || null,
+          periodMs: SESSION_MS,
         }
       : null
   return [
@@ -329,12 +668,37 @@ function selectedWindows(modelQuotas) {
   ].filter(Boolean)
 }
 
-async function read() {
-  let credentials = resolveCredentials()
-  if (!credentials?.accessToken) return { connected: false, error: 'Antigravity OAuth credentials not configured' }
+async function read(options = {}) {
+  const withHistory = (usage) => {
+    if (!usage?.connected || options.skipTokenHistory) return usage
+    const tokenUsage = conversationHistory.scan(options)
+    return tokenUsage ? { ...usage, tokenUsage } : usage
+  }
+  const local = await readLocalUsage(options)
+  if (local) return withHistory(local)
+
+  let credentials = resolveCredentials(options)
+  if (!credentials?.accessToken) {
+    return { connected: false, error: 'Start Antigravity or run agy and sign in, then refresh' }
+  }
   try {
-    if (shouldRefresh(credentials)) credentials = await refreshAccessToken(credentials)
+    credentials = withCachedAccessToken(credentials)
+    if (shouldRefresh(credentials)) {
+      if (!credentials.refreshToken || (!(credentials.oauthClients || []).length && (!credentials.clientID || !credentials.clientSecret))) {
+        throw new Error('Antigravity login expired — open Antigravity or run agy, then refresh')
+      }
+      credentials = await refreshAccessToken(credentials, options)
+      cacheRefreshedAccessToken(credentials)
+    }
     const credentialClaims = claims(credentials)
+    let summaryWindows = null
+    try {
+      summaryWindows = parseQuotaSummary(
+        await postJSON(RETRIEVE_QUOTA_SUMMARY, credentials.accessToken, {}),
+      )
+    } catch (err) {
+      if (err && /auth expired/i.test(err.message || '')) throw err
+    }
     const codeAssist = await postJSON(LOAD_CODE_ASSIST, credentials.accessToken, {
       metadata: {
         ideType: 'ANTIGRAVITY',
@@ -363,38 +727,45 @@ async function read() {
     }
 
     let quotas = []
-    try {
-      quotas = parseModelQuotas(
-        await postJSON(FETCH_MODELS, credentials.accessToken, projectID ? { project: projectID } : {}),
-      )
-      if (shouldVerifyQuotas(quotas)) {
-        try {
-          const verified = parseQuotaBuckets(
-            await postJSON(RETRIEVE_QUOTA, credentials.accessToken, projectID ? { project: projectID } : {}),
-          )
-          if (hasConsumedQuota(verified)) quotas = mergeVerifiedQuotas(quotas, verified)
-        } catch {
-          /* optional */
+    if (summaryWindows == null) {
+      try {
+        quotas = parseModelQuotas(
+          await postJSON(FETCH_MODELS, credentials.accessToken, projectID ? { project: projectID } : {}),
+        )
+        if (shouldVerifyQuotas(quotas)) {
+          try {
+            const verified = parseQuotaBuckets(
+              await postJSON(RETRIEVE_QUOTA, credentials.accessToken, projectID ? { project: projectID } : {}),
+            )
+            if (hasConsumedQuota(verified)) quotas = mergeVerifiedQuotas(quotas, verified)
+          } catch {
+            /* optional */
+          }
         }
+      } catch (err) {
+        if (!err.permissionDenied) throw err
+        quotas = parseQuotaBuckets(
+          await postJSON(RETRIEVE_QUOTA, credentials.accessToken, projectID ? { project: projectID } : {}),
+        )
       }
-    } catch (err) {
-      if (!err.permissionDenied) throw err
-      quotas = parseQuotaBuckets(
-        await postJSON(RETRIEVE_QUOTA, credentials.accessToken, projectID ? { project: projectID } : {}),
-      )
     }
 
-    return {
+    return withHistory({
       connected: true,
+      source: credentials.source || 'credentials',
       modelQuotas: quotas,
-      windows: selectedWindows(quotas),
+      windows: summaryWindows || selectedWindows(quotas),
       accountEmail: credentialClaims.email,
       accountPlan: planFromCodeAssist(codeAssist, credentialClaims),
       projectID: projectID || null,
       lastActive: Date.now(),
-    }
+    })
   } catch (err) {
-    return { connected: false, error: err && err.message ? err.message : String(err) }
+    const message = err && err.message ? err.message : String(err)
+    const error = credentials.source === 'keychain' && /auth expired|401/i.test(message)
+      ? 'Antigravity login expired — open Antigravity or run agy, then refresh'
+      : message
+    return { connected: false, error }
   }
 }
 
@@ -404,13 +775,28 @@ module.exports = {
     claims,
     fallbackRepresentative,
     familyFor,
+    callLanguageServer,
+    discoverLanguageServers,
+    extractBundledOAuthClients,
+    loadBundledOAuthClients,
+    loadKeychainCredentials,
+    loopbackRequest,
     mergeVerifiedQuotas,
+    parseCommandFlag,
     parseCredentials,
+    parseKeychainCredentials,
+    parseLanguageServerProcesses,
+    parseListeningPorts,
     parseModelQuotas,
     parseQuotaBuckets,
+    parseQuotaSummary,
     planFromCodeAssist,
+    planFromLocalStatus,
     projectIDFromCodeAssist,
+    readLocalUsage,
+    refreshAccessToken,
     representative,
+    resolveCredentials,
     selectedWindows,
     shouldVerifyQuotas,
   },

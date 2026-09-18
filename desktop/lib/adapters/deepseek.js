@@ -2,6 +2,7 @@
 // granted (free) and topped-up (paid) buckets. We expose the total balance as
 // remaining money; configured monthly is the user's budget cap.
 const { getKey } = require('../secrets')
+const { fetchWithTimeout } = require('../http')
 
 const ENDPOINT = 'https://api.deepseek.com/user/balance'
 
@@ -9,7 +10,7 @@ async function read() {
   const key = getKey('deepseek')
   if (!key) return { connected: false }
   try {
-    const res = await fetch(ENDPOINT, {
+    const res = await fetchWithTimeout(ENDPOINT, {
       headers: { Authorization: `Bearer ${key}` },
     })
     if (res.status === 401 || res.status === 403) {

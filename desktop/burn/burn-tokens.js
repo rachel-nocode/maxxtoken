@@ -8,15 +8,15 @@
 // readable on paper. Overlay tokens hold the low-opacity accent washes (CSS
 // can't derive these).
 const BURN_DARK = {
-  bg: '#000000',
-  surface: '#0B0B0B',
-  surface2: '#131313',
-  border: '#1A1A1A',
-  borderHi: '#252525',
-  text: '#F5F5F5',
-  text2: '#9A9A9A',
-  text3: '#5A5A5A',
-  text4: '#2E2E2E',
+  bg: '#121212',
+  surface: '#181818',
+  surface2: '#222222',
+  border: '#2B2B2B',
+  borderHi: '#373737',
+  text: '#F3F3F1',
+  text2: '#A6A6A1',
+  text3: '#72726E',
+  text4: '#3A3A38',
   lime: '#B6FF3C',
   warn: '#FF6B5C',
   limeText: '#B6FF3C',
@@ -25,15 +25,16 @@ const BURN_DARK = {
   accentBtnBorder: 'rgba(182,255,60,0.40)',
   accentWashBg: 'rgba(182,255,60,0.05)',
   accentWashBorder: 'rgba(182,255,60,0.20)',
-  warnRowBg: 'rgba(255,107,92,0.05)',
+  warnRowBg: 'rgba(255,107,92,0.08)',
+  shadow: '0 12px 30px rgba(0,0,0,0.22)',
 }
 
 const BURN_LIGHT = {
-  bg: '#FAFAF5',
-  surface: '#F1EEE4',
-  surface2: '#EAE6DA',
-  border: '#CEC7B2',
-  borderHi: '#A69D88',
+  bg: '#F5F4F0',
+  surface: '#FCFBF8',
+  surface2: '#ECEAE4',
+  border: '#D8D4CA',
+  borderHi: '#C2BCAF',
   text: '#1A1815',
   text2: '#5A554B',
   text3: '#8E887C',
@@ -50,6 +51,7 @@ const BURN_LIGHT = {
   accentWashBg: 'rgba(85,127,15,0.07)',
   accentWashBorder: 'rgba(85,127,15,0.25)',
   warnRowBg: 'rgba(220,60,34,0.06)',
+  shadow: '0 10px 28px rgba(38,34,25,0.08)',
 }
 
 // Live palette read by-name across burn/*.js. Mutated in place by

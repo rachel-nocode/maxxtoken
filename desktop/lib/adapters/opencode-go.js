@@ -12,6 +12,7 @@ const COOKIE_HOSTS = ['opencode.ai']
 const BASE = 'https://opencode.ai'
 const SERVER_URL = `${BASE}/_server`
 const MODELS_URL = `${BASE}/zen/go/v1/models`
+const USAGE_URL = `${BASE}/zen/go/v1/usage`
 const WORKSPACES_ID = 'def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f'
 const COOKIE_NAMES = new Set(['auth', '__Host-auth'])
 const USER_AGENT =
@@ -64,9 +65,9 @@ function clampPct(value) {
   return Math.max(0, Math.min(100, n <= 1 && n >= 0 ? n * 100 : n))
 }
 
-function localDbCandidates(home = os.homedir(), env = process.env) {
+function localDbCandidates(home = os.homedir(), env = process.env, fsImpl = fs) {
   const xdg = env.XDG_DATA_HOME || path.join(home, '.local', 'share')
-  return [
+  const explicit = [
     env.OPENCODE_DB,
     env.OPENCODE_DB_PATH,
     env.XDG_DATA_HOME ? path.join(xdg, 'opencode', 'opencode.db') : null,
@@ -74,6 +75,18 @@ function localDbCandidates(home = os.homedir(), env = process.env) {
     path.join(home, '.config', 'opencode', 'opencode.db'),
     path.join(home, 'Library', 'Application Support', 'opencode', 'opencode.db'),
   ].filter(Boolean)
+  const directories = new Set(explicit.map((file) => path.dirname(file)))
+  const discovered = []
+  for (const directory of directories) {
+    try {
+      for (const name of fsImpl.readdirSync(directory)) {
+        if (/^opencode(?:-[^/]+)?\.db$/.test(name)) discovered.push(path.join(directory, name))
+      }
+    } catch {
+      /* missing data roots are normal */
+    }
+  }
+  return [...new Set([...explicit, ...discovered])]
 }
 
 function hasAllColumns(columns = [], names = []) {
@@ -241,6 +254,167 @@ function readLocalUsageFromDb(options = {}) {
   }
 }
 
+function sqlLiteral(value) {
+  return String(value).replace(/'/g, "''")
+}
+
+function openCodeHistorySQL(cutoffMs, providers) {
+  const providerList = providers.map((provider) => `'${sqlLiteral(provider)}'`).join(',')
+  return `SELECT id,
+    COALESCE(json_extract(data,'$.time.completed'), time_created) AS ts,
+    json_extract(data,'$.cost') AS cost,
+    COALESCE(json_extract(data,'$.tokens.total'),0) AS total,
+    COALESCE(json_extract(data,'$.tokens.input'),0) AS input,
+    COALESCE(json_extract(data,'$.tokens.cache.read'),0) AS cache_read,
+    COALESCE(json_extract(data,'$.tokens.cache.write'),0) AS cache_write,
+    COALESCE(json_extract(data,'$.tokens.output'),0) AS output,
+    COALESCE(json_extract(data,'$.tokens.reasoning'),0) AS reasoning,
+    json_extract(data,'$.modelID') AS model,
+    json_extract(data,'$.providerID') AS provider
+  FROM message
+  WHERE time_created >= ${cutoffMs - 7 * DAY}
+    AND json_valid(data)
+    AND json_extract(data,'$.role') = 'assistant'
+    AND json_extract(data,'$.providerID') IN (${providerList})
+    AND json_type(data,'$.cost') IN ('integer','real')`
+}
+
+function normalizedHistoryRow(row) {
+  const timestamp = parseTimestamp(row.ts)
+  const costUSD = num(row.cost)
+  const input = Math.min(Math.max(num(row.input) || 0, 0), 1e15)
+  const cached = Math.min(Math.max((num(row.cache_read) || 0) + (num(row.cache_write) || 0), 0), 1e15)
+  const output = Math.min(Math.max((num(row.output) || 0) + (num(row.reasoning) || 0), 0), 1e15)
+  const reported = Math.min(Math.max(num(row.total) || 0, 0), 1e15)
+  const total = input + cached + output || reported
+  const model = clean(row.model)
+  if (!timestamp || costUSD == null || costUSD < 0 || !model) return null
+  return {
+    id: clean(row.id),
+    timestamp,
+    costUSD,
+    input,
+    cached,
+    output,
+    total,
+    model,
+    provider: clean(row.provider),
+  }
+}
+
+function deduplicateHistoryRows(rows) {
+  const withoutID = []
+  const byID = new Map()
+  for (const row of rows) {
+    if (!row.id) {
+      withoutID.push(row)
+      continue
+    }
+    const previous = byID.get(row.id)
+    if (!previous || row.timestamp > previous.timestamp || (row.timestamp === previous.timestamp && row.total > previous.total)) {
+      byID.set(row.id, row)
+    }
+  }
+  return [...withoutID, ...byID.values()]
+}
+
+function aggregateHistoryRows(rows, source) {
+  if (!rows.length) return null
+  const totals = { input: 0, cached: 0, output: 0, total: 0, costUSD: 0, requests: 0 }
+  const byDay = new Map()
+  const byModel = new Map()
+  const add = (bucket, row) => {
+    bucket.input += row.input
+    bucket.cached += row.cached
+    bucket.output += row.output
+    bucket.total += row.total
+    bucket.costUSD += row.costUSD
+    bucket.requests += 1
+  }
+  for (const row of rows) {
+    add(totals, row)
+    const date = localDayKey(row.timestamp)
+    const day = byDay.get(date) || { date, input: 0, cached: 0, output: 0, total: 0, costUSD: 0, requests: 0 }
+    add(day, row)
+    byDay.set(date, day)
+    const model = byModel.get(row.model) || { model: row.model, input: 0, cached: 0, output: 0, total: 0, costUSD: 0, requests: 0 }
+    add(model, row)
+    byModel.set(row.model, model)
+  }
+  return {
+    ...totals,
+    events: totals.requests,
+    accountingEvents: rows.map((row) => ({
+      when: row.timestamp,
+      day: localDayKey(row.timestamp),
+      model: row.model,
+      serviceTier: 'standard',
+      isFast: false,
+      input: row.input,
+      cached: row.cached,
+      output: row.output,
+      total: row.total,
+      ...(row.costUSD > 0 ? { recordedCostUSD: row.costUSD } : {}),
+    })),
+    dailyBreakdown: [...byDay.values()].sort((a, b) => b.date.localeCompare(a.date)),
+    modelBreakdowns: [...byModel.values()].sort((a, b) => b.total - a.total),
+    historyDays: byDay.size,
+    source,
+    lastActive: Math.max(...rows.map((row) => row.timestamp)),
+  }
+}
+
+function localDayKey(ms) {
+  const date = new Date(ms)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function readHistoryRows(options = {}, providers = ['opencode-go', 'opencode']) {
+  const now = Number(options.now) || Date.now()
+  const days = Math.max(1, Number(options.tokenHistoryDays) || 30)
+  const cutoff = now - days * DAY
+  const execImpl = options.execFileSync || execFileSync
+  const fsImpl = options.fs || fs
+  const paths = options.databasePaths || localDbCandidates(options.home || os.homedir(), options.env || process.env, fsImpl)
+  const rows = []
+  for (const dbPath of paths) {
+    try {
+      if (!options.databasePaths && !fsImpl.existsSync(dbPath)) continue
+      const result = sqliteRows(dbPath, openCodeHistorySQL(cutoff, providers), execImpl)
+      if (!Array.isArray(result)) continue
+      for (const value of result) {
+        const row = normalizedHistoryRow(value)
+        if (row && row.timestamp >= cutoff && row.timestamp <= now) rows.push(row)
+      }
+    } catch {
+      /* release-channel databases are independent; keep readable history */
+    }
+  }
+  return deduplicateHistoryRows(rows)
+}
+
+function readHostedUsageHistory(options = {}) {
+  if (options.skipTokenHistory) return null
+  return aggregateHistoryRows(readHistoryRows(options), 'OpenCode Go/Zen databases')
+}
+
+function openAIAuthMode(options = {}) {
+  const env = options.env || process.env
+  const fsImpl = options.fs || fs
+  for (const file of authFileCandidates(options.home, env)) {
+    const auth = readJsonFile(file, fsImpl)
+    const openai = auth && auth.openai
+    if (openai && typeof openai === 'object') return clean(openai.type)?.toLowerCase() || null
+  }
+  return null
+}
+
+function readCodexOAuthHistory(options = {}) {
+  if (options.skipTokenHistory || openAIAuthMode(options) !== 'oauth') return null
+  const rows = readHistoryRows(options, ['openai']).filter((row) => row.costUSD === 0)
+  return aggregateHistoryRows(rows, 'OpenCode OpenAI OAuth')
+}
+
 function cookieHeader(raw) {
   const text = String(raw || '')
     .replace(/^Cookie:\s*/i, '')
@@ -269,6 +443,7 @@ function normalizeWorkspaceID(raw) {
 function authFileCandidates(home = os.homedir(), env = process.env) {
   return [
     env.OPENCODE_GO_AUTH_FILE || env.OPENCODE_AUTH_FILE || null,
+    env.OPENCODE_DATA_DIR ? path.join(env.OPENCODE_DATA_DIR, 'auth.json') : null,
     env.XDG_DATA_HOME ? path.join(env.XDG_DATA_HOME, 'opencode', 'auth.json') : null,
     path.join(home, '.local', 'share', 'opencode', 'auth.json'),
     path.join(home, 'Library', 'Application Support', 'opencode', 'auth.json'),
@@ -428,6 +603,56 @@ async function validateApiKey(apiKey, timeout = 10000) {
   } catch {
     return { modelCount: null }
   }
+}
+
+function officialUsageWindow(value, now = Date.now()) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const usedPct = clampPct(value.percent)
+  if (usedPct == null) return null
+  const resetAt = parseDate(value.resetsAt ?? value.resetAt, now)
+  return {
+    usedPct,
+    resetAt,
+    resetInSec: resetAt == null ? 0 : Math.max(0, Math.round((resetAt - now) / 1000)),
+  }
+}
+
+function parseOfficialUsage(value, now = Date.now()) {
+  const body = typeof value === 'string' ? JSON.parse(value) : value
+  const usage = body && body.usage
+  const rolling = officialUsageWindow(usage && usage.rolling, now)
+  const weekly = officialUsageWindow(usage && usage.weekly, now)
+  const monthly = officialUsageWindow(usage && usage.monthly, now)
+  if (!rolling || !weekly || !monthly) throw new Error('Missing OpenCode Go usage fields.')
+  return {
+    connected: true,
+    rolling,
+    weekly,
+    monthly,
+    lastActive: now,
+    usageSource: 'official API',
+  }
+}
+
+async function fetchOfficialUsage(apiKey, options = {}) {
+  const request = options.fetchWithTimeout || fetchWithTimeout
+  const res = await request(
+    USAGE_URL,
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'application/json',
+        'User-Agent': USER_AGENT,
+      },
+      redirect: 'manual',
+    },
+    options.timeout || 15000,
+  )
+  const text = await res.text()
+  if (res.status === 401) throw new Error('OpenCode Go key was rejected. Log into OpenCode Go again.')
+  if (res.status === 403) throw new Error('No OpenCode Go subscription on this key.')
+  if (!res.ok) throw new Error(`OpenCode Go usage HTTP ${res.status}`)
+  return parseOfficialUsage(text, options.now || Date.now())
 }
 
 function parseWorkspaceIDs(text) {
@@ -679,26 +904,40 @@ function resolveDashboardCredentials(options = {}) {
 }
 
 async function read(options = {}) {
-  const local = readLocalUsageFromDb(options)
-  if (local) return { ...local, apiKeySource: null }
-
   const apiKey = resolveApiKey(options)
-  const dashboard = resolveDashboardCredentials(options)
-  if (!dashboard?.cookie) {
-    if (apiKey?.key) {
-      try {
-        await validateApiKey(apiKey.key, options.timeout || 10000)
-      } catch (err) {
-        return { connected: false, needsKey: true, error: err && err.message ? err.message : String(err), apiKeySource: apiKey.source }
+  const local = readLocalUsageFromDb(options)
+  const tokenUsage = readHostedUsageHistory(options)
+  if (apiKey?.key) {
+    try {
+      return { ...(await fetchOfficialUsage(apiKey.key, options)), apiKeySource: apiKey.source, tokenUsage }
+    } catch (err) {
+      if (local) {
+        return {
+          ...local,
+          apiKeySource: apiKey.source,
+          tokenUsage,
+          usageWarning: err && err.message ? err.message : String(err),
+        }
       }
       return {
         connected: false,
         needsKey: false,
-        error: 'OpenCode Go usage needs a dashboard login, OPENCODE_GO_WORKSPACE_ID plus OPENCODE_GO_AUTH_COOKIE, or ~/.config/opencode-bar/opencode-go.json.',
+        error: err && err.message ? err.message : String(err),
         apiKeySource: apiKey.source,
+        usageSource: 'official API',
       }
     }
-    return { connected: false, needsKey: true }
+  }
+
+  if (local) return { ...local, apiKeySource: null, tokenUsage }
+
+  const dashboard = resolveDashboardCredentials(options)
+  if (!dashboard?.cookie) {
+    return {
+      connected: false,
+      needsKey: false,
+      error: 'Sign in to OpenCode Go with OpenCode, then refresh.',
+    }
   }
 
   try {
@@ -706,7 +945,7 @@ async function read(options = {}) {
     const usagePage = await fetchPageText(`${BASE}/workspace/${workspaceID}/go`, dashboard.cookie)
     const usage = parseSubscription(usagePage)
     const zenBalanceUSD = usage.zenBalanceUSD ?? parseZenBalance(await fetchPageText(`${BASE}/workspace/${workspaceID}`, dashboard.cookie, 5000))
-    return { ...usage, zenBalanceUSD, workspaceID, apiKeySource: apiKey?.source || null, usageSource: dashboard.source }
+    return { ...usage, zenBalanceUSD, workspaceID, apiKeySource: apiKey?.source || null, usageSource: dashboard.source, tokenUsage }
   } catch (err) {
     return { connected: false, needsKey: !apiKey?.key, error: err && err.message ? err.message : String(err), apiKeySource: apiKey?.source || null }
   }
@@ -717,6 +956,14 @@ module.exports = {
   _private: {
     localDbCandidates,
     readLocalUsageFromDb,
+    openCodeHistorySQL,
+    normalizedHistoryRow,
+    deduplicateHistoryRows,
+    aggregateHistoryRows,
+    localDayKey,
+    readHostedUsageHistory,
+    openAIAuthMode,
+    readCodexOAuthHistory,
     cookieHeader,
     resolveCookie,
     resolveApiKey,
@@ -727,6 +974,8 @@ module.exports = {
     normalizeWorkspaceID,
     parseWorkspaceIDs,
     parseSubscription,
+    parseOfficialUsage,
+    fetchOfficialUsage,
     parseRscUsageWindows,
     parseWindow,
     parseZenBalance,

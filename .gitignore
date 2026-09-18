@@ -26,6 +26,7 @@ dist-ssr
 # Build artifacts
 desktop/dist/
 desktop/node_modules/
+desktop/native/bin/
 *.dmg
 *.zip
 *.pkg
@@ -59,3 +60,9 @@ TOKEN_SAVING_REPOS.md
 
 # Beta unlock codes — plaintext, never commit
 token-coach-beta-codes.html
+
+.playwright-cli/
+
+# Local release validation artifacts
+desktop/dist-*/
+output/

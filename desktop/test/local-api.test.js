@@ -9,7 +9,7 @@ const SNAPSHOT = {
   totals: { spent: 42 },
   providers: [
     // Include PII-bearing fields that MUST NOT leak over the wire.
-    { id: 'claude', name: 'Claude', spentValue: 10, accountEmail: 'secret@example.com', extra: [{ label: 'Account', value: 'secret@example.com' }], links: { dashboard: 'x' } },
+    { id: 'claude', name: 'Claude', connected: true, lastUpdatedAt: 1700000000000, spentValue: 10, leftValue: 90, totalValue: 100, valueUnit: 'dollars', windows: [{ label: 'Weekly', kind: 'weekly', usedPct: 10 }], accountEmail: 'secret@example.com', extra: [{ label: 'Account', value: 'secret@example.com' }], links: { dashboard: 'x' } },
     { id: 'codex', name: 'ChatGPT', spentValue: 5 },
   ],
 }
@@ -98,6 +98,22 @@ test('HTTP API serves sanitized snapshot read-only over loopback', async () => {
   const provider = JSON.parse(one.body).provider
   assert.equal(provider.name, 'Claude')
   assert.equal(provider.accountEmail, undefined)
+
+  const limits = await get('/v1/limits')
+  assert.equal(limits.status, 200)
+  assert.equal(limits.headers['access-control-allow-origin'], undefined)
+  const contract = JSON.parse(limits.body)
+  assert.equal(contract.schemaVersion, '1.0')
+  assert.equal(contract.providers[0].resources[0].unit, 'percent')
+  assert.doesNotMatch(limits.body, /secret@example\.com/)
+
+  const providerLimits = await get('/v1/limits/claude')
+  assert.equal(providerLimits.status, 200)
+  assert.equal(JSON.parse(providerLimits.body).providers.length, 1)
+
+  const missingLimits = await get('/v1/limits/nope')
+  assert.equal(missingLimits.status, 404)
+  assert.equal(JSON.parse(missingLimits.body).error.code, 'unknown_provider')
 
   const missing = await get('/v1/usage/ollama')
   assert.equal(missing.status, 404)

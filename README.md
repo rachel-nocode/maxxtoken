@@ -1,78 +1,55 @@
 # MaxxToken
 
-> **The reverse usage tracker.** Most apps warn when you use *too much*. MaxxToken shows when you use *too little* — so you actually spend the AI subscriptions you already pay for.
+MaxxToken is a menu-bar and system-tray usage monitor for AI subscriptions and API accounts. It combines provider quota windows, resets, balances, local token history, and cost estimates so you can see what is available before it expires.
 
-<p align="center">
-  <img src=".github/media/hero.png" alt="MaxxToken menu-bar app showing Claude, ChatGPT, Cursor, Kimi, and Grok usage" width="320" />
-  &nbsp;&nbsp;
-  <img src=".github/media/optimize.png" alt="MaxxToken Optimize screen showing reclaimable spend" width="320" />
-</p>
+This repository is the public release channel. MaxxToken application source is private. Release assets and updater manifests live here; sanitized public guides are published in the [MaxxToken Homebrew tap](https://github.com/rachel-nocode/homebrew-maxxtoken/tree/main/docs).
 
-## What it is
+## Download
 
-MaxxToken lives in your menu bar and watches every AI plan you pay for — Claude, ChatGPT, Cursor, Copilot, Kimi, Gemini, Grok, OpenRouter, and more. Every five-hour window, every weekly cap, every monthly cycle.
+The current public release is [v0.2.13](https://github.com/rachel-nocode/maxxtoken/releases/tag/v0.2.13):
 
-At a glance it shows:
+- Apple Silicon and Intel Mac: universal signed/notarized DMG, plus the ZIP used by auto-update.
+- Windows x64: NSIS installer. The current Windows beta is unsigned, so Windows may show a SmartScreen warning.
 
-- **How much of your subscription you've actually used** — and how much you're about to waste at reset.
-- **Whether you're on pace, ahead, or behind**, encoded right into the progress bar.
-- **Where you'll land at reset** at your current burn rate, with a flag when you're set to run out.
-- **Optimize** — spots where you pay twice for the same text and how much room you can reclaim.
+[Download the latest public release](https://github.com/rachel-nocode/maxxtoken/releases/latest). Existing installations update through `Settings → Check for updates`.
 
-If you don't burn it, you lose it. MaxxToken makes that loss visible.
-
-## Goal
-
-Save users tokens and help them get the most out of the AI subscriptions they already pay for.
-
-## Availability
-
-**Mac and Windows.** Download the latest signed build:
-
-[**→ Get MaxxToken**](https://github.com/rachel-nocode/maxxtoken/releases/latest)
-
-Drag into Applications and launch. Auto-updates ship through releases — `Settings → Check for updates`.
-
-## Terminal
-
-The same bars, in your terminal — a btop-style dashboard invoked with `maxxtoken`:
-
-```
- █▀▄▀█ ▄▀█ ▀▄▀ ▀▄▀ ▀█▀ █▀█ █▄▀ █▀▀ █▄░█
- █░▀░█ █▀█ █░█ █░█ ░█░ █▄█ █░█ ██▄ █░▀█
- Sep cycle · 18d left                                  sync 4s ago  ·  via app
-╭─ TOTAL ────────────────────────────────────── Solid. Push harder on Claude. ─╮
-│ ███████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  41% USED │
-│ SPENT $187   LEFT $273   4 plans                                             │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ ● Claude Max 20x ───────────────────────────────────────── Anthropic OAuth ─╮
-│ 63% USED  $126 spent · $74.00 left                                 ⚡ 01h 23m │
-│ SESSION 5H ██████████████████████████████████▌░░░░░░░   82%  resets 01h 23m  │
-│ WEEKLY 7D  ██████████████████▌░░░░░░░░░░░░░░░░░░░░░░░   44%  resets 3d 04h   │
-╰──────────────────────────────────────────────────────────────────────────────╯
- q quit  ·  r refresh  ·  u show left  ·  j/k scroll
-```
+Mac users can also install the current stable build through the maintained Homebrew tap:
 
 ```bash
-cd desktop && npm link   # once — installs the `maxxtoken` command
-maxxtoken                # live dashboard (q quits)
-maxxtoken --once         # print one frame and exit (also what pipes get)
-maxxtoken --json         # raw snapshot for scripts
-maxxtoken --ascii --no-color
+brew install --cask rachel-nocode/maxxtoken/maxxtoken
 ```
 
-Data comes from the running menubar app's loopback API when it's open (so keyed providers work), otherwise the CLI reads Claude / Codex / Kimi / Gemini / Cursor directly from their local sign-ins, and falls back to the last cached snapshot. `u` flips between % used and % left, matching the app's "Usage bars" setting.
+If Homebrew 7 asks for trust, run `brew trust --cask rachel-nocode/maxxtoken/maxxtoken`, then retry installation. The universal cask supports Apple Silicon and Intel and preserves the same signed/notarized app used by the DMG. Upgrade with `brew upgrade --cask --greedy rachel-nocode/maxxtoken/maxxtoken` and remove it with `brew uninstall --cask rachel-nocode/maxxtoken/maxxtoken`.
 
-## Privacy
+## Documentation
 
-- **Local-first.** Reads usage from your local CLI logs — no telemetry, no third party.
-- **Credentials live in the OS keychain.** Never written to disk in plaintext.
-- **Signed + notarized for Mac Silicon. Windows un-signed during Beta**
+- [Product and setup guide](https://github.com/rachel-nocode/homebrew-maxxtoken/blob/main/docs/product-guide.md)
+- [Provider support and limitations](https://github.com/rachel-nocode/homebrew-maxxtoken/blob/main/docs/providers.md)
+- [CLI and local API](https://github.com/rachel-nocode/homebrew-maxxtoken/blob/main/docs/integrations.md)
+- [Troubleshooting](https://github.com/rachel-nocode/homebrew-maxxtoken/blob/main/docs/troubleshooting.md)
+- [Provider contribution protocol](https://github.com/rachel-nocode/homebrew-maxxtoken/blob/main/docs/provider-contributions.md)
 
-## License
+## What MaxxToken reports
 
-MIT.
+The following features are included in v0.2.13; availability of provider-specific data depends on the account and its connected client.
 
-## Built by
+- Provider-supplied session, weekly, monthly, credit, and balance metrics where the provider exposes them.
+- Per-window reset times, freshness, provider errors, status links, and manual refresh.
+- Estimated remaining usage at reset for eligible quota windows, labeled as an estimate at the current pace.
+- Measured local token history and model breakdowns where a supported local client records them.
+- Estimated API-equivalent cost with explicit pricing coverage; unknown model prices remain unknown.
+- Configurable provider/metric order, used or left display mode, menu-bar pins, alerts, reports, Optimize, and Token Coach.
 
-[Rachel noCode](https://rachelnocode.com) ([@rachelnocode](https://x.com/rachelnocode))
+Subscription price is not an account cash balance. Dollar values derived from a subscription price are labeled estimates; real balances and provider-reported spend retain their source.
+
+## Privacy and credentials
+
+Usage is processed locally. MaxxToken reads local client state and contacts enabled providers to retrieve usage; optional provider-status checks, pricing updates, auto-update, proxy routing, and iCloud history sync make the network requests described in the product guide. Raw prompts and transcripts are not sent to MaxxToken.
+
+Credentials entered in the app are encrypted with Electron `safeStorage`, backed by the signed-in operating-system account. The loopback API removes account identity and secret-adjacent fields, binds to `127.0.0.1`, rejects non-loopback Host headers, and does not enable browser CORS.
+
+## Support
+
+Use the [troubleshooting guide](https://github.com/rachel-nocode/homebrew-maxxtoken/blob/main/docs/troubleshooting.md) first. When reporting a provider problem, include the provider name, MaxxToken version, operating system, the on-screen error, and redacted diagnostics. Never attach cookies, keys, authorization headers, credential files, or raw provider responses.
+
+Built by [Rachel noCode](https://rachelnocode.com).

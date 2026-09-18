@@ -2,10 +2,13 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
-const { readClaudeCredentials, persistClaudeCredentials } = require('../auth')
+const { readClaudeCredentialCandidates, persistClaudeCredentials } = require('../auth')
+const { loadDesktopCredential } = require('../claude-desktop-auth')
+const { PersistentEventCache, cacheIdentity } = require('../event-cache')
 const { fetchWithTimeout } = require('../http')
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+const PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile'
 const REFRESH_URL = 'https://platform.claude.com/v1/oauth/token'
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 const SCOPES =
@@ -16,9 +19,13 @@ const DEFAULT_TOKEN_HISTORY_DAYS = 30
 const DAY_MS = 24 * 60 * 60 * 1000
 const REQUEST_TIMEOUT_MS = 30000
 
-let cachedUsage = null
-let cachedUsageAt = 0
-let rateLimitedUntil = 0
+const liveStateByAccount = new Map()
+
+function accountLiveState(account) {
+  const key = account?.identityStamp || account?.id || 'unscoped'
+  if (!liveStateByAccount.has(key)) liveStateByAccount.set(key, { cachedUsage: null, cachedUsageAt: 0, rateLimitedUntil: 0, tokenFingerprint: null, profile: null })
+  return liveStateByAccount.get(key)
+}
 
 function toMs(resetsAt) {
   if (!resetsAt) return null
@@ -66,6 +73,32 @@ async function fetchUsage(token) {
       'User-Agent': 'claude-code/2.1.69',
     },
   }, REQUEST_TIMEOUT_MS)
+}
+
+async function fetchProfile(token) {
+  return fetchWithTimeout(PROFILE_URL, {
+    headers: {
+      Authorization: 'Bearer ' + token.trim(),
+      Accept: 'application/json',
+      'anthropic-beta': 'oauth-2025-04-20',
+    },
+  }, REQUEST_TIMEOUT_MS)
+}
+
+function profileIdentity(profile) {
+  const accountId = cleanText(profile?.account?.uuid)?.toLowerCase()
+  const organizationId = cleanText(profile?.organization?.uuid)?.toLowerCase()
+  if (!accountId) return null
+  return organizationId ? `${accountId}|${organizationId}` : accountId
+}
+
+function livePlanLabel(profile, oauth) {
+  const organization = profile?.organization || {}
+  const tier = cleanText(organization.rate_limit_tier)
+  const type = cleanText(organization.organization_type)
+  const multiplier = tier?.match(/(\d+)x/i)?.[1]
+  const base = type ? type.charAt(0).toUpperCase() + type.slice(1) : planLabel(oauth)
+  return multiplier && !String(base).includes(`${multiplier}x`) ? `${base} ${multiplier}x` : base
 }
 
 function retryAfterMs(headers) {
@@ -216,11 +249,11 @@ function resultFromUsage(plan, data, cached = false, options = {}) {
   if (cached) extra.push({ label: 'Status', value: 'cached live usage' })
   // Heavy: the token-history disk scan only runs on heavy (hourly) pulls. Light
   // pulls return null and the aggregator carries forward the last scanned data.
-  const tokenUsage = options.skipTokenHistory ? null : scanClaudeTokenUsage(null, Date.now(), options.tokenHistoryDays)
+  const tokenUsage = options.skipTokenHistory ? null : scanClaudeTokenUsage(null, Date.now(), options.tokenHistoryDays, options)
   if (tokenUsage?.historyTotal) {
     extra.push({ label: tokenHistoryLabel(tokenUsage.historyDays), value: formatInteger(tokenUsage.historyTotal) })
   }
-  return { connected: true, plan, windows, extra, extraUsage, tokenUsage, lastActive: cached ? cachedUsageAt : Date.now() }
+  return { connected: true, plan, windows, extra, extraUsage, tokenUsage, lastActive: cached ? options.cachedUsageAt : Date.now() }
 }
 
 function formatInteger(value) {
@@ -260,6 +293,78 @@ function claudeProjectsRoots(env = process.env, home = os.homedir()) {
   ]
 }
 
+function coworkProjectsRoots(home = os.homedir(), account = null) {
+  const base = path.join(home, 'Library', 'Application Support', 'Claude', 'local-agent-mode-sessions')
+  const roots = []
+  function dirs(folder) {
+    try {
+      return fs.readdirSync(folder, { withFileTypes: true }).filter((item) => item.isDirectory()).map((item) => path.join(folder, item.name))
+    } catch {
+      return []
+    }
+  }
+  for (const accountDir of dirs(base)) {
+    if (account?.accountId && path.basename(accountDir).toLowerCase() !== account.accountId.toLowerCase()) continue
+    for (const orgDir of dirs(accountDir)) {
+      if (account?.organizationId && path.basename(orgDir).toLowerCase() !== account.organizationId.toLowerCase()) continue
+      const holders = dirs(orgDir)
+      for (const holder of holders) {
+        const candidates = path.basename(holder) === 'agent' ? dirs(holder) : [holder]
+        for (const candidate of candidates) roots.push(path.join(candidate, '.claude', 'projects'))
+      }
+    }
+  }
+  return roots
+}
+
+function piSessionRoot(env = process.env, home = os.homedir()) {
+  return path.resolve(String(env.PI_CODING_AGENT_SESSION_DIR || path.join(home, '.pi', 'agent', 'sessions')))
+}
+
+function piLogFiles(root = piSessionRoot(), sinceMs = Date.now() - DEFAULT_TOKEN_HISTORY_DAYS * DAY_MS) {
+  return claudeLogFiles([root], sinceMs)
+}
+
+function parsePiClaudeUsageFromText(text, file = '') {
+  const rows = []
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (!line.includes('"usage"')) continue
+    let row
+    try { row = JSON.parse(line) } catch { continue }
+    const message = row?.message
+    const usage = message?.usage
+    if (row?.type !== 'message' || message?.role !== 'assistant' || !usage) continue
+    if (!['anthropic', 'claude-agent-sdk'].includes(String(message.provider || '').toLowerCase())) continue
+    const when = tokenTimestamp(row.timestamp)
+    if (!when) continue
+    const cacheCreate = Math.max(0, Number(usage.cacheWrite) || 0)
+    const cached = Math.max(0, Number(usage.cacheRead) || 0)
+    const input = Math.max(0, Number(usage.input) || 0) + cacheCreate
+    const output = Math.max(0, Number(usage.output) || 0)
+    const total = Math.max(0, Number(usage.totalTokens) || input + cached + output)
+    if (!total) continue
+    rows.push({
+      file,
+      when,
+      day: localDayKey(when),
+      model: cleanText(message.model) || 'unknown',
+      input,
+      uncachedInput: Math.max(0, Number(usage.input) || 0),
+      cacheCreation: cacheCreate,
+      cacheRead: cached,
+      cached,
+      output,
+      total,
+      messageId: cleanText(row.id),
+      requestId: 'pi',
+      recordedCostUSD: Number(usage?.cost?.total) > 0 ? Number(usage.cost.total) : null,
+      pathRole: 'pi',
+      isSidechain: false,
+    })
+  }
+  return rows
+}
+
 function tokenHistoryDays(value) {
   const days = Math.round(Number(value) || DEFAULT_TOKEN_HISTORY_DAYS)
   return Math.max(1, Math.min(365, days))
@@ -271,23 +376,38 @@ function tokenHistoryLabel(days) {
 
 function claudeLogFiles(roots = claudeProjectsRoots(), sinceMs = Date.now() - DEFAULT_TOKEN_HISTORY_DAYS * DAY_MS) {
   const files = []
+  const visited = new Set()
   function walk(dir) {
+    let canonical
+    try { canonical = fs.realpathSync(dir) } catch { return }
+    if (visited.has(canonical)) return
+    visited.add(canonical)
     let entries
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true })
+      entries = fs.readdirSync(canonical, { withFileTypes: true })
     } catch {
       return
     }
     for (const entry of entries) {
-      const full = path.join(dir, entry.name)
+      const full = path.join(canonical, entry.name)
       if (entry.isDirectory()) {
         walk(full)
         continue
       }
-      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue
+      if (entry.isSymbolicLink()) {
+        let followed
+        try { followed = fs.statSync(full) } catch { continue }
+        if (followed.isDirectory()) {
+          walk(full)
+          continue
+        }
+        if (!followed.isFile()) continue
+      } else if (!entry.isFile()) continue
+      if (!entry.name.endsWith('.jsonl')) continue
       try {
-        const stat = fs.statSync(full)
-        if (!sinceMs || stat.mtimeMs >= sinceMs) files.push(full)
+        const resolved = fs.realpathSync(full)
+        const stat = fs.statSync(resolved)
+        if (!sinceMs || stat.mtimeMs >= sinceMs) files.push(resolved)
       } catch {
         /* ignore unreadable files */
       }
@@ -344,8 +464,7 @@ function isVertexEntry(row) {
   })
 }
 
-function usageFromRow(row) {
-  const usage = row?.message?.usage
+function usageFromUsage(usage) {
   if (!usage || typeof usage !== 'object') return null
   const input = Math.max(0, Number(usage.input_tokens) || 0)
   const cacheCreate = Math.max(0, Number(usage.cache_creation_input_tokens) || 0)
@@ -360,7 +479,13 @@ function usageFromRow(row) {
     cached: Math.floor(cacheRead),
     output: Math.floor(output),
     total: Math.floor(input + cacheCreate + cacheRead + output),
+    speed: typeof usage.speed === 'string' ? usage.speed : null,
+    isFast: usage.speed === 'fast',
   }
+}
+
+function usageFromRow(row) {
+  return usageFromUsage(row?.message?.usage)
 }
 
 function parseClaudeTokenUsageFromText(text, file = '') {
@@ -396,11 +521,83 @@ function parseClaudeTokenUsageFromText(text, file = '') {
     const requestId = cleanText(row.requestId)
     normalized.messageId = messageId
     normalized.requestId = requestId
+    const recordedCost = Number(row.costUSD)
+    if (row.costUSD != null && Number.isFinite(recordedCost) && recordedCost >= 0) normalized.recordedCostUSD = recordedCost
     if (messageId && requestId) keyed.set(`${messageId}:${requestId}`, normalized)
     else unkeyed.push(normalized)
+
+    const iterations = Array.isArray(message.usage?.iterations) ? message.usage.iterations : []
+    let advisorIndex = 0
+    for (const iteration of iterations) {
+      if (iteration?.type !== 'advisor_message') continue
+      const advisorModel = cleanText(iteration.model)
+      const advisorUsage = usageFromUsage(iteration)
+      if (!advisorModel || !advisorUsage) continue
+      const advisor = {
+        ...advisorUsage,
+        file,
+        when,
+        day: localDayKey(when),
+        model: advisorModel,
+        sessionId: cleanText(row.sessionId),
+        isSidechain: Boolean(row.isSidechain),
+        pathRole: normalized.pathRole,
+        messageId: messageId ? `${messageId}:advisor:${advisorIndex}` : null,
+        requestId,
+      }
+      advisorIndex++
+      if (advisor.messageId && requestId) keyed.set(`${advisor.messageId}:${requestId}`, advisor)
+      else unkeyed.push(advisor)
+    }
   }
 
   return [...keyed.values(), ...unkeyed]
+}
+
+function claudeSessionIdentityFromText(text) {
+  let organizationId = null
+  let accountId = null
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (!line.includes('"ownerOrganizationUuid"')) continue
+    let row
+    try { row = JSON.parse(line) } catch { continue }
+    const org = cleanText(row.ownerOrganizationUuid)?.toLowerCase()
+    const account = cleanText(row.ownerAccountUuid)?.toLowerCase()
+    if (!org) continue
+    if ((organizationId && organizationId !== org) || (accountId && account && accountId !== account)) return { conflicted: true }
+    organizationId = org
+    if (account) accountId = account
+  }
+  return organizationId ? { organizationId, accountId, conflicted: false } : null
+}
+
+function owningClaudeSessionFile(file) {
+  const parts = path.resolve(file).split(path.sep)
+  const subagents = parts.lastIndexOf('subagents')
+  if (subagents < 1) return file
+  const sessionDirectory = parts.slice(0, subagents).join(path.sep) || path.sep
+  return `${sessionDirectory}.jsonl`
+}
+
+function claudeFileOwnedByAccount(file, text, account, options = {}) {
+  if (!account?.organizationId) return account?.allowsUnattributedHistory !== false
+  const coworkBase = path.join(options.home || os.homedir(), 'Library', 'Application Support', 'Claude', 'local-agent-mode-sessions') + path.sep
+  const canonical = path.resolve(file)
+  if (canonical.startsWith(coworkBase)) {
+    const relative = canonical.slice(coworkBase.length).split(path.sep)
+    return relative[0]?.toLowerCase() === String(account.accountId || '').toLowerCase()
+      && relative[1]?.toLowerCase() === String(account.organizationId).toLowerCase()
+  }
+  const ownerFile = owningClaudeSessionFile(file)
+  let ownerText = text
+  if (ownerFile !== file) {
+    try { ownerText = fs.readFileSync(ownerFile, 'utf8') } catch { return false }
+  }
+  const identity = claudeSessionIdentityFromText(ownerText)
+  if (!identity) return account.allowsUnattributedHistory === true
+  if (identity.conflicted) return false
+  return identity.organizationId === String(account.organizationId).toLowerCase()
+    && (!identity.accountId || identity.accountId === String(account.accountId || '').toLowerCase())
 }
 
 function claudeRowKey(row) {
@@ -410,6 +607,8 @@ function claudeRowKey(row) {
 function claudeRowWins(current, candidate) {
   if (!current) return true
   if (current.isSidechain !== candidate.isSidechain) return !candidate.isSidechain
+  if (current.total !== candidate.total) return candidate.total > current.total
+  if (Boolean(current.speed) !== Boolean(candidate.speed)) return Boolean(candidate.speed)
   if (current.pathRole !== candidate.pathRole) return candidate.pathRole === 'parent'
   return String(candidate.file || '') < String(current.file || '')
 }
@@ -453,6 +652,16 @@ function addRowToBucket(bucket, row) {
   bucket.output += row.output
   bucket.total += row.total
   bucket.requests += 1
+  if (row.recordedCostUSD != null && Number.isFinite(Number(row.recordedCostUSD))) {
+    bucket.recordedCostUSD = (bucket.recordedCostUSD ?? 0) + Number(row.recordedCostUSD)
+    bucket.recordedInput = (bucket.recordedInput ?? 0) + row.input
+    bucket.recordedUncachedInput = (bucket.recordedUncachedInput ?? 0) + (row.uncachedInput || 0)
+    bucket.recordedCacheCreation = (bucket.recordedCacheCreation ?? 0) + (row.cacheCreation || 0)
+    bucket.recordedCacheRead = (bucket.recordedCacheRead ?? 0) + (row.cacheRead || row.cached || 0)
+    bucket.recordedCached = (bucket.recordedCached ?? 0) + row.cached
+    bucket.recordedOutput = (bucket.recordedOutput ?? 0) + row.output
+    bucket.recordedTotal = (bucket.recordedTotal ?? 0) + row.total
+  }
   return bucket
 }
 
@@ -460,25 +669,55 @@ function sortedModelBreakdowns(models) {
   return [...models.values()].sort((a, b) => b.total - a.total || a.model.localeCompare(b.model))
 }
 
-function scanClaudeTokenUsage(files = null, now = Date.now(), historyDaysValue = DEFAULT_TOKEN_HISTORY_DAYS) {
+function scanClaudeTokenUsage(files = null, now = Date.now(), historyDaysValue = DEFAULT_TOKEN_HISTORY_DAYS, options = {}) {
   const historyDays = tokenHistoryDays(historyDaysValue)
   const sinceMs = now - historyDays * DAY_MS
-  const scanFiles = files || claudeLogFiles(claudeProjectsRoots(), sinceMs)
+  const account = options.account || null
+  let roots
+  if (account?.authHome) roots = [path.join(account.authHome, 'projects')]
+  else roots = claudeProjectsRoots(options.env || process.env, options.home || os.homedir())
+  roots.push(...coworkProjectsRoots(options.home || os.homedir(), account))
+  const scanFiles = files || claudeLogFiles(roots, sinceMs)
   const todayKey = localDayKey(now)
   const keyed = new Map()
   const unkeyed = []
   const models = new Map()
   const days = new Map()
   let lastActive = 0
+  const cacheOptions = {
+    schemaVersion: 2,
+    root: options.eventCacheRoot,
+    ttlMs: options.eventCacheTTL,
+    identity: cacheIdentity('claude', account, historyDays),
+  }
+  const eventCache = options.disableEventCache ? null : new PersistentEventCache({ namespace: 'claude', ...cacheOptions })
 
   for (const file of scanFiles) {
-    let text
+    let parsed
     try {
-      text = fs.readFileSync(file, 'utf8')
+      const ownerFile = owningClaudeSessionFile(file)
+      let contextKey = ''
+      if (ownerFile !== file) {
+        try {
+          const ownerStat = fs.statSync(ownerFile)
+          contextKey = `${ownerFile}:${ownerStat.dev}:${ownerStat.ino}:${ownerStat.size}:${ownerStat.mtimeMs}`
+        } catch {
+          contextKey = `${ownerFile}:missing`
+        }
+      }
+      parsed = eventCache
+        ? eventCache.get(file, (text, sourceFile) => claudeFileOwnedByAccount(sourceFile, text, account, options)
+          ? parseClaudeTokenUsageFromText(text, sourceFile)
+          : [], { contextKey })
+        : (() => {
+            const text = fs.readFileSync(file, 'utf8')
+            return claudeFileOwnedByAccount(file, text, account, options) ? parseClaudeTokenUsageFromText(text, file) : []
+          })()
     } catch {
       continue
     }
-    for (const row of parseClaudeTokenUsageFromText(text, file)) {
+    for (const cachedRow of parsed) {
+      const row = { ...cachedRow, file }
       if (row.when < sinceMs) continue
       const key = claudeRowKey(row)
       if (key) {
@@ -489,8 +728,46 @@ function scanClaudeTokenUsage(files = null, now = Date.now(), historyDaysValue =
       }
     }
   }
+  eventCache?.finish(scanFiles)
 
-  const rows = [...keyed.keys()].sort().map((key) => keyed.get(key)).filter(Boolean).concat(unkeyed)
+  if (!files && (!account || account.allowsUnattributedHistory)) {
+    const piFiles = piLogFiles(piSessionRoot(options.env || process.env, options.home || os.homedir()), sinceMs)
+    const piCache = options.disableEventCache ? null : new PersistentEventCache({
+      namespace: 'claude-pi',
+      ...cacheOptions,
+      identity: cacheIdentity('claude-pi', account, historyDays),
+    })
+    for (const file of piFiles) {
+      let parsed
+      try {
+        parsed = piCache
+          ? piCache.get(file, parsePiClaudeUsageFromText)
+          : parsePiClaudeUsageFromText(fs.readFileSync(file, 'utf8'), file)
+      } catch { continue }
+      for (const cachedRow of parsed) {
+        const row = { ...cachedRow, file }
+        const key = claudeRowKey(row)
+        if (key) {
+          const current = keyed.get(key)
+          if (claudeRowWins(current, row)) keyed.set(key, row)
+        } else unkeyed.push(row)
+      }
+    }
+    piCache?.finish(piFiles)
+  }
+
+  const candidates = [...keyed.keys()].sort().map((key) => keyed.get(key)).filter(Boolean).concat(unkeyed)
+  const byMessage = new Map()
+  const withoutMessage = []
+  for (const row of candidates) {
+    if (!row.messageId) {
+      withoutMessage.push(row)
+      continue
+    }
+    const current = byMessage.get(row.messageId)
+    if (claudeRowWins(current, row)) byMessage.set(row.messageId, row)
+  }
+  const rows = [...byMessage.values(), ...withoutMessage]
   if (!rows.length) return null
   for (const row of rows) {
     if (row.when > lastActive) lastActive = row.when
@@ -529,18 +806,50 @@ function scanClaudeTokenUsage(files = null, now = Date.now(), historyDaysValue =
       .sort((a, b) => b.date.localeCompare(a.date)),
     modelBreakdowns: sortedModelBreakdowns(models),
     modelNames: sortedModelBreakdowns(models).map((model) => model.model),
+    accountingEvents: rows.map((row) => ({
+      when: row.when,
+      day: row.day,
+      model: row.model,
+      input: row.input,
+      uncachedInput: row.uncachedInput,
+      cacheCreation: row.cacheCreation,
+      cacheRead: row.cacheRead,
+      cached: row.cached,
+      output: row.output,
+      total: row.total,
+      ...(row.speed ? { speed: row.speed, isFast: row.isFast } : {}),
+      ...(row.recordedCostUSD != null ? { recordedCostUSD: row.recordedCostUSD } : {}),
+    })),
     source: 'local Claude logs',
     lastActive,
   }
 }
 
 async function read(options = {}) {
-  const creds = readClaudeCredentials()
-  if (!creds) return { connected: false }
-  const oauth = creds.data.claudeAiOauth
-  const plan = planLabel(oauth)
+  const account = options.account || null
+  const state = accountLiveState(account)
+  const credentials = readClaudeCredentialCandidates({
+    authHome: account?.authHome,
+    isDefault: account?.isDefault,
+    env: options.env,
+  })
+  if (account?.sourceKinds?.includes('claudeDesktop')) {
+    const desktop = loadDesktopCredential({ accountId: account.accountId, organizationId: account.organizationId, home: options.home })
+    if (desktop) credentials.unshift(desktop)
+  }
+  const localTokenUsage = options.skipTokenHistory ? null : scanClaudeTokenUsage(null, Date.now(), options.tokenHistoryDays, options)
+  if (!credentials.length) {
+    return localTokenUsage
+      ? { connected: true, plan: null, windows: [], extra: [{ label: 'Status', value: 'local spend only' }], tokenUsage: localTokenUsage, lastActive: localTokenUsage.lastActive }
+      : { connected: false }
+  }
 
-  try {
+  let lastError = null
+  for (const creds of credentials) {
+    const oauth = creds.data.claudeAiOauth
+    let plan = planLabel(oauth)
+
+    try {
     let token = oauth.accessToken
     if (!token) throw 'Not logged in. Run `claude` to authenticate.'
     if (oauth.expiresAt && oauth.expiresAt - Date.now() < REFRESH_BUFFER_MS) {
@@ -548,8 +857,39 @@ async function read(options = {}) {
       if (t) token = t
     }
 
-    if (Date.now() < rateLimitedUntil && cachedUsage) {
-      return resultFromUsage(plan, cachedUsage, true, options)
+    const fingerprint = require('crypto').createHash('sha256').update(String(token)).digest('hex')
+    if (state.tokenFingerprint && state.tokenFingerprint !== fingerprint) {
+      state.cachedUsage = null
+      state.cachedUsageAt = 0
+      state.rateLimitedUntil = 0
+      state.profile = null
+    }
+    state.tokenFingerprint = fingerprint
+
+    let verifiedProfile = null
+    if (account?.identityKey) {
+      verifiedProfile = state.profile
+      if (!verifiedProfile) {
+        const profileResp = await fetchProfile(token)
+        if (!profileResp.ok) throw new Error(profileResp.status === 401 || profileResp.status === 403
+          ? 'Claude credential rejected for this account.'
+          : `Claude account verification failed (${profileResp.status}).`)
+        verifiedProfile = await profileResp.json()
+      }
+      const actualIdentity = profileIdentity(verifiedProfile)
+      const expectedIdentity = String(account.identityKey).toLowerCase()
+      const identityMatches = expectedIdentity.includes('|')
+        ? actualIdentity === expectedIdentity
+        : actualIdentity?.split('|')[0] === expectedIdentity
+      if (!identityMatches) {
+        throw new Error('Claude credential belongs to a different account.')
+      }
+      state.profile = verifiedProfile
+      plan = livePlanLabel(verifiedProfile, oauth)
+    }
+
+    if (Date.now() < state.rateLimitedUntil && state.cachedUsage) {
+      return resultFromUsage(plan, state.cachedUsage, true, { ...options, cachedUsageAt: state.cachedUsageAt })
     }
 
     let resp = await fetchUsage(token)
@@ -558,8 +898,8 @@ async function read(options = {}) {
       if (t) resp = await fetchUsage(t)
     }
     if (resp.status === 429) {
-      rateLimitedUntil = Date.now() + retryAfterMs(resp.headers)
-      if (cachedUsage) return resultFromUsage(plan, cachedUsage, true, options)
+      state.rateLimitedUntil = Date.now() + retryAfterMs(resp.headers)
+      if (state.cachedUsage) return resultFromUsage(plan, state.cachedUsage, true, { ...options, cachedUsageAt: state.cachedUsageAt })
       return { connected: true, plan, windows: [], error: 'Rate limited — try again soon.' }
     }
     if (!resp.ok) {
@@ -567,14 +907,17 @@ async function read(options = {}) {
     }
 
     const data = await resp.json()
-    cachedUsage = data
-    cachedUsageAt = Date.now()
-    rateLimitedUntil = 0
+    state.cachedUsage = data
+    state.cachedUsageAt = Date.now()
+    state.rateLimitedUntil = 0
     return resultFromUsage(plan, data, false, options)
   } catch (e) {
-    if (cachedUsage) return resultFromUsage(plan, cachedUsage, true, options)
-    return { connected: true, plan, windows: [], error: typeof e === 'string' ? e : 'Usage fetch failed.' }
+      lastError = e
+    }
   }
+  if (state.cachedUsage) return resultFromUsage(null, state.cachedUsage, true, { ...options, cachedUsageAt: state.cachedUsageAt })
+  if (localTokenUsage) return { connected: true, plan: null, windows: [], tokenUsage: localTokenUsage, lastActive: localTokenUsage.lastActive, error: lastError?.message || 'Live usage unavailable.' }
+  return { connected: true, plan: null, windows: [], error: lastError?.message || 'Usage fetch failed.' }
 }
 
 module.exports = {
@@ -582,8 +925,14 @@ module.exports = {
   _private: {
     claudeLogFiles,
     claudeProjectsRoots,
+    coworkProjectsRoots,
+    parsePiClaudeUsageFromText,
+    profileIdentity,
+    livePlanLabel,
     isVertexEntry,
     parseClaudeTokenUsageFromText,
+    claudeSessionIdentityFromText,
+    claudeFileOwnedByAccount,
     scanClaudeTokenUsage,
     tokenHistoryDays,
     tokenHistoryLabel,

@@ -8,6 +8,9 @@ const { execFileSync } = require('child_process')
 const BASE = 'https://cursor.com'
 const DASHBOARD_BASE = 'https://api2.cursor.sh'
 const DASHBOARD_TIMEOUT_MS = 5000
+const GROK_BOT_METHOD = 'GetSandUsageStatus'
+const CREDITS_METHOD = 'GetCreditGrantsBalance'
+const EXPORT_PATH = '/api/dashboard/export-usage-events-csv'
 const SESSION_COOKIE_NAMES = new Set([
   'WorkosCursorSessionToken',
   '__Secure-next-auth.session-token',
@@ -318,6 +321,256 @@ function parseDashboardUsage(currentPeriod = {}, planInfoResponse = {}, user = {
   }
 }
 
+function parseGrokBotUsage(value) {
+  if (!value || typeof value !== 'object') return null
+  if (value.usesPooledEnterpriseAllowance === true || value.hasNonZeroIncludedLimit === false || value.includedLimitZero === true) return null
+  const usedPct = percent(value.usagePercent)
+  if (usedPct == null) return null
+  return {
+    label: 'Grok Bot',
+    usedPct,
+    resetAt: parseDate(value.nextResetTimestampUtc),
+  }
+}
+
+function parseCreditBalance(grants, stripe) {
+  const hasGrants = grants?.hasCreditGrants === true
+  const grantTotal = hasGrants ? Number(grants.totalCents) : 0
+  const grantUsed = hasGrants ? Number(grants.usedCents) : 0
+  const stripeValue = Number(stripe?.customerBalance)
+  const prepaid = Number.isFinite(stripeValue) && stripeValue < 0 ? Math.abs(stripeValue) : 0
+  const total = (Number.isFinite(grantTotal) && grantTotal > 0 ? grantTotal : 0) + prepaid
+  const used = Number.isFinite(grantUsed) && grantUsed > 0 ? grantUsed : 0
+  return total > 0 ? centsToUsd(Math.max(0, total - used)) : null
+}
+
+function parseRequestBasedUsage(value) {
+  const bucket = value?.['gpt-4']
+  const limit = Number(bucket?.maxRequestUsage)
+  if (!Number.isFinite(limit) || limit <= 0) return null
+  const used = Number(bucket.numRequests)
+  const start = parseDate(value.startOfMonth)
+  return {
+    label: 'Requests',
+    used: Number.isFinite(used) && used >= 0 ? used : 0,
+    limit,
+    usedPct: percent(((Number.isFinite(used) && used >= 0 ? used : 0) / limit) * 100),
+    resetAt: start == null ? null : start + 30 * 86400000,
+  }
+}
+
+function jwtSubject(accessToken) {
+  const parts = String(accessToken || '').split('.')
+  if (parts.length < 2) return null
+  try {
+    const json = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+    return typeof json.sub === 'string' && json.sub.trim() ? json.sub.trim() : null
+  } catch {
+    return null
+  }
+}
+
+function sessionCookieFromAccessToken(accessToken) {
+  const subject = jwtSubject(accessToken)
+  if (!subject) return null
+  const parts = subject.split('|')
+  const userID = parts.length > 1 ? parts[1] : parts[0]
+  if (!userID) return null
+  return `WorkosCursorSessionToken=${encodeURIComponent(`${userID}::${accessToken}`)}`
+}
+
+async function cursorREST(pathname, cookie, options = {}) {
+  if (!cookie) return null
+  const request = options.fetchWithTimeout || fetchWithTimeout
+  const res = await request(`${BASE}${pathname}`, {
+    headers: { Cookie: cookie, Accept: options.accept || 'application/json', 'User-Agent': 'MaxxToken' },
+  }, options.timeout || 15000)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res
+}
+
+function parseCSVRecords(csv) {
+  const records = []
+  let row = []
+  let field = ''
+  let quoted = false
+  let closedQuote = false
+  for (let i = 0; i < String(csv).length; i++) {
+    const char = String(csv)[i]
+    if (quoted) {
+      if (char === '"') {
+        if (String(csv)[i + 1] === '"') {
+          field += '"'
+          i++
+        } else {
+          quoted = false
+          closedQuote = true
+        }
+      } else {
+        field += char
+      }
+      continue
+    }
+    if (closedQuote && char !== ',' && char !== '\n' && char !== '\r') {
+      throw new Error('Cursor usage CSV is structurally malformed')
+    }
+    if (char === '"') {
+      if (field.length) throw new Error('Cursor usage CSV is structurally malformed')
+      quoted = true
+      closedQuote = false
+    } else if (char === ',') {
+      row.push(field)
+      field = ''
+      closedQuote = false
+    } else if (char === '\n') {
+      row.push(field.replace(/\r$/, ''))
+      records.push(row)
+      row = []
+      field = ''
+      closedQuote = false
+    } else if (char === '\r' && closedQuote && String(csv)[i + 1] === '\n') {
+      /* newline is handled on the next byte */
+    } else {
+      field += char
+    }
+  }
+  if (quoted) throw new Error('Cursor usage CSV is structurally malformed')
+  if (field || row.length) {
+    row.push(field.replace(/\r$/, ''))
+    records.push(row)
+  }
+  return records
+}
+
+function parseCSVInteger(value) {
+  const text = String(value ?? '').trim()
+  if (!text) return 0
+  if (!/^(?:0|[1-9]\d{0,2}(?:,\d{3})*|[1-9]\d*)$/.test(text)) return null
+  const n = Number(text.replace(/,/g, ''))
+  return Number.isSafeInteger(n) && n >= 0 ? n : null
+}
+
+function parseUsageCSV(csv) {
+  const records = parseCSVRecords(csv)
+  if (!records.length) throw new Error('Cursor usage CSV is empty')
+  const header = records[0].map((value) => value.replace(/^\uFEFF/, '').trim())
+  const required = ['Date', 'Model', 'Input (w/ Cache Write)', 'Input (w/o Cache Write)', 'Cache Read', 'Output Tokens']
+  const indexes = Object.fromEntries(required.map((name) => [name, header.indexOf(name)]))
+  if (required.some((name) => indexes[name] < 0) || new Set(header).size !== header.length) {
+    throw new Error('Cursor usage CSV missing or duplicate required columns')
+  }
+  const costIndex = header.indexOf('Cost')
+  const rows = []
+  let rejectedRows = 0
+  for (const record of records.slice(1)) {
+    if (!record.some((value) => String(value).trim())) continue
+    if (record.length !== header.length) {
+      rejectedRows++
+      continue
+    }
+    const timestamp = Date.parse(record[indexes.Date])
+    const model = String(record[indexes.Model] || '').trim()
+    const buckets = [
+      parseCSVInteger(record[indexes['Input (w/ Cache Write)']]),
+      parseCSVInteger(record[indexes['Input (w/o Cache Write)']]),
+      parseCSVInteger(record[indexes['Cache Read']]),
+      parseCSVInteger(record[indexes['Output Tokens']]),
+    ]
+    if (!Number.isFinite(timestamp) || !model || buckets.some((value) => value == null)) {
+      rejectedRows++
+      continue
+    }
+    const total = buckets.reduce((sum, value) => sum + value, 0)
+    if (!Number.isSafeInteger(total)) {
+      rejectedRows++
+      continue
+    }
+    const costText = costIndex < 0 ? '' : String(record[costIndex] || '').replace(/[$,]/g, '').trim()
+    const cost = costText && Number.isFinite(Number(costText)) ? Math.max(0, Number(costText)) : null
+    rows.push({
+      timestamp,
+      date: dayKey(timestamp),
+      model,
+      input: buckets[0] + buckets[1],
+      cached: buckets[2],
+      output: buckets[3],
+      total,
+      costUSD: cost,
+    })
+  }
+  return { rows, rejectedRows }
+}
+
+function aggregateUsageCSV(parsed) {
+  const rows = parsed?.rows || []
+  if (!rows.length) return null
+  const total = emptyUsageBucket()
+  const byDay = new Map()
+  const byModel = new Map()
+  const add = (bucket, row) => {
+    bucket.input += row.input
+    bucket.cached += row.cached
+    bucket.output += row.output
+    bucket.total += row.total
+    bucket.requests += 1
+    if (row.costUSD == null) bucket.unpricedModels.add(row.model)
+    else {
+      bucket.costUSD += row.costUSD
+      bucket.pricedRows += 1
+    }
+  }
+  for (const row of rows) {
+    add(total, row)
+    const day = byDay.get(row.date) || emptyUsageBucket({ date: row.date })
+    add(day, row)
+    byDay.set(row.date, day)
+    const model = byModel.get(row.model) || emptyUsageBucket({ model: row.model })
+    add(model, row)
+    byModel.set(row.model, model)
+  }
+  const finalize = (bucket) => {
+    const { pricedRows, unpricedModels, ...value } = bucket
+    return {
+      ...value,
+      costUSD: pricedRows ? value.costUSD : null,
+      costAccuracy: pricedRows ? 'measured' : null,
+      pricingSource: pricedRows ? 'Cursor usage export' : null,
+      unpricedModels: [...unpricedModels].sort(),
+    }
+  }
+  return {
+    ...finalize(total),
+    dailyBreakdown: [...byDay.values()].map(finalize).sort((a, b) => b.date.localeCompare(a.date)),
+    modelBreakdowns: [...byModel.values()].map(finalize).sort((a, b) => b.total - a.total),
+    source: 'Cursor usage export',
+    malformedRows: parsed.rejectedRows,
+  }
+}
+
+function emptyUsageBucket(extra = {}) {
+  return { input: 0, cached: 0, output: 0, total: 0, requests: 0, costUSD: 0, pricedRows: 0, unpricedModels: new Set(), ...extra }
+}
+
+function dayKey(ms) {
+  const date = new Date(ms)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+async function fetchUsageCSV(cookie, options = {}) {
+  if (!cookie) return null
+  const now = options.now || Date.now()
+  const url = new URL(`${BASE}${EXPORT_PATH}`)
+  url.searchParams.set('startDate', String(now - 29 * 86400000))
+  url.searchParams.set('endDate', String(now))
+  url.searchParams.set('strategy', 'tokens')
+  const request = options.fetchWithTimeout || fetchWithTimeout
+  const res = await request(url.toString(), {
+    headers: { Cookie: cookie, Accept: 'text/csv', 'User-Agent': 'MaxxToken' },
+  }, 30000)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return aggregateUsageCSV(parseUsageCSV(await res.text()))
+}
+
 async function getJSON(path, cookie) {
   const res = await fetchWithTimeout(
     BASE + path,
@@ -362,10 +615,32 @@ async function read(options = {}) {
     try {
       const [current, planInfo, user] = await Promise.all([
         dashboardJSON('GetCurrentPeriodUsage', appAuth),
-        dashboardJSON('GetPlanInfo', appAuth),
+        dashboardJSON('GetPlanInfo', appAuth).catch(() => ({})),
         dashboardJSON('GetMe', appAuth).catch(() => ({})),
       ])
-      return parseDashboardUsage(current, planInfo, user, appAuth)
+      const base = parseDashboardUsage(current, planInfo, user, appAuth)
+      const sessionCookie = sessionCookieFromAccessToken(appAuth.accessToken)
+      const optional = await Promise.allSettled([
+        dashboardJSON(GROK_BOT_METHOD, appAuth),
+        dashboardJSON(CREDITS_METHOD, appAuth),
+        cursorREST('/api/auth/stripe', sessionCookie, options).then((res) => res?.json()),
+        cursorREST(`/api/usage?user=${encodeURIComponent(jwtSubject(appAuth.accessToken)?.split('|').at(-1) || '')}`, sessionCookie, options).then((res) => res?.json()),
+        fetchUsageCSV(sessionCookie, options),
+      ])
+      const value = (index) => optional[index].status === 'fulfilled' ? optional[index].value : null
+      const grokBot = parseGrokBotUsage(value(0))
+      const requestUsage = parseRequestBasedUsage(value(3))
+      const warnings = optional
+        .filter((result) => result.status === 'rejected')
+        .map((result) => result.reason?.message || String(result.reason))
+      return {
+        ...base,
+        usageBuckets: [...base.usageBuckets, grokBot].filter(Boolean),
+        creditBalanceUSD: parseCreditBalance(value(1), value(2)),
+        requestUsage,
+        tokenUsage: value(4),
+        warning: warnings.length ? warnings.join('; ') : null,
+      }
     } catch (err) {
       if (!options.skipCookieFallback) {
         const fallback = await read({ ...options, stateDB: '/dev/null', skipCookieFallback: true })
@@ -389,11 +664,17 @@ async function read(options = {}) {
   }
 
   try {
-    const [summary, userResult] = await Promise.all([
+    const [summary, userResult, tokenUsageResult] = await Promise.all([
       getJSON('/api/usage-summary', resolved.cookie),
       getJSON('/api/auth/me', resolved.cookie).catch(() => ({})),
+      fetchUsageCSV(resolved.cookie, options).catch((error) => ({ error: error.message || String(error) })),
     ])
-    return { ...parseUsageSummary(summary, userResult || {}), sourceLabel: resolved.sourceLabel }
+    return {
+      ...parseUsageSummary(summary, userResult || {}),
+      sourceLabel: resolved.sourceLabel,
+      tokenUsage: tokenUsageResult?.error ? null : tokenUsageResult,
+      warning: tokenUsageResult?.error || null,
+    }
   } catch (err) {
     return {
       connected: false,
@@ -415,5 +696,13 @@ module.exports = {
     parseUsageSummary,
     parseDashboardUsage,
     dashboardBaseFromCliConfig,
+    parseGrokBotUsage,
+    parseCreditBalance,
+    parseRequestBasedUsage,
+    sessionCookieFromAccessToken,
+    parseUsageCSV,
+    aggregateUsageCSV,
+    fetchUsageCSV,
+    dayKey,
   },
 }

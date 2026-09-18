@@ -5,7 +5,9 @@ const path = require('path')
 
 let logPath = null
 let initialized = false
+let activeLevel = 'info'
 const MAX_BYTES = 1_000_000
+const LEVEL_WEIGHT = { error: 0, warn: 1, info: 2, debug: 3 }
 
 function init(userDataDir) {
   if (initialized) return
@@ -80,6 +82,7 @@ function scrubObject(obj) {
 
 function line(level, scope, msg, data) {
   if (!initialized || !logPath) return
+  if ((LEVEL_WEIGHT[level] ?? LEVEL_WEIGHT.info) > LEVEL_WEIGHT[activeLevel]) return
   try {
     rotate()
     const stamp = new Date().toISOString()
@@ -95,6 +98,16 @@ function line(level, scope, msg, data) {
 const info = (scope, msg, data) => line('info', scope, msg, data)
 const warn = (scope, msg, data) => line('warn', scope, msg, data)
 const error = (scope, msg, data) => line('error', scope, msg, data)
+const debug = (scope, msg, data) => line('debug', scope, msg, data)
+
+function setLevel(level) {
+  activeLevel = Object.prototype.hasOwnProperty.call(LEVEL_WEIGHT, level) ? level : 'info'
+  return activeLevel
+}
+
+function getLevel() {
+  return activeLevel
+}
 
 async function timed(scope, label, fn, slowMs = 1500) {
   const start = Date.now()
@@ -123,4 +136,4 @@ function getLogPath() {
   return logPath
 }
 
-module.exports = { init, info, warn, error, timed, withTimeout, getLogPath }
+module.exports = { init, info, warn, error, debug, timed, withTimeout, getLogPath, setLevel, getLevel }

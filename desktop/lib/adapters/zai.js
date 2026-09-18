@@ -3,6 +3,7 @@ const { fetchWithTimeout } = require('../http')
 
 const QUOTA_PATH = '/api/monitor/usage/quota/limit'
 const MODEL_USAGE_PATH = '/api/monitor/usage/model-usage'
+const SUBSCRIPTION_PATH = '/api/biz/subscription/list'
 
 const REGIONS = {
   global: 'https://api.z.ai',
@@ -65,7 +66,7 @@ function resolveCredentials() {
   const saved = parseSaved(getKey('zai'))
   const env = process.env
   return {
-    apiKey: clean(env.Z_AI_API_KEY) || saved.apiKey || null,
+    apiKey: clean(env.ZAI_API_KEY) || clean(env.Z_AI_API_KEY) || clean(env.GLM_API_KEY) || saved.apiKey || null,
     apiHost: clean(env.Z_AI_API_HOST) || saved.apiHost || null,
     quotaURL: clean(env.Z_AI_QUOTA_URL) || saved.quotaURL || null,
     region: normalizeRegion(env.Z_AI_API_REGION || saved.region),
@@ -92,6 +93,14 @@ function modelUsageURL({ region = 'global', apiHost = null } = {}) {
   return urlFromBase(REGIONS[normalizeRegion(region)], MODEL_USAGE_PATH)
 }
 
+function subscriptionURL({ region = 'global', apiHost = null } = {}) {
+  if (apiHost) {
+    const url = urlFromBase(apiHost, SUBSCRIPTION_PATH)
+    if (url) return url
+  }
+  return urlFromBase(REGIONS[normalizeRegion(region)], SUBSCRIPTION_PATH)
+}
+
 function number(value) {
   if (value == null || value === '') return null
   const n = Number(value)
@@ -100,7 +109,7 @@ function number(value) {
 
 function clampPct(value) {
   const n = Number(value)
-  if (!Number.isFinite(n)) return 0
+  if (!Number.isFinite(n)) return null
   return Math.max(0, Math.min(100, n))
 }
 
@@ -141,8 +150,8 @@ function usedPercent(limit) {
 
 function parseLimit(raw) {
   if (!raw || typeof raw !== 'object') return null
-  const type = clean(raw.type)
-  if (type !== 'TOKENS_LIMIT' && type !== 'TIME_LIMIT') return null
+  const type = clean(raw.type || raw.name)
+  if (type !== 'TOKENS_LIMIT' && type !== 'CREDIT_LIMIT' && type !== 'TIME_LIMIT') return null
   const unit = number(raw.unit) ?? 0
   const count = number(raw.number) ?? 0
   const description = windowDescription(unit, count)
@@ -170,7 +179,13 @@ function planNameFromData(data) {
 
 function parseUsageSnapshot(json, now = Date.now()) {
   if (!json || typeof json !== 'object') throw new Error('Invalid z.ai response')
-  if (json.success !== true || json.code !== 200) throw new Error(json.msg || 'z.ai API error')
+  if (json.success === false) {
+    const message = json.msg || 'z.ai API error'
+    const error = new Error(message)
+    if (/coding plan/i.test(message)) error.noCodingPlan = true
+    throw error
+  }
+  if (json.code != null && Number(json.code) !== 200) throw new Error(json.msg || 'z.ai API error')
   if (!json.data || typeof json.data !== 'object') throw new Error('Missing data')
 
   const tokenLimits = []
@@ -178,13 +193,21 @@ function parseUsageSnapshot(json, now = Date.now()) {
   for (const raw of json.data.limits || []) {
     const entry = parseLimit(raw)
     if (!entry) continue
-    if (entry.type === 'TOKENS_LIMIT') tokenLimits.push(entry)
-    if (entry.type === 'TIME_LIMIT') timeLimit = entry
+    if (entry.type === 'TOKENS_LIMIT' || entry.type === 'CREDIT_LIMIT') {
+      if (entry.usedPct == null) throw new Error('Missing z.ai quota percentage')
+      tokenLimits.push(entry)
+    }
+    if (entry.type === 'TIME_LIMIT') {
+      if (entry.currentValue == null || entry.usage == null || entry.currentValue < 0 || entry.usage < 0) {
+        throw new Error('Missing z.ai web-search usage')
+      }
+      timeLimit = entry
+    }
   }
 
   tokenLimits.sort((a, b) => (a.windowMinutes ?? Number.MAX_SAFE_INTEGER) - (b.windowMinutes ?? Number.MAX_SAFE_INTEGER))
-  const sessionTokenLimit = tokenLimits.length >= 2 ? tokenLimits[0] : null
-  const tokenLimit = tokenLimits.length >= 2 ? tokenLimits[tokenLimits.length - 1] : tokenLimits[0] || null
+  const sessionTokenLimit = tokenLimits.find((limit) => limit.windowMinutes != null && limit.windowMinutes < 24 * 60) || null
+  const tokenLimit = [...tokenLimits].reverse().find((limit) => limit.windowMinutes == null || limit.windowMinutes >= 24 * 60) || null
 
   return {
     connected: true,
@@ -195,6 +218,16 @@ function parseUsageSnapshot(json, now = Date.now()) {
     modelUsage: null,
     lastActive: now,
   }
+}
+
+function parseSubscription(json) {
+  if (!json || typeof json !== 'object') return null
+  const list = Array.isArray(json.data) ? json.data : []
+  for (const item of list) {
+    const plan = clean(item?.productName || item?.planName || item?.name)
+    if (plan) return plan
+  }
+  return null
 }
 
 function parseModelUsage(json) {
@@ -247,19 +280,29 @@ async function getJSON(url, apiKey, headers = {}, timeoutMs = 15000) {
     timeoutMs,
   )
   const text = await res.text()
-  if (!res.ok) throw new Error(`z.ai HTTP ${res.status}: ${text.slice(0, 200)}`)
+  if (!res.ok) {
+    const error = new Error(`z.ai HTTP ${res.status}: ${text.slice(0, 200)}`)
+    error.status = res.status
+    throw error
+  }
   if (!text.trim()) throw new Error('Empty response body')
   return JSON.parse(text)
 }
 
-async function read() {
-  const credentials = resolveCredentials()
-  if (!credentials.apiKey) return { connected: false, error: 'z.ai API token not configured' }
+async function read(options = {}) {
+  const credentials = options.credentials || resolveCredentials()
+  if (!credentials.apiKey) return { connected: false, needsKey: true, error: 'z.ai API token not configured' }
   try {
-    const quota = await getJSON(quotaURL(credentials), credentials.apiKey)
-    const snapshot = parseUsageSnapshot(quota, Date.now())
+    const get = options.getJSON || getJSON
+    const quota = await get(quotaURL(credentials), credentials.apiKey)
+    const snapshot = parseUsageSnapshot(quota, options.now || Date.now())
     try {
-      const usage = await getJSON(
+      snapshot.planName = parseSubscription(await get(subscriptionURL(credentials), credentials.apiKey)) || snapshot.planName
+    } catch {
+      /* plan label is optional; preserve required quota data */
+    }
+    try {
+      const usage = await get(
         modelUsageQueryURL(modelUsageURL(credentials)),
         credentials.apiKey,
         { 'Content-Type': 'application/json' },
@@ -271,7 +314,13 @@ async function read() {
     }
     return snapshot
   } catch (err) {
-    return { connected: false, error: err && err.message ? err.message : String(err) }
+    return {
+      connected: false,
+      needsKey: err?.status === 401 || err?.status === 403,
+      error: err?.noCodingPlan
+        ? 'No active GLM Coding Plan. Subscribe at z.ai/subscribe to see usage.'
+        : err && err.message ? err.message : String(err),
+    }
   }
 }
 
@@ -284,9 +333,11 @@ module.exports = {
     parseLimit,
     parseModelUsage,
     parseSaved,
+    parseSubscription,
     parseUsageSnapshot,
     quotaURL,
     resolveCredentials,
+    subscriptionURL,
     windowMinutes,
   },
 }

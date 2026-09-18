@@ -12,8 +12,17 @@ process.on('message', async (message) => {
   try {
     setProcessOverride(message.secrets)
     setBrowserKeyStore(message.browserKeys)
+    const config = require('./config').loadConfig()
+    logger.setLevel(config.logLevel)
+    require('./http').configureProxy(config.proxy, require('./secrets').getProxyCredentials())
     logger.info('worker', 'snapshot requested', { requestId: message.requestId, heavy: message.heavy !== false })
-    const snap = await snapshot({ heavy: message.heavy !== false })
+    const snap = await snapshot({
+      heavy: message.heavy !== false,
+      forceRefresh: message.forceRefresh === true,
+      providerIds: message.providerIds,
+      previousSnapshot: message.previousSnapshot,
+      onProgress: (snap) => safeSend({ type: 'snapshot-progress', requestId: message.requestId, snap }),
+    })
     safeSend({ type: 'snapshot-result', requestId: message.requestId, ok: true, snap, browserKeys: takeDiscoveredKeys() })
   } catch (err) {
     logger.error('worker', 'snapshot failed', {

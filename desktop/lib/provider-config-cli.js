@@ -1,4 +1,4 @@
-const { loadConfig, saveConfig, FILE } = require('./config')
+const { loadConfig, saveConfig, mergeProviderOptOuts, FILE } = require('./config')
 const { canonicalProviderId, aliasesForProvider } = require('./provider-ids')
 
 function usage() {
@@ -45,12 +45,14 @@ function resolveProvider(rawId, config) {
 
 function setProvidersEnabled(rawIds, enabled, file = FILE) {
   if (!rawIds.length) throw new Error(`Pass at least one provider to ${enabled ? 'enable' : 'disable'}.`)
-  const config = loadConfig(file)
-  const ids = rawIds.map((rawId) => resolveProvider(rawId, config))
+  const current = loadConfig(file)
+  const next = { ...current, providers: { ...current.providers } }
+  const ids = rawIds.map((rawId) => resolveProvider(rawId, current))
   for (const id of ids) {
-    config.providers[id] = { ...config.providers[id], enabled }
+    next.providers[id] = { ...next.providers[id], enabled }
   }
-  const saved = saveConfig(config, file)
+  next.providerOptOuts = mergeProviderOptOuts(current, next, { explicitProviderIds: ids })
+  const saved = saveConfig(next, file)
   return ids.map((id) => ({ id, enabled: saved.providers[id].enabled === true }))
 }
 

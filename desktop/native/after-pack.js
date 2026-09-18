@@ -19,7 +19,7 @@ module.exports = async function afterPack(context) {
     try {
       execFileSync('/usr/libexec/PlistBuddy', ['-c', `Delete :${key}`, plist], { stdio: 'ignore' })
     } catch {
-      /* Electron may omit some keys depending on version. */
+      // Electron may omit the key.
     }
   }
 }

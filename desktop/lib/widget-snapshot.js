@@ -12,6 +12,16 @@ function compactProvider(provider) {
   const tokenUsage = compactTokenUsage(provider.tokenUsage)
   return {
     id: provider.id,
+    providerFamily: provider.providerFamily || provider.id,
+    account: provider.account
+      ? {
+          id: provider.account.id || provider.id,
+          label: provider.account.label || null,
+          isDefault: provider.account.isDefault === true,
+          sourceKinds: provider.account.sourceKinds || [],
+          identityStamp: provider.account.identityStamp || null,
+        }
+      : null,
     name: provider.name,
     plan: provider.plan,
     monthly: provider.monthly ?? null,
@@ -37,6 +47,7 @@ function compactProvider(provider) {
     tokenUsage,
     dailyUsage: tokenUsage?.dailyUsage || [],
     configScan: provider.configScan || null,
+    resetCredits: provider.resetCredits || null,
   }
 }
 
@@ -49,8 +60,14 @@ function compactTokenUsage(tokenUsage) {
     output: tokenUsage.output ?? null,
     costUSD: tokenUsage.costUSD ?? null,
     costAccuracy: tokenUsage.costAccuracy || null,
+    pricedCostUSD: tokenUsage.pricedCostUSD ?? null,
+    pricedTokens: tokenUsage.pricedTokens ?? null,
+    unpricedTokens: tokenUsage.unpricedTokens ?? null,
+    costCoverage: tokenUsage.costCoverage || null,
     pricingSource: tokenUsage.pricingSource || null,
     pricingSources: tokenUsage.pricingSources || [],
+    pricedModels: tokenUsage.pricedModels || [],
+    unpricedModels: tokenUsage.unpricedModels || [],
     source: tokenUsage.source || null,
     priorityEvents: tokenUsage.priorityEvents ?? null,
     serviceTiers: compactServiceTierBreakdowns(tokenUsage.serviceTierBreakdowns),
@@ -81,11 +98,15 @@ function compactModelBreakdowns(modelBreakdowns) {
       model: row.model || row.modelName || 'unknown',
       total: row.total ?? null,
       input: row.input ?? null,
+      uncachedInput: row.uncachedInput ?? null,
+      cacheCreation: row.cacheCreation ?? null,
+      cacheRead: row.cacheRead ?? null,
       cached: row.cached ?? null,
       output: row.output ?? null,
       costUSD: row.costUSD ?? null,
       costAccuracy: row.costAccuracy || null,
       pricingSource: row.pricingSource || null,
+      pricingSources: row.pricingSources || [],
       pricingModel: row.pricingModel || null,
       requests: row.requests ?? null,
     }))
@@ -99,12 +120,21 @@ function compactDailyUsage(dailyBreakdown) {
         dayKey: row.date || row.dayKey || null,
         totalTokens,
         costUSD: row.costUSD ?? null,
+        pricedCostUSD: row.pricedCostUSD ?? row.pricedUSD ?? null,
+        pricedTokens: row.pricedTokens ?? row.pricedTokenCount ?? null,
+        unpricedTokens: row.unpricedTokens ?? null,
+        costCoverage: row.costCoverage || null,
+        costAccuracy: row.costAccuracy || null,
+        pricingSource: row.pricingSource || null,
+        pricingSources: row.pricingSources || [],
+        pricedModels: row.pricedModels || [],
+        unpricedModels: row.unpricedModels || [],
         requests: row.requests ?? null,
         topModels: compactModelBreakdowns(row.modelBreakdowns).slice(0, 3),
       }
     })
-    .filter((row) => Number(row.totalTokens) > 0 || Number.isFinite(Number(row.costUSD)))
-    .slice(0, 14)
+    .filter((row) => Number(row.totalTokens) > 0 || (row.costUSD != null && Number.isFinite(Number(row.costUSD))))
+    .slice(0, 30)
 }
 
 function dailyTotalTokens(row) {

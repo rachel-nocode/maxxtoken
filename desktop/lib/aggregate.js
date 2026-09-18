@@ -6,6 +6,7 @@ const claude = require('./adapters/claude')
 const cursor = require('./adapters/cursor')
 const copilot = require('./adapters/copilot')
 const windsurf = require('./adapters/windsurf')
+const devin = require('./adapters/devin')
 const kiro = require('./adapters/kiro')
 const opencode = require('./adapters/opencode')
 const opencodego = require('./adapters/opencode-go')
@@ -55,6 +56,13 @@ const tokenCost = require('./token-cost')
 const logger = require('./logger')
 const widgetSnapshot = require('./widget-snapshot')
 const configBloat = require('./config-bloat')
+const providerAccounts = require('./provider-accounts')
+const providerRefresh = require('./provider-refresh')
+
+const { getProviderCapability, validateProviderRegistry } = require('./provider-capabilities')
+const ADAPTERS = { codex, openai, azureopenai, claude, cursor, copilot, windsurf, devin, kiro, opencode, opencodego, alibaba, alibabatokenplan: alibabaTokenPlan, augment, jetbrains, warp, elevenlabs, kilo, kimi, moonshot, kimik2, doubao, gemini, grok, groq, openrouter, perplexity, mistral, codebuff, commandcode, crof, venice, deepseek, deepgram, stepfun, llmproxy, ollama, abacus, amp, factory, antigravity, minimax, manus, vertexai, synthetic, mimo, bedrock, zai, t3chat }
+const registryValidation = validateProviderRegistry(Object.keys(ADAPTERS))
+if (!registryValidation.ok) throw new Error('Provider registry and adapter coverage differ.')
 
 const PROVIDER_TIMEOUT_MS = 30000
 const STATUS_TIMEOUT_MS = 8000
@@ -76,17 +84,28 @@ function withTimeout(promise, ms, label) {
 
 async function buildProviderSafe(id, conf, cycle, config, options = {}) {
   const start = Date.now()
+  const family = options.providerFamily || providerAccounts.providerFamily(id)
   try {
-    const result = await withTimeout(buildProvider(id, conf, cycle, config, options), PROVIDER_TIMEOUT_MS, `provider:${id}`)
+    const result = await withTimeout(buildProvider(family, conf, cycle, config, options), PROVIDER_TIMEOUT_MS, `provider:${id}`)
     const ms = Date.now() - start
     if (ms >= 3000) logger.warn('provider', `${id} slow`, { ms })
     else logger.info('provider', `${id} ok`, { ms })
-    return result
+    if (!options.account) return result
+    return {
+      ...result,
+      id,
+      providerFamily: family,
+      name: conf.name,
+      links: providerLinks.linksForProvider(family),
+      account: { ...providerAccounts.publicAccount(options.account), identityStamp: options.account.identityStamp },
+    }
   } catch (err) {
     const ms = Date.now() - start
     logger.error('provider', `${id} failed`, { ms, error: err && err.message ? err.message : String(err) })
     return {
       id,
+      providerFamily: family,
+      ...(options.account ? { account: { ...providerAccounts.publicAccount(options.account), identityStamp: options.account.identityStamp } } : {}),
       name: conf.name,
       plan: conf.plan,
       monthly: conf.monthly,
@@ -99,7 +118,8 @@ async function buildProviderSafe(id, conf, cycle, config, options = {}) {
 }
 
 const DAY = 86400000
-const PACE_MIN_EXPECTED_PCT = 3
+const PACE_MAX_DATA_AGE_MS = 5 * 60 * 1000
+const PACE_RESET_SKEW_MS = 5 * 60 * 1000
 
 function activityState(lastActive) {
   if (!lastActive) return 'none'
@@ -156,6 +176,11 @@ function nudgeFor(id, capturedPct, urgent) {
       'Open Windsurf and spend the daily pool on one local build loop.',
       'Use Windsurf Cascade to wire the roughest integration before reset.',
       'Let Windsurf explain the code path, then make the smallest shippable edit.',
+    ],
+    devin: [
+      'Use Devin weekly quota on one bounded engineering task before reset.',
+      'Give Devin one issue with clear acceptance criteria and review the patch.',
+      'Spend Devin capacity on the backlog item that benefits from a long autonomous run.',
     ],
     kiro: [
       'Spend Kiro credits on one spec-to-code loop before reset.',
@@ -384,6 +409,26 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, n))
 }
 
+function previousCalendarMonthMs(resetAt) {
+  const reset = new Date(Number(resetAt))
+  if (!Number.isFinite(reset.getTime())) return null
+  const year = reset.getUTCFullYear()
+  const month = reset.getUTCMonth()
+  const day = reset.getUTCDate()
+  const previousMonthLastDay = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  const start = Date.UTC(
+    year,
+    month - 1,
+    Math.min(day, previousMonthLastDay),
+    reset.getUTCHours(),
+    reset.getUTCMinutes(),
+    reset.getUTCSeconds(),
+    reset.getUTCMilliseconds(),
+  )
+  const period = reset.getTime() - start
+  return period > 0 ? period : null
+}
+
 function periodMsForWindow(w) {
   const explicit = Number(w?.periodMs)
   if (Number.isFinite(explicit) && explicit > 0) return explicit
@@ -392,6 +437,11 @@ function periodMsForWindow(w) {
   if (w?.kind === '5h') return 5 * 3600e3
   if (w?.kind === '7d') return 7 * DAY
   if (w?.kind === 'daily' || w?.kind === '1d') return DAY
+  if (w?.kind === 'cycle' || w?.kind === 'monthly') return previousCalendarMonthMs(w?.resetAt) || 30 * DAY
+  if (w?.kind === '30d') return 30 * DAY
+  const label = String(w?.label || '').toLowerCase()
+  if (label.includes('week')) return 7 * DAY
+  if (label.includes('month') || label.includes('total usage')) return previousCalendarMonthMs(w?.resetAt) || 30 * DAY
   return null
 }
 
@@ -416,21 +466,37 @@ function paceTone(stage) {
 }
 
 function paceForWindow(w, now = Date.now()) {
+  if (w?.forecastEligible === false) return null
   const resetAt = Number(w?.resetAt)
   const periodMs = periodMsForWindow(w)
   const actual = clamp(w?.usedPct, 0, 100)
   if (!Number.isFinite(resetAt) || !periodMs || actual == null) return null
 
-  const timeUntilReset = resetAt - now
-  if (timeUntilReset <= 0 || timeUntilReset > periodMs) return null
+  const rawTimeUntilReset = resetAt - now
+  if (rawTimeUntilReset <= 0 || rawTimeUntilReset > periodMs + PACE_RESET_SKEW_MS) return null
+  const timeUntilReset = Math.min(rawTimeUntilReset, periodMs)
 
   const elapsed = Math.max(0, Math.min(periodMs, periodMs - timeUntilReset))
   const expected = Math.max(0, Math.min(100, (elapsed / periodMs) * 100))
   if (elapsed === 0 && actual > 0) return null
-  if (expected < PACE_MIN_EXPECTED_PCT) return null
-
   const delta = actual - expected
   const stage = paceStage(delta)
+  if (actual === 0) {
+    return {
+      stage,
+      tone: paceTone(stage),
+      deltaPercent: Math.round(delta),
+      expectedUsedPercent: Math.round(expected),
+      actualUsedPercent: 0,
+      projectedAtResetPercent: 0,
+      projectedLeftPercent: 100,
+      projectedOverPercent: 0,
+      etaMs: null,
+      exhaustsAt: null,
+      willLastToReset: true,
+      leftLabel: paceLeftLabel(stage, delta),
+    }
+  }
   let etaMs = null
   let exhaustsAt = null
   let willLastToReset = false
@@ -444,8 +510,6 @@ function paceForWindow(w, now = Date.now()) {
       etaMs = Math.max(0, Math.round(candidate))
       exhaustsAt = now + etaMs
     }
-  } else if (elapsed > 0 && actual === 0) {
-    willLastToReset = true
   }
 
   // Projection at reset = current burn rate extrapolated to full window.
@@ -454,6 +518,10 @@ function paceForWindow(w, now = Date.now()) {
   if (expected > 0) {
     projectedAtResetPercent = Math.round(Math.min(999, (actual * 100) / expected))
   }
+  const projectedLeftPercent =
+    projectedAtResetPercent == null ? null : Math.max(0, 100 - projectedAtResetPercent)
+  const projectedOverPercent =
+    projectedAtResetPercent == null ? null : Math.max(0, projectedAtResetPercent - 100)
 
   return {
     stage,
@@ -462,6 +530,8 @@ function paceForWindow(w, now = Date.now()) {
     expectedUsedPercent: Math.round(expected),
     actualUsedPercent: Math.round(actual),
     projectedAtResetPercent,
+    projectedLeftPercent,
+    projectedOverPercent,
     etaMs,
     exhaustsAt,
     willLastToReset,
@@ -469,14 +539,48 @@ function paceForWindow(w, now = Date.now()) {
   }
 }
 
+function withoutPace(window) {
+  if (!window || !Object.prototype.hasOwnProperty.call(window, 'pace')) return window
+  const { pace, ...rest } = window
+  void pace
+  return rest
+}
+
+function providerPaceIsFresh(provider, now = Date.now()) {
+  if (!provider?.connected || provider.error) return false
+  if (provider.activity === 'stale') return false
+  const lastUpdatedAt = Number(provider.lastUpdatedAt)
+  if (Number.isFinite(lastUpdatedAt) && lastUpdatedAt > 0 && now - lastUpdatedAt > PACE_MAX_DATA_AGE_MS) return false
+  const source = `${provider.sourceLabel || ''} ${provider.valueLabel || ''}`.toLowerCase()
+  if (source.includes('cached')) return false
+  return !(provider.extra || []).some((item) => {
+    const text = `${item?.label || ''} ${item?.value || ''}`.toLowerCase()
+    return text.includes('cached') || text.includes('last good')
+  })
+}
+
 function addProviderPace(provider, now = Date.now()) {
-  if (!provider?.connected || !Array.isArray(provider.windows) || !provider.windows.length) return provider
+  if (!provider) return provider
+  if (!Array.isArray(provider.windows) || !provider.windows.length) {
+    if (provider.connected !== false || !Object.prototype.hasOwnProperty.call(provider, 'pace')) return provider
+    const { pace, ...rest } = provider
+    void pace
+    return rest
+  }
+  if (!providerPaceIsFresh(provider, now)) {
+    const { pace, ...rest } = provider
+    void pace
+    return { ...rest, windows: provider.windows.map(withoutPace) }
+  }
   const windows = provider.windows.map((w) => {
     const pace = paceForWindow(w, now)
-    return pace ? { ...w, pace } : w
+    return pace ? { ...withoutPace(w), pace } : withoutPace(w)
   })
   const primary = windows.find((w) => w.kind === '7d' && w.pace)?.pace || windows.find((w) => w.pace)?.pace || null
-  return primary ? { ...provider, windows, pace: primary } : { ...provider, windows }
+  if (primary) return { ...provider, windows, pace: primary }
+  const { pace, ...rest } = provider
+  void pace
+  return { ...rest, windows }
 }
 
 let storageFootprintsCache = {}
@@ -485,7 +589,7 @@ let storageScanInFlight = false
 function addProviderStorageFootprints(providers, nowForTesting = null) {
   // Use cached footprints only — never block snapshot on disk walks.
   // Kick a background scan if cache is stale; next snapshot will see it.
-  const ids = (providers || []).map((p) => p.id)
+  const ids = [...new Set((providers || []).map((p) => p.providerFamily || p.id))]
   const missing = ids.some((id) => !storageFootprintsCache[id])
   if (missing && arguments.length > 1) {
     storageFootprintsCache = storageFootprint.scanProviders(ids, process.env, Number(nowForTesting) || Date.now())
@@ -503,7 +607,7 @@ function addProviderStorageFootprints(providers, nowForTesting = null) {
     })
   }
   return (providers || []).map((provider) => {
-    const footprint = storageFootprintsCache[provider.id]
+    const footprint = storageFootprintsCache[provider.providerFamily || provider.id]
     if (!footprint) return provider
     const extra = provider.extra ? [...provider.extra] : []
     if (footprint.hasLocalData) {
@@ -514,9 +618,9 @@ function addProviderStorageFootprints(providers, nowForTesting = null) {
 }
 
 async function addProviderStatuses(providers, now = Date.now()) {
-  const statuses = await providerStatus.statusesForProviders((providers || []).map((p) => p.id), undefined, now)
+  const statuses = await providerStatus.statusesForProviders((providers || []).map((p) => p.providerFamily || p.id), undefined, now)
   return (providers || []).map((provider) => {
-    const status = statuses[provider.id]
+    const status = statuses[provider.providerFamily || provider.id]
     if (!status) return provider
     const extra = provider.extra ? [...provider.extra] : []
     if (status.indicator !== 'none') extra.push({ label: 'Provider status', value: status.label })
@@ -716,6 +820,8 @@ function applyCachedProviderFallbacks(providers, cache = widgetSnapshot.readWidg
     if (providerHasUsefulUsage(provider)) return provider
     if (!provider?.error) return provider
     const cached = cachedById.get(provider.id)
+    if (provider.account && provider.account.identityStamp !== cached?.account?.identityStamp) return provider
+    if (!provider.account && cached?.account) return provider
     if (!providerHasUsefulUsage(cached)) return provider
     logger.warn('provider', `${provider.id} using cached fallback`, { error: provider.error })
     return providerFromCachedSnapshot(provider, cached, generatedAt)
@@ -731,6 +837,8 @@ function carryForwardTokenUsage(providers, cache = widgetSnapshot.readWidgetSnap
   return (providers || []).map((provider) => {
     if (!provider?.connected || provider.tokenUsage) return provider
     const cached = cachedById.get(provider.id)
+    if (provider.account && provider.account.identityStamp !== cached?.account?.identityStamp) return provider
+    if (!provider.account && cached?.account) return provider
     if (!cached?.tokenUsage) return provider
     return { ...provider, tokenUsage: compactTokenUsageToProvider(cached.tokenUsage) }
   })
@@ -827,8 +935,10 @@ function claudeAgentSdkCreditWindow(plan, cycle, extraUsage = null) {
 }
 
 async function buildProvider(id, conf, cycle, config = loadConfig(), options = {}) {
-  const tokenOptions = { tokenHistoryDays: config.tokenHistoryDays, skipTokenHistory: options.heavy === false }
-  const base = { id, name: conf.name, plan: conf.plan, monthly: conf.monthly, links: providerLinks.linksForProvider(id) }
+  const tokenOptions = { tokenHistoryDays: config.tokenHistoryDays, skipTokenHistory: options.heavy === false, account: options.account, forceRefresh: options.forceRefresh === true, unknownModelFallback: config.unknownModelFallback }
+  const capability = getProviderCapability(id)
+  if (!capability || !ADAPTERS[id]) throw new Error('Unknown provider')
+  const base = { id, providerFamily: id, capabilityStatus: capability.status, name: conf.name, plan: conf.plan, monthly: conf.monthly, links: providerLinks.linksForProvider(id) }
 
   if (id === 'claude' || id === 'kimi') {
     const d = id === 'claude' ? await claude.read(tokenOptions) : await kimi.read()
@@ -860,6 +970,14 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
 
   if (id === 'codex') {
     const d = await codex.read(tokenOptions)
+    if (!tokenOptions.skipTokenHistory) {
+      const openCodeOAuth = !options.account || options.account.allowsUnattributedHistory
+        ? opencodego._private.readCodexOAuthHistory(tokenOptions)
+        : null
+      if (openCodeOAuth) {
+        d.tokenUsage = codex._private.aggregateTokenUsages([d.tokenUsage, openCodeOAuth].filter(Boolean))
+      }
+    }
     if (!d.connected) return { ...base, connected: false, activity: 'none' }
     const weekly = (d.windows || []).find((w) => w.label === 'Weekly')
     const session = (d.windows || []).find((w) => w.label === 'Session')
@@ -873,6 +991,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
       windows: d.windows || [],
       tokenUsage: d.tokenUsage || null,
       extra: d.extra || [],
+      resetCredits: d.resetCredits || null,
       resetAt: weekly ? weekly.resetAt : session ? session.resetAt : cycle.endMs,
       resetKind: 'weekly',
       urgent,
@@ -1046,7 +1165,16 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
       { label: 'Total Usage', usedPct: capturedPct || 0, resetAt: d.resetAt },
       d.autoPercentUsed == null ? null : { label: 'Cursor Models', usedPct: percent(d.autoPercentUsed) || 0, resetAt: d.resetAt },
       d.apiPercentUsed == null ? null : { label: 'Other Models', usedPct: percent(d.apiPercentUsed) || 0, resetAt: d.resetAt },
-    ].filter(Boolean)).map((bucket) => ({ ...bucket, kind: 'cycle', periodMs: null }))
+    ].filter(Boolean)).map((bucket) => ({ ...bucket, kind: bucket.label === 'Grok Bot' ? '7d' : 'cycle', periodMs: bucket.label === 'Grok Bot' ? 7 * DAY : null }))
+    if (d.requestUsage) {
+      windows.push({
+        label: d.requestUsage.label,
+        kind: 'cycle',
+        usedPct: d.requestUsage.usedPct || 0,
+        resetAt: d.requestUsage.resetAt,
+        periodMs: null,
+      })
+    }
     const urgent = cycle.daysLeft <= 3 && (capturedPct || 0) < 70
     return {
       ...base,
@@ -1062,8 +1190,11 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
         d.onDemandUsedUSD
           ? { label: 'On-demand', value: '$' + d.onDemandUsedUSD.toFixed(2) }
           : null,
+        d.creditBalanceUSD != null ? { label: 'Credits', value: '$' + d.creditBalanceUSD.toFixed(2) } : null,
+        d.requestUsage ? { label: 'Requests', value: `${d.requestUsage.used} / ${d.requestUsage.limit}` } : null,
         d.email ? { label: 'Signed in', value: d.email } : null,
       ].filter(Boolean),
+      tokenUsage: d.tokenUsage || null,
       resetAt: d.resetAt || cycle.endMs,
       resetKind: 'cycle',
       urgent,
@@ -1084,15 +1215,16 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
         error: d.error || null,
       }
     }
-    const premiumPct = d.premium ? percent(d.premium.usedPct) : null
+    const premiumPct = d.credits ? percent(d.credits.usedPct) : null
     const chatPct = d.chat ? percent(d.chat.usedPct) : null
-    const capturedPct = premiumPct ?? chatPct ?? 0
-    const total = d.premium?.entitlement || d.chat?.entitlement || conf.monthly
-    const used = d.premium ? Math.max(0, d.premium.entitlement - d.premium.remaining) : 0
+    const completionsPct = d.completions ? percent(d.completions.usedPct) : null
+    const capturedPct = premiumPct ?? chatPct ?? completionsPct
+    const total = d.credits?.entitlement ?? d.chat?.entitlement ?? d.completions?.entitlement ?? null
+    const used = d.credits ? Math.max(0, d.credits.entitlement - d.credits.remaining) : null
     const windows = [
-      d.premium
+      d.credits
         ? {
-            label: 'Premium',
+            label: 'Credits',
             kind: 'cycle',
             usedPct: premiumPct || 0,
             resetAt: d.resetAt || cycle.endMs,
@@ -1108,22 +1240,36 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
             periodMs: null,
           }
         : null,
+      d.completions
+        ? {
+            label: 'Completions',
+            kind: 'cycle',
+            usedPct: completionsPct,
+            resetAt: d.resetAt || cycle.endMs,
+            periodMs: 30 * DAY,
+          }
+        : null,
     ].filter(Boolean)
-    const urgent = cycle.daysLeft <= 3 && capturedPct < 70
+    const urgent = capturedPct != null && cycle.daysLeft <= 3 && capturedPct < 70
     return {
       ...base,
       connected: true,
       plan: d.plan || conf.plan,
-      monthly: total || base.monthly,
-      ...valueFields(total, used, Math.max(0, total - used), capturedPct, {
-        label: 'live request quota',
+      monthly: base.monthly,
+      ...valueFields(total, used, total != null && used != null ? Math.max(0, total - used) : null, capturedPct, {
+        label: d.credits ? 'live AI-credit quota' : 'live Copilot quota',
         accuracy: 'live',
-        unit: 'requests',
+        unit: d.credits ? 'credits' : 'requests',
       }),
       windows,
       extra: [
-        d.premium ? { label: 'Premium left', value: String(Math.round(d.premium.remaining)) } : null,
+        d.credits ? { label: 'Credits left', value: String(Math.round(d.credits.remaining)) } : null,
+        d.personalCredits != null ? { label: 'Credits used', value: String(d.personalCredits) } : null,
+        d.extraUsage != null ? { label: 'Extra Usage', value: String(d.extraUsage) } : null,
         d.chat ? { label: 'Chat left', value: String(Math.round(d.chat.remaining)) } : null,
+        d.completions ? { label: 'Completions left', value: String(Math.round(d.completions.remaining)) } : null,
+        d.orgBilling ? { label: 'Org Credits', value: String(d.orgBilling.credits) } : null,
+        d.orgBilling ? { label: 'Org Spend', value: `$${d.orgBilling.spendUSD.toFixed(2)}` } : null,
       ].filter(Boolean),
       resetAt: d.resetAt || cycle.endMs,
       resetKind: 'cycle',
@@ -1183,6 +1329,65 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
       resetKind: 'cycle',
       urgent,
       activity: activityState(d.lastActive),
+      lastUpdatedAt: activityLastUpdatedAt(d.lastActive),
+      error: null,
+      nudge: nudgeFor(id, capturedPct, urgent),
+    }
+  }
+
+  if (id === 'devin') {
+    const d = await devin.read()
+    if (!d.connected) {
+      return {
+        ...base,
+        connected: false,
+        activity: 'none',
+        needsKey: false,
+        error: d.error || null,
+      }
+    }
+    const dailyPct = d.daily ? percent(d.daily.usedPct) : null
+    const weeklyPct = d.weekly ? percent(d.weekly.usedPct) : null
+    const capturedPct = weeklyPct ?? dailyPct
+    const windows = [
+      d.weekly
+        ? {
+            label: 'Weekly',
+            kind: '7d',
+            usedPct: weeklyPct,
+            resetAt: d.weekly.resetAt,
+            periodMs: d.weekly.periodMs || 7 * DAY,
+          }
+        : null,
+      d.daily
+        ? {
+            label: 'Daily',
+            kind: 'cycle',
+            usedPct: dailyPct,
+            resetAt: d.daily.resetAt,
+            periodMs: d.daily.periodMs || DAY,
+          }
+        : null,
+    ].filter(Boolean)
+    const urgent = windows.some(windowUrgent)
+    return {
+      ...base,
+      connected: true,
+      plan: d.plan || conf.plan,
+      ...valueFromMonthly(conf, capturedPct, {
+        label: 'live Devin quota',
+        accuracy: 'live',
+        unit: 'quota',
+      }),
+      windows,
+      extra: [
+        d.extraBalanceUSD != null ? { label: 'Extra Balance', value: `$${d.extraBalanceUSD.toFixed(2)}` } : null,
+        d.source ? { label: 'Source', value: d.source } : null,
+      ].filter(Boolean),
+      resetAt: d.weekly?.resetAt || d.daily?.resetAt || null,
+      resetKind: d.weekly ? 'weekly' : 'cycle',
+      urgent,
+      activity: 'live',
       lastUpdatedAt: activityLastUpdatedAt(d.lastActive),
       error: null,
       nudge: nudgeFor(id, capturedPct, urgent),
@@ -1259,6 +1464,16 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
         error: d.error || null,
       }
     }
+    if (opencodego._private.resolveApiKey()) {
+      return {
+        ...base,
+        connected: false,
+        activity: 'none',
+        duplicateOf: 'opencodego',
+        needsKey: false,
+        error: null,
+      }
+    }
     const capturedPct = percent(d.weekly?.usedPct ?? d.rolling?.usedPct ?? 0)
     const windows = [
       d.rolling
@@ -1304,7 +1519,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
   }
 
   if (id === 'opencodego') {
-    const d = await opencodego.read()
+    const d = await opencodego.read(tokenOptions)
     if (!d.connected) {
       const source = d.usageSource || 'web session'
       return {
@@ -1325,6 +1540,8 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
             usedPct: percent(d.rolling.usedPct) || 0,
             resetAt: d.rolling.resetAt,
             periodMs: 5 * 3600e3,
+            forecastEligible: d.usageSource !== 'local db',
+            forecastDisabledReason: d.usageSource === 'local db' ? 'synthetic-reset' : null,
           }
         : null,
       d.weekly
@@ -1334,6 +1551,8 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
             usedPct: percent(d.weekly.usedPct) || 0,
             resetAt: d.weekly.resetAt,
             periodMs: 7 * DAY,
+            forecastEligible: d.usageSource !== 'local db',
+            forecastDisabledReason: d.usageSource === 'local db' ? 'inferred-quota' : null,
           }
         : null,
       d.monthly
@@ -1343,6 +1562,8 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
             usedPct: percent(d.monthly.usedPct) || 0,
             resetAt: d.monthly.resetAt,
             periodMs: 30 * DAY,
+            forecastEligible: d.usageSource !== 'local db',
+            forecastDisabledReason: d.usageSource === 'local db' ? 'inferred-quota' : null,
           }
         : null,
     ].filter(Boolean)
@@ -1361,6 +1582,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
         d.workspaceID ? { label: 'Workspace', value: d.workspaceID } : null,
         { label: 'Source', value: d.usageSource || 'web session' },
       ].filter(Boolean),
+      tokenUsage: d.tokenUsage || null,
       resetAt: d.monthly?.resetAt || d.weekly?.resetAt || d.rolling?.resetAt || cycle.endMs,
       resetKind: d.monthly ? 'cycle' : 'weekly',
       urgent,
@@ -1885,7 +2107,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
     const livePct = Number(d.billing?.usedPercent)
     const capturedPct = Number.isFinite(livePct) ? Math.round(Math.max(0, Math.min(100, livePct))) : null
     const urgent = capturedPct != null && cycle.daysLeft <= 3 && capturedPct < 70
-    const resetAt = d.billing?.resetsAt || cycle.endMs
+    const resetAt = d.billing?.resetsAt || null
     return {
       ...base,
       connected: true,
@@ -1898,21 +2120,22 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
         ? []
         : [
             {
-              label: 'Credits',
-              kind: 'cycle',
+              label: d.billing?.periodType === 'USAGE_PERIOD_TYPE_WEEKLY' ? 'Weekly' : 'Credits',
+              kind: d.billing?.periodType === 'USAGE_PERIOD_TYPE_WEEKLY' ? '7d' : 'cycle',
               usedPct: capturedPct,
               resetAt,
-              periodMs: null,
+              periodMs: d.billing?.periodMs || null,
             },
           ],
       extra: [
         d.accountEmail ? { label: 'Account', value: d.accountEmail } : null,
+        d.billing ? { label: 'Pay as you go', value: d.billing.paygEnabled ? `${d.billing.paygCap} cap` : 'Disabled' } : null,
         { label: 'Sessions', value: String(d.sessions) },
         { label: 'Active days', value: `${d.activeDays} / ${cycle.daysElapsed}` },
       ].filter(Boolean),
-      tokenUsage: null,
+      tokenUsage: d.tokenUsage || null,
       resetAt,
-      resetKind: d.billing?.resetsAt ? 'monthly' : 'cycle',
+      resetKind: d.billing?.periodType === 'USAGE_PERIOD_TYPE_WEEKLY' ? 'weekly' : 'cycle',
       urgent,
       activity: d.billing ? 'live' : activityState(d.lastActive),
       lastUpdatedAt: d.billing ? Date.now() : activityLastUpdatedAt(d.lastActive),
@@ -1984,29 +2207,43 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
         error: d.error || null,
       }
     }
-    const usage = Math.max(0, d.usage || 0)
-    const remaining =
-      d.remaining != null
-        ? Math.max(0, d.remaining)
-        : Math.max(0, (d.limit != null ? d.limit : conf.monthly || usage) - usage)
+    const usage = Math.max(0, d.lifetimeUsage || 0)
+    const remaining = Math.max(0, d.balance || 0)
     const money = valueFromSpendLeft(usage, remaining, {
-      label: d.limit != null || d.remaining != null ? 'live API spend' : 'API budget',
-      accuracy: d.limit != null || d.remaining != null ? 'live' : 'budget',
+      label: 'OpenRouter account credits',
+      accuracy: 'live',
     })
     const capturedPct = money.capturedPct || 0
     const urgent = cycle.daysLeft <= 3 && capturedPct < 60
+    const keyLimitPct = d.limit > 0 && d.remaining != null
+      ? percent(((d.limit - d.remaining) / d.limit) * 100)
+      : null
     return {
       ...base,
       connected: true,
+      plan: d.isFreeTier ? 'Free tier' : d.keyDetailsAvailable ? 'Pay as you go' : conf.plan,
       monthly: money.totalValue || base.monthly,
       ...money,
-      windows: [],
+      windows: keyLimitPct == null ? [] : [{
+        label: 'Key limit',
+        kind: 'cycle',
+        usedPct: keyLimitPct,
+        resetAt: null,
+        periodMs: null,
+      }],
       extra: [
-        { label: 'Spent', value: '$' + usage.toFixed(2) },
+        { label: 'Purchases', value: '$' + Number(d.totalCredits || 0).toFixed(2) },
+        { label: 'Lifetime spend', value: '$' + usage.toFixed(2) },
+        { label: 'Balance', value: '$' + remaining.toFixed(2) },
+        d.dailyUsage != null ? { label: 'Today', value: '$' + d.dailyUsage.toFixed(2) } : null,
+        d.weeklyUsage != null ? { label: 'This week', value: '$' + d.weeklyUsage.toFixed(2) } : null,
+        d.monthlyUsage != null ? { label: 'This month', value: '$' + d.monthlyUsage.toFixed(2) } : null,
+        d.keyDetailsAvailable ? { label: 'Key spend', value: '$' + Number(d.usage || 0).toFixed(2) } : null,
+        d.remaining != null ? { label: 'Key remaining', value: '$' + Number(d.remaining).toFixed(2) } : null,
         d.limit != null
           ? { label: 'Hard cap', value: '$' + Number(d.limit).toFixed(2) }
           : { label: 'Hard cap', value: 'none' },
-      ],
+      ].filter(Boolean),
       resetAt: cycle.endMs,
       resetKind: 'cycle',
       urgent,
@@ -2689,7 +2926,8 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
       extra: [
         d.accountEmail ? { label: 'Signed in', value: d.accountEmail } : null,
         d.modelCount != null ? { label: 'Models', value: String(d.modelCount) } : null,
-        d.source ? { label: 'Source', value: d.source === 'api' ? 'API key' : 'web session' } : null,
+        d.recentChargesUSD != null ? { label: 'Last 4 weeks', value: '$' + d.recentChargesUSD.toFixed(2) } : null,
+        d.source ? { label: 'Source', value: d.source === 'api' ? 'API key' : d.source === 'native signin' ? 'Ollama signin' : 'web session' } : null,
       ].filter(Boolean),
       resetAt: primary?.resetAt || cycle.endMs,
       resetKind: primary?.kind === '7d' ? 'weekly' : 'session',
@@ -2754,7 +2992,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
         ...base,
         connected: false,
         activity: 'none',
-        needsKey: true,
+        needsKey: d.needsKey !== false,
         error: d.error || null,
       }
     }
@@ -2768,7 +3006,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
     const windows = [
       d.tokenLimit
         ? {
-            label: 'Tokens',
+            label: 'Weekly',
             kind: kindFor(d.tokenLimit),
             usedPct: percent(d.tokenLimit.usedPct) || 0,
             resetAt: d.tokenLimit.nextResetAt || null,
@@ -2776,19 +3014,20 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
             detail: resetDescription(d.tokenLimit),
           }
         : null,
-      d.timeLimit
+      d.timeLimit && d.timeLimit.usedPct != null
         ? {
-            label: 'MCP',
+            label: 'Web Searches',
             kind: 'cycle',
-            usedPct: percent(d.timeLimit.usedPct) || 0,
+            usedPct: percent(d.timeLimit.usedPct),
             resetAt: d.timeLimit.nextResetAt || null,
-            periodMs: d.timeLimit.isMCPMonthlyMarker ? null : d.timeLimit.windowMinutes ? d.timeLimit.windowMinutes * 60000 : null,
+            periodMs: 30 * DAY,
             detail: resetDescription(d.timeLimit),
+            valueLabel: `${Math.round(d.timeLimit.currentValue)} / ${Math.round(d.timeLimit.usage)} searches`,
           }
         : null,
       d.sessionTokenLimit
         ? {
-            label: '5-hour',
+            label: 'Session',
             kind: '5h',
             usedPct: percent(d.sessionTokenLimit.usedPct) || 0,
             resetAt: d.sessionTokenLimit.nextResetAt || null,
@@ -2797,7 +3036,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
           }
         : null,
     ].filter(Boolean)
-    const primary = windows.find((w) => w.label === 'Tokens') || windows[0]
+    const primary = windows.find((w) => w.label === 'Weekly') || windows.find((w) => w.label === 'Session') || windows[0]
     const capturedPct = primary ? percent(primary.usedPct) : null
     const value = valueFromMonthly(conf, capturedPct, {
       label: 'live z.ai quota',
@@ -2825,9 +3064,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
             }
           : null,
       extra: [
-        d.sessionTokenLimit ? { label: 'Session', value: `${percent(d.sessionTokenLimit.usedPct) || 0}% used` } : null,
-        d.timeLimit ? { label: 'MCP', value: `${percent(d.timeLimit.usedPct) || 0}% used` } : null,
-        d.tokenLimit?.usage ? { label: 'Token quota', value: String(Math.round(d.tokenLimit.usage)) } : null,
+        d.timeLimit ? { label: 'Web Searches', value: `${Math.round(d.timeLimit.currentValue)} / ${Math.round(d.timeLimit.usage)}` } : null,
         totalModelTokens > 0 ? { label: 'Model tokens', value: String(Math.round(totalModelTokens)) } : null,
         d.modelUsage?.modelNames?.length ? { label: 'Models', value: d.modelUsage.modelNames.slice(0, 2).join(', ') } : null,
       ].filter(Boolean),
@@ -2939,22 +3176,22 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
   }
 
   if (id === 'antigravity') {
-    const d = await antigravity.read()
+    const d = await antigravity.read(tokenOptions)
     if (!d.connected) {
       return {
         ...base,
         connected: false,
         activity: 'none',
-        needsKey: true,
+        needsKey: false,
         error: d.error || null,
       }
     }
     const windows = (d.windows || []).map((w) => ({
       label: w.label,
-      kind: 'cycle',
+      kind: w.periodMs === 5 * 3600e3 ? '5h' : w.periodMs === 7 * DAY ? '7d' : 'cycle',
       usedPct: percent(w.usedPct) || 0,
       resetAt: w.resetAt || null,
-      periodMs: null,
+      periodMs: w.periodMs || null,
     }))
     const primary = windows.find((w) => w.label === 'Claude') || windows[0]
     const capturedPct = primary ? percent(primary.usedPct) : null
@@ -2969,6 +3206,7 @@ async function buildProvider(id, conf, cycle, config = loadConfig(), options = {
         unit: 'quota',
       }),
       windows,
+      tokenUsage: d.tokenUsage || null,
       extra: [
         d.accountEmail ? { label: 'Signed in', value: d.accountEmail } : null,
         d.projectID ? { label: 'Project', value: d.projectID } : null,
@@ -3430,73 +3668,47 @@ function maxxRating(avg) {
   return { stars: 1, verdict: 'Donating to Big AI. Fix it.' }
 }
 
-async function snapshot(options = {}) {
-  const snapStart = Date.now()
-  // Heavy pulls (default) scan local token-history logs; light pulls skip that
-  // and carry forward the last heavy scan. Main process schedules heavy hourly,
-  // light every 30s + on popover open.
-  const heavy = options.heavy !== false
-  const config = loadConfig()
-  const cycle = billingCycle(config.billingDay)
-  try {
-    await withTimeout(tokenCost.refreshPricing(), 8000, 'tokenCost.refreshPricing')
-  } catch (err) {
-    logger.warn('snapshot', 'pricing refresh skipped', { error: err && err.message })
+function snapshotEntries(config, discoveredAccounts, requestedIds) {
+  const selected = requestedIds == null ? null : new Set(requestedIds)
+  const accountsByFamily = new Map()
+  for (const account of discoveredAccounts) {
+    if (!accountsByFamily.has(account.family)) accountsByFamily.set(account.family, [])
+    accountsByFamily.get(account.family).push(account)
   }
-
-  const enabled = Object.entries(config.providers)
-    .filter(([, c]) => c.enabled)
+  const entries = Object.entries(config.providers).filter(([family, conf]) => conf.enabled || selected?.has(family) || [...(selected || [])].some((id) => id.startsWith(`${family}@`)))
     .sort(([a], [b]) => (PROVIDER_BUILD_PRIORITY[a] ?? 10) - (PROVIDER_BUILD_PRIORITY[b] ?? 10))
-  logger.info('snapshot', 'building', { enabledCount: enabled.length, heavy })
-  let providers = (await Promise.all(enabled.map(([id, c]) => buildProviderSafe(id, c, cycle, config, { heavy })))).map((p) => addProviderPace(p))
-  if (!heavy) providers = carryForwardTokenUsage(providers)
-  providers = applyCachedProviderFallbacks(providers).map((p) => addProviderPace(p))
-  providers = addProviderStorageFootprints(providers)
-  try {
-    providers = await withTimeout(addProviderStatuses(providers), STATUS_TIMEOUT_MS, 'addProviderStatuses')
-  } catch (err) {
-    logger.warn('snapshot', 'status fetch skipped', { error: err && err.message })
+    .flatMap(([family, conf]) => {
+      const accounts = accountsByFamily.get(family) || []
+      return accounts.length ? accounts.map((account) => ({ id: account.id, family, conf, account })) : [{ id: family, family, conf, account: null }]
+    })
+  if (selected) {
+    for (const id of selected) {
+      if (!entries.some((entry) => entry.id === id || entry.family === id)) {
+        const error = new Error(`Provider is unavailable: ${id}`)
+        error.code = 'UNKNOWN_PROVIDER'
+        throw error
+      }
+    }
   }
-  providers = providers.map((p) => (
-    p.tokenUsage ? { ...p, tokenUsage: tokenCost.withTokenCost(p.id, p.tokenUsage) } : p
-  ))
-  const totals = totalsFromProviders(providers)
-  const tokenTotals = {
-    ...tokenTotalsFromProviders(providers),
-    dailyCost: tokenDailyCostFromProviders(providers),
-    historyDays: config.tokenHistoryDays,
-  }
-  const storageTotals = storageTotalsFromProviders(providers)
-  const history = historyForSnapshot(providers, totals, tokenTotals, options)
-  providers = usageHistory.applyInsights(providers, history)
-  providers = addProviderSourceLabels(providers)
-  providers = providers.map((provider) => (
-    provider?.connected && !provider.lastUpdatedAt ? { ...provider, lastUpdatedAt: snapStart } : provider
-  ))
-  // Attach the config-bloat scan (instruction files + MCP re-sent every message)
-  // so the pure Optimize detector can flag it without doing any I/O itself.
-  providers = providers.map((provider) => {
-    if (!provider?.connected) return provider
-    const scan = configBloat.scanConfigBloat(provider.id)
-    return scan ? { ...provider, configScan: scan } : provider
-  })
-  // Honor user-defined ordering. Unknown ids drop to end in original order.
+  return entries.map((entry) => ({ ...entry, refresh: !selected || selected.has(entry.id) || selected.has(entry.family) }))
+}
+
+function composeSnapshot(providers, config, cycle, history, refresh) {
   const orderIndex = new Map((config.providerOrder || []).map((id, i) => [id, i]))
-  providers = providers.slice().sort((a, b) => {
-    const ai = orderIndex.has(a.id) ? orderIndex.get(a.id) : Number.MAX_SAFE_INTEGER
-    const bi = orderIndex.has(b.id) ? orderIndex.get(b.id) : Number.MAX_SAFE_INTEGER
-    return ai - bi
-  })
+  providers = providers.slice().sort((a, b) => (orderIndex.get(a.id) ?? orderIndex.get(a.providerFamily) ?? Number.MAX_SAFE_INTEGER) - (orderIndex.get(b.id) ?? orderIndex.get(b.providerFamily) ?? Number.MAX_SAFE_INTEGER))
+  const totals = totalsFromProviders(providers)
+  const tokenTotals = { ...tokenTotalsFromProviders(providers), dailyCost: tokenDailyCostFromProviders(providers), historyDays: config.tokenHistoryDays }
+  const storageTotals = storageTotalsFromProviders(providers)
   const historySummary = usageHistory.historySummary(history)
   const valueTrend = usageHistory.valueTrendSummary(history)
   const tokenTrend = usageHistory.tokenTrendSummary(history)
   const avg = totals.totalValue ? totals.spent / totals.totalValue : 0
   const maxxTarget = maxxTargetFromProviders(providers)
   const resetQueue = resetQueueFromProviders(providers)
-  logger.info('snapshot', 'done', { ms: Date.now() - snapStart, providerCount: providers.length })
 
   return {
     generatedAt: Date.now(),
+    refresh,
     cycle: { label: cycle.label, daysLeft: cycle.daysLeft, totalDays: cycle.totalDays },
     totals: {
       monthly: totals.totalValue,
@@ -3521,6 +3733,52 @@ async function snapshot(options = {}) {
     maxxTarget,
     providers,
   }
+}
+
+async function snapshot(options = {}) {
+  const snapStart = Date.now()
+  const heavy = options.heavy !== false
+  const config = options.config || loadConfig()
+  tokenCost.configurePricing({ unknownModelFallback: config.unknownModelFallback, pricingSupplementUrl: config.pricingSupplementUrl })
+  const cycle = billingCycle(config.billingDay)
+  const selected = options.providerIds == null ? null : options.providerIds
+  if (selected && (!Array.isArray(selected) || !selected.length || selected.some((id) => typeof id !== 'string'))) throw new Error('Choose at least one provider ID.')
+  let entries = snapshotEntries(config, options.providerAccounts || providerAccounts.discoverProviderAccounts(), selected)
+  if (selected && !options.previousSnapshot) entries = entries.filter((entry) => entry.refresh)
+  const history = usageHistory.readHistory()
+  const cache = widgetSnapshot.readWidgetSnapshot()
+  const pricing = withTimeout(tokenCost.refreshPricing(), 8000, 'tokenCost.refreshPricing').catch((error) => logger.warn('snapshot', 'pricing refresh skipped', { error: error.message }))
+  function decorate(provider) {
+    let rows = [provider]
+    if (!heavy) rows = carryForwardTokenUsage(rows, cache)
+    rows = applyCachedProviderFallbacks(rows, cache).map((row) => addProviderPace(row))
+    rows = usageHistory.applyInsights(rows, history)
+    rows = addProviderSourceLabels(rows)
+    return rows.map((row) => ({ ...row, ...(row.connected && !row.lastUpdatedAt ? { lastUpdatedAt: Date.now() } : {}), ...(row.tokenUsage ? { tokenUsage: tokenCost.withTokenCost(row.providerFamily || row.id, row.tokenUsage) } : {}) }))[0]
+  }
+  const result = await providerRefresh.collect(entries, {
+    previousProviders: options.previousSnapshot?.providers,
+    timeoutMs: PROVIDER_TIMEOUT_MS + 1000,
+    build: async (entry) => decorate(await buildProviderSafe(entry.id, entry.conf, cycle, config, { heavy, forceRefresh: options.forceRefresh, providerFamily: entry.family, account: entry.account })),
+    onProgress: typeof options.onProgress === 'function' ? (state) => options.onProgress(composeSnapshot(state.providers, config, cycle, history, state.refresh)) : null,
+  })
+  await pricing
+  let providers = addProviderStorageFootprints(result.providers)
+  try {
+    providers = await withTimeout(addProviderStatuses(providers), STATUS_TIMEOUT_MS, 'addProviderStatuses')
+  } catch (error) { logger.warn('snapshot', 'status fetch skipped', { error: error.message }) }
+  providers = providers.map((provider) => provider.tokenUsage ? { ...provider, tokenUsage: tokenCost.withTokenCost(provider.providerFamily || provider.id, provider.tokenUsage) } : provider)
+  const totals = totalsFromProviders(providers)
+  const tokenTotals = { ...tokenTotalsFromProviders(providers), dailyCost: tokenDailyCostFromProviders(providers), historyDays: config.tokenHistoryDays }
+  const finalHistory = historyForSnapshot(providers, totals, tokenTotals, options)
+  providers = usageHistory.applyInsights(providers, finalHistory)
+  providers = providers.map((provider) => {
+    if (!provider?.connected) return provider
+    const scan = configBloat.scanConfigBloat(provider.providerFamily || provider.id)
+    return scan ? { ...provider, configScan: scan } : provider
+  })
+  logger.info('snapshot', 'done', { ms: Date.now() - snapStart, providerCount: providers.length })
+  return composeSnapshot(providers, config, cycle, finalHistory, result.refresh)
 }
 
 function historyForSnapshot(providers, totals, tokenTotals, options = {}, historyApi = usageHistory) {
@@ -3553,7 +3811,7 @@ function tokenTotalsFromProviders(providers) {
       acc.cached += moneyNumber(p.tokenUsage.cached)
       acc.output += moneyNumber(p.tokenUsage.output)
       acc.total += moneyNumber(p.tokenUsage.total)
-      if (Number.isFinite(Number(p.tokenUsage.costUSD))) {
+      if (p.tokenUsage.costUSD != null && Number.isFinite(Number(p.tokenUsage.costUSD))) {
         acc.costUSD += moneyNumber(p.tokenUsage.costUSD)
         acc.costProviderCount += 1
       }
@@ -3597,7 +3855,7 @@ function tokenDailyCostFromProviders(providers) {
       day.cached += moneyNumber(row.cached)
       day.output += moneyNumber(row.output)
       day.providers.add(provider.id)
-      if (Number.isFinite(Number(row.costUSD))) {
+      if (row.costUSD != null && Number.isFinite(Number(row.costUSD))) {
         day.costUSD += moneyNumber(row.costUSD)
         day.costProviders.add(provider.id)
       }
@@ -3640,8 +3898,10 @@ module.exports = {
     totalsFromProviders,
     tokenTotalsFromProviders,
     tokenDailyCostFromProviders,
+    buildProvider,
     paceForWindow,
     addProviderPace,
+    providerPaceIsFresh,
     maxxTargetFromProviders,
     addProviderStorageFootprints,
     addProviderStatuses,
@@ -3656,5 +3916,8 @@ module.exports = {
     claudeAgentSdkCreditAmount,
     claudeAgentSdkCreditWindow,
     historyForSnapshot,
+    adapterIds: Object.keys(ADAPTERS),
+    snapshotEntries,
+    composeSnapshot,
   },
 }

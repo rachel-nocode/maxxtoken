@@ -4,6 +4,8 @@
 //
 //   GET /v1/usage             -> sanitized usage snapshot (no PII)
 //   GET /v1/usage/:provider   -> single provider object (id is canonicalized)
+//   GET /v1/limits            -> stable, versioned limits contract
+//   GET /v1/limits/:provider  -> limits contract filtered to one provider/family
 //   GET /v1/health            -> { ok, hasSnapshot, generatedAt }
 //
 // Read-only and not browser-reachable by design: only GET is allowed, the
@@ -14,6 +16,7 @@
 
 const http = require('http')
 const { canonicalProviderId } = require('./provider-ids')
+const { buildLimitsContract } = require('./limits-contract')
 
 const DEFAULT_PORT = 7878
 
@@ -58,7 +61,9 @@ function publicProvider(p) {
   if (!p || typeof p !== 'object') return null
   return {
     id: p.id,
-    name: p.name ?? null,
+    providerFamily: p.providerFamily || p.id,
+    accountId: p.account?.id || null,
+    name: p.account ? String(p.name || p.providerFamily || p.id).split(' · ')[0] : p.name ?? null,
     plan: p.plan ?? null,
     connected: !!p.connected,
     activity: p.activity ?? null,
@@ -109,6 +114,13 @@ function publicProvider(p) {
         }
       : null,
     error: p.error || null,
+    resetCredits: p.resetCredits
+      ? {
+          availableCount: p.resetCredits.availableCount ?? null,
+          expiryAvailable: p.resetCredits.expiryAvailable === true,
+          expiries: (p.resetCredits.credits || []).map((credit) => credit.expiresAt).filter((value) => Number.isFinite(Number(value))),
+        }
+      : null,
   }
 }
 
@@ -129,7 +141,10 @@ function publicSnapshot(snapshot) {
 function findProvider(snapshot, rawId) {
   const id = canonicalProviderId(rawId)
   const providers = (snapshot && snapshot.providers) || []
-  return providers.find((p) => canonicalProviderId(p.id) === id) || null
+  const exact = providers.find((p) => canonicalProviderId(p.id) === id)
+  if (exact) return exact
+  const family = providers.filter((p) => canonicalProviderId(p.providerFamily || p.id) === id)
+  return family.length === 1 ? family[0] : null
 }
 
 function handleRequest(req, res, { getSnapshot, requestRefresh, logger, port }) {
@@ -151,9 +166,11 @@ function handleRequest(req, res, { getSnapshot, requestRefresh, logger, port }) 
     return
   }
 
+  let parsedUrl
   let pathname
   try {
-    pathname = new URL(req.url, 'http://127.0.0.1').pathname.replace(/\/+$/, '') || '/'
+    parsedUrl = new URL(req.url, 'http://127.0.0.1')
+    pathname = parsedUrl.pathname.replace(/\/+$/, '') || '/'
   } catch {
     sendJson(res, 400, { error: 'bad_request' })
     return
@@ -180,6 +197,43 @@ function handleRequest(req, res, { getSnapshot, requestRefresh, logger, port }) 
     return
   }
 
+  if (pathname === '/v1/limits') {
+    if (!snapshot) {
+      if (typeof requestRefresh === 'function') { try { requestRefresh() } catch {} }
+      sendJson(res, 503, {
+        schemaVersion: '1.0',
+        error: { code: 'no_snapshot', message: 'Limit snapshot is not ready; retry shortly.', retryable: true },
+      })
+      return
+    }
+    const providerIds = parsedUrl.searchParams.getAll('provider').filter(Boolean)
+    sendJson(res, 200, buildLimitsContract(snapshot, { providerIds }))
+    return
+  }
+
+  const limitsMatch = pathname.match(/^\/v1\/limits\/([^/]+)$/)
+  if (limitsMatch) {
+    if (!snapshot) {
+      if (typeof requestRefresh === 'function') { try { requestRefresh() } catch {} }
+      sendJson(res, 503, {
+        schemaVersion: '1.0',
+        error: { code: 'no_snapshot', message: 'Limit snapshot is not ready; retry shortly.', retryable: true },
+      })
+      return
+    }
+    const requested = decodeURIComponent(limitsMatch[1])
+    const contract = buildLimitsContract(snapshot, { providerIds: [requested] })
+    if (!contract.providers.length) {
+      sendJson(res, 404, {
+        schemaVersion: '1.0',
+        error: { code: 'unknown_provider', message: 'The requested provider is not present in this snapshot.', retryable: false },
+      })
+      return
+    }
+    sendJson(res, 200, contract)
+    return
+  }
+
   const m = pathname.match(/^\/v1\/usage\/([^/]+)$/)
   if (m) {
     if (!snapshot) {
@@ -196,7 +250,7 @@ function handleRequest(req, res, { getSnapshot, requestRefresh, logger, port }) 
     return
   }
 
-  sendJson(res, 404, { error: 'not_found', message: 'try /v1/usage' })
+  sendJson(res, 404, { error: 'not_found', message: 'try /v1/usage or /v1/limits' })
 }
 
 // Start the loopback HTTP server. Returns the chosen port (or null on failure).

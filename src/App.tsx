@@ -12,21 +12,13 @@ import {
   ArrowRight,
   ArrowUpRight,
   Box,
-  Code2,
-  FileText,
   Flame,
   Gauge,
-  MessageCircle,
-  RefreshCw,
   Search,
   Settings,
-  Share2,
   Sparkles,
   Star,
-  Target,
-  TerminalSquare,
   TrendingUp,
-  Wand2,
   Wifi,
   Zap,
   type LucideIcon,
@@ -37,9 +29,12 @@ import './App.css'
 // Create a "pay what you want" product in the Polar dashboard, attach the
 // notarized .dmg as a downloadable benefit, generate a Checkout Link, paste here.
 const POLAR_CHECKOUT_URL = 'https://buy.polar.sh/polar_cl_LqRTIQr3ZHy4GLeodnuiSjD61ukYadR646MiS3wbNIn'
+const LATEST_RELEASE_URL = 'https://github.com/rachel-nocode/maxxtoken/releases/latest'
+const PRODUCT_GUIDE_URL = 'https://github.com/rachel-nocode/homebrew-maxxtoken/blob/main/docs/product-guide.md'
+const PROVIDERS_URL = 'https://github.com/rachel-nocode/homebrew-maxxtoken/blob/main/docs/providers.md'
 
-// Every download button routes through Polar checkout — the .dmg is never
-// served directly. Polar delivers the notarized build after checkout.
+// Mac checkout buttons route through Polar; Windows and release-history links
+// go to the public GitHub release assets.
 async function startDownload(event: MouseEvent) {
   event.preventDefault()
   try {
@@ -86,7 +81,7 @@ const providers: Provider[] = [
   },
   {
     id: 'codex',
-    name: 'Codex',
+    name: 'ChatGPT / Codex',
     plan: 'Pro Plan',
     monthly: 30,
     baseUsedPct: 0,
@@ -115,21 +110,6 @@ const providers: Provider[] = [
     ],
   },
   {
-    id: 'chatgpt',
-    name: 'ChatGPT',
-    plan: 'Plus Plan',
-    monthly: 20,
-    baseUsedPct: 21,
-    drain: 0.25,
-    countdown: '2d 05h 37m',
-    accent: '#19c37d',
-    icon: MessageCircle,
-    windows: [
-      { label: 'Session', kind: '5-hour window', usedPct: 0, reset: '02h 56m 13s' },
-      { label: 'Weekly', kind: '7-day window', usedPct: 21, reset: '2d 05h 37m' },
-    ],
-  },
-  {
     id: 'gemini',
     name: 'Gemini',
     plan: 'Advanced',
@@ -145,52 +125,13 @@ const providers: Provider[] = [
   },
 ]
 
-type Idea = {
-  icon: LucideIcon
-  title: string
-  meta: string
-  value: string
-  status: string
-}
-
-const ideas: Idea[] = [
-  {
-    icon: FileText,
-    title: 'Turn a messy note into a launch post',
-    meta: 'Claude · 20-30 min',
-    value: '$3.60',
-    status: 'streaming',
-  },
-  {
-    icon: TerminalSquare,
-    title: 'Ask Codex to write 3 tests before reset',
-    meta: 'Codex · 15-25 min',
-    value: '$2.80',
-    status: 'queued',
-  },
-  {
-    icon: Target,
-    title: 'Scope one half-baked app idea into a build plan',
-    meta: 'Kimi · 25 min',
-    value: '$4.20',
-    status: 'next',
-  },
-  {
-    icon: MessageCircle,
-    title: 'Brainstorm 5 product experiments you can run this week',
-    meta: 'ChatGPT · 15 min',
-    value: '$2.10',
-    status: 'ready',
-  },
-]
-
 const stackTools = [
-  { name: 'Claude', tag: 'Web', icon: Sparkles, accent: '#ff7d4d' },
-  { name: 'Codex', tag: 'Web', icon: Box, accent: '#e6e6e6' },
-  { name: 'Cursor', tag: 'Desktop', icon: Box, accent: '#cfd2d6' },
-  { name: 'ChatGPT', tag: 'Web', icon: MessageCircle, accent: '#19c37d' },
-  { name: 'Gemini', tag: 'Web', icon: Sparkles, accent: '#4f8cff' },
-  { name: 'Perplexity', tag: 'Web', icon: Sparkles, accent: '#4cc3c9' },
+  { name: 'Claude', tag: 'Auto', icon: Sparkles, accent: '#ff7d4d' },
+  { name: 'ChatGPT / Codex', tag: 'Auto', icon: Box, accent: '#e6e6e6' },
+  { name: 'Cursor', tag: 'App', icon: Box, accent: '#cfd2d6' },
+  { name: 'Copilot', tag: 'Auto', icon: Box, accent: '#19c37d' },
+  { name: 'Gemini', tag: 'Local', icon: Sparkles, accent: '#4f8cff' },
+  { name: 'OpenRouter', tag: 'API', icon: Sparkles, accent: '#4cc3c9' },
 ]
 
 function money(value: number) {
@@ -209,7 +150,6 @@ function App() {
   const [activeProvider, setActiveProvider] = useState('Claude')
   const [spendTick, setSpendTick] = useState(0)
   const [demoOpen, setDemoOpen] = useState(true)
-  const [demoView, setDemoView] = useState<'usage' | 'stream'>('usage')
   const [now, setNow] = useState(() => new Date())
   const [demoRight, setDemoRight] = useState<number | null>(null)
 
@@ -297,10 +237,6 @@ function App() {
     }
   }, [animatedProviders])
 
-  const fullestProvider = animatedProviders.reduce((fullest, provider) =>
-    provider.leftPct > fullest.leftPct ? provider : fullest,
-  )
-
   return (
     <div className="page" id="top">
       <nav className="os-menubar" aria-label="Main">
@@ -311,8 +247,8 @@ function App() {
               <span>MaxxToken</span>
             </a>
             <a className="osm-menu" href="#product">Demo</a>
-            <a className="osm-menu" href="#nudges">Missions</a>
-            <a className="osm-menu" href="#what-is-tokenmaxxing">Tokenmaxxing</a>
+            <a className="osm-menu" href="#how-it-works">How it works</a>
+            <a className="osm-menu" href={PROVIDERS_URL}>Providers</a>
             <a className="osm-menu" href="https://x.com/rachelnocode">Contact</a>
           </div>
           <div className="osm-right">
@@ -320,7 +256,7 @@ function App() {
             <Search className="osm-glyph" size={15} aria-hidden="true" />
             <span className="osm-clock">{clockLabel}</span>
             <a className="osm-download" href={POLAR_CHECKOUT_URL} onClick={startDownload}>
-              Download for Mac
+              Mac · Apple Silicon
             </a>
             <button
               type="button"
@@ -329,7 +265,7 @@ function App() {
               onClick={() => setDemoOpen((open) => !open)}
               aria-expanded={demoOpen}
             >
-              ⚡ {money(totals.left)} left
+              ⚡ {money(totals.left)} est. left
             </button>
           </div>
         </div>
@@ -345,15 +281,18 @@ function App() {
             You paid for the tokens. <span className="accent">Go spend them.</span>
           </h1>
           <p>
-            MaxxToken shows the dollars you have left and turns them into work before the timer runs out.
+            See quota windows, resets, balances, local token history, and clearly labeled value estimates before they expire.
+          </p>
+          <p className="release-note">
+            Current release v0.2.13: universal Mac for Apple Silicon and Intel, plus Windows x64.
           </p>
           <div className="hero-actions">
             <a className="btn-primary lg" href={POLAR_CHECKOUT_URL} onClick={startDownload}>
-              Download for Mac
+              Get Mac · Universal
               <ArrowRight size={18} aria-hidden="true" />
             </a>
-            <a className="btn-outline lg" href="#nudges">
-              See how it works
+            <a className="btn-outline lg" href={LATEST_RELEASE_URL}>
+              Windows x64
             </a>
           </div>
           <div className="hero-features">
@@ -361,21 +300,21 @@ function App() {
               <Zap size={16} aria-hidden="true" />
               <div>
                 <strong>Pay what you want</strong>
-                <span>One-time, name your price</span>
+                <span>Mac checkout, one-time</span>
               </div>
             </div>
             <div className="hero-feature">
               <Gauge size={16} aria-hidden="true" />
               <div>
                 <strong>Private by design</strong>
-                <span>We never see your prompts</span>
+                <span>Usage processed locally</span>
               </div>
             </div>
             <div className="hero-feature">
-              <Code2 size={16} aria-hidden="true" />
+              <TrendingUp size={16} aria-hidden="true" />
               <div>
-                <strong>Built for people who ship</strong>
-                <span>Missions that hit</span>
+                <strong>Reset forecasts</strong>
+                <span>Estimates at your current pace</span>
               </div>
             </div>
           </div>
@@ -390,7 +329,6 @@ function App() {
           {demoOpen ? (
             <div className="demo-pop-wrap">
               <span className="demo-caret" aria-hidden="true" />
-              {demoView === 'usage' ? (
                 <div className="popover-demo usage-popover">
                   <div className="pd-dot-grid" aria-hidden="true" />
                   <div className="pd-head">
@@ -402,14 +340,6 @@ function App() {
                     </div>
                     <span className="pd-cycle">May cycle · 16d left</span>
                     <div className="pd-actions">
-                      <button
-                        className="pd-icon-btn live"
-                        type="button"
-                        aria-label="Open Idea Stream"
-                        onClick={() => setDemoView('stream')}
-                      >
-                        ◆
-                      </button>
                       <button className="pd-icon-btn" type="button" aria-label="Settings">
                         <Settings size={14} />
                       </button>
@@ -420,12 +350,12 @@ function App() {
                     <div className="pd-stats">
                       <div className="pd-stat">
                         <div className="pd-num green">{money(totals.left)}</div>
-                        <div className="pd-label">left to use</div>
+                        <div className="pd-label">estimated value left</div>
                       </div>
                       <div className="pd-divider" />
                       <div className="pd-stat">
                         <div className="pd-num red">{money(totals.spent)}</div>
-                        <div className="pd-label">used this cycle</div>
+                        <div className="pd-label">estimated value used</div>
                       </div>
                       <div className="pd-divider" />
                       <div className="pd-stat">
@@ -444,7 +374,7 @@ function App() {
                         <Star size={17} />
                         <Star size={17} />
                       </span>
-                      <span className="pd-verdict">Donating to Big AI. Fix it.</span>
+                      <span className="pd-verdict">Illustrative next-release demo · synthetic data</span>
                       <span className="pd-spend-pulse">
                         <Flame size={12} aria-hidden="true" />
                         spending
@@ -512,7 +442,7 @@ function App() {
                           </div>
                           <div className="pd-prov-bottom">
                             <span>
-                              left <strong>{moneyExact(provider.left)}</strong> /{' '}
+                              est. left <strong>{moneyExact(provider.left)}</strong> /{' '}
                               {money(provider.monthly)}
                             </span>
                             <span className="pd-burn">{moneyExact(provider.spent)} used</span>
@@ -524,7 +454,7 @@ function App() {
 
                   <footer className="pd-pop-foot">
                     <span>
-                      {money(totals.left)} / {money(totals.monthly)} left across{' '}
+                      {money(totals.left)} / {money(totals.monthly)} estimated value left across{' '}
                       {animatedProviders.length} plans
                     </span>
                     <button type="button" onClick={() => setDemoOpen(false)}>
@@ -532,83 +462,6 @@ function App() {
                     </button>
                   </footer>
                 </div>
-              ) : (
-                <div className="popover-demo stream-popover">
-                  <div className="pd-dot-grid" aria-hidden="true" />
-                  <div className="stream-head">
-                    <button
-                      className="stream-back"
-                      type="button"
-                      onClick={() => setDemoView('usage')}
-                    >
-                      ‹ Back
-                    </button>
-                    <span>Idea Stream</span>
-                    <span className="stream-live">
-                      <RefreshCw size={13} aria-hidden="true" />
-                      live
-                    </span>
-                  </div>
-                  <div className="forge-target">
-                    Routed to <strong>{fullestProvider.name}</strong> · {fullestProvider.leftPct}%
-                    full
-                  </div>
-                  <div className="stream-stage">
-                    <article className="stream-card">
-                      <div className="stream-card-top">
-                        <span className="stream-title">Launch-post machine</span>
-                        <span className="stream-source">CLAUDE</span>
-                      </div>
-                      <p>
-                        Drop in a rough voice note. It returns a launch thread, landing-page
-                        bullets, and a next-build prompt.
-                      </p>
-                      <div className="stream-meter">
-                        <span style={{ width: `${100 - spendStep * 3}%` }} />
-                      </div>
-                      <div className="stream-meta">
-                        <span>Complexity ●●○</span>
-                        <span>Build ~20m</span>
-                        <span>{moneyExact(spendStep * 0.42 + 1.8)} spent</span>
-                      </div>
-                    </article>
-                    <div className="idea-list">
-                      {ideas.map((idea, index) => {
-                        const Icon = idea.icon
-
-                        return (
-                          <div
-                            className="idea-row"
-                            key={idea.title}
-                            style={{ '--stream-delay': `${index * 170}ms` } as CSSProperties}
-                          >
-                            <span className="idea-icon">
-                              <Icon size={15} aria-hidden="true" />
-                            </span>
-                            <span className="idea-body">
-                              <strong>{idea.title}</strong>
-                              <small>{idea.meta}</small>
-                            </span>
-                            <span className="idea-value">
-                              <strong>+ {idea.value}</strong>
-                              <small>{idea.status}</small>
-                            </span>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                  <div className="stream-actions">
-                    <button type="button" className="stream-skip">
-                      Skip
-                    </button>
-                    <button type="button" className="stream-start">
-                      <Share2 size={14} aria-hidden="true" />
-                      Start build
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
           ) : (
             <button
@@ -618,35 +471,35 @@ function App() {
             >
               <img src="/icon-1.png" alt="" />
               <span>
-                Click <strong>⚡ {money(totals.left)} left</strong> in the menu bar above to open
-                the live demo
+                Click <strong>⚡ {money(totals.left)} est. left</strong> in the menu bar above to open
+                the next-release demo
               </span>
             </button>
           )}
         </div>
       </section>
 
-      <section className="steps" id="nudges">
+      <section className="steps" id="how-it-works">
         <article className="step">
           <span className="step-icon">
             <Gauge size={20} aria-hidden="true" />
           </span>
           <h3>Counts your usage</h3>
-          <p>Every AI plan, its limits and reset windows — tracked live.</p>
+          <p>Provider quota, balances, resets, local history, and freshness stay distinct.</p>
         </article>
         <article className="step">
           <span className="step-icon">
             <Flame size={20} aria-hidden="true" />
           </span>
-          <h3>Shows what you waste</h3>
-          <p>One number: the dollars about to vanish at reset.</p>
+          <h3>Explains value</h3>
+          <p>Measured spend, estimated cost, and hypothetical subscription value are labeled.</p>
         </article>
-        <article className="step" id="what-is-tokenmaxxing">
+        <article className="step">
           <span className="step-icon">
             <Sparkles size={20} aria-hidden="true" />
           </span>
-          <h3>Ideas to tokenmaxx</h3>
-          <p>Build missions routed to the plan you underuse most.</p>
+          <h3>Forecasts each reset</h3>
+          <p>Eligible windows estimate what remains at reset at your current pace.</p>
         </article>
       </section>
 
@@ -672,11 +525,11 @@ function App() {
           })}
           <div className="stack-chip soon">
             <span className="stack-icon dots" aria-hidden="true">
-              <Wand2 size={16} />
+              <Zap size={16} />
             </span>
             <span className="stack-name">
-              <strong>More</strong>
-              <small>Coming soon</small>
+              <strong>18 more</strong>
+              <small>Supported + experimental</small>
             </span>
           </div>
         </div>
@@ -686,13 +539,14 @@ function App() {
         <div className="viral-card">
           <img src="/icon-1.png" alt="MaxxToken receipt icon" />
           <div>
-            <strong>Download for Mac</strong>
-            <span>Pay what you want. One-time. Private by design.</span>
+            <strong>Current public release · v0.2.13</strong>
+            <span>Apple Silicon and Intel Mac, plus Windows x64.</span>
           </div>
           <a className="btn-primary" href={POLAR_CHECKOUT_URL} onClick={startDownload}>
-            Download for Mac
+            Get Mac
             <ArrowRight size={16} aria-hidden="true" />
           </a>
+          <a className="btn-outline viral-windows" href={LATEST_RELEASE_URL}>Windows x64</a>
         </div>
       </section>
 
@@ -704,13 +558,13 @@ function App() {
               Maxx<strong>Token</strong>
             </span>
           </a>
-          <p>The menu bar app for tokenmaxxing your AI subscriptions.</p>
+          <p>AI quota, reset, balance, token-history, and value tracking.</p>
         </div>
         <nav className="footer-nav">
           <a href="#product">Demo</a>
-          <a href="#nudges">Missions</a>
-          <a href="#what-is-tokenmaxxing">Tokenmaxxing</a>
-          <a href={POLAR_CHECKOUT_URL} onClick={startDownload}>Download</a>
+          <a href={PRODUCT_GUIDE_URL}>Docs</a>
+          <a href={PROVIDERS_URL}>Providers</a>
+          <a href={LATEST_RELEASE_URL}>Releases</a>
         </nav>
         <div className="footer-social">
           <a href="https://x.com/rachelnocode" aria-label="Rachel on X">

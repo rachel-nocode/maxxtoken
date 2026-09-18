@@ -2,10 +2,12 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { canonicalProviderId } = require('./provider-ids')
+const openUsagePreferences = require('./openusage-preferences')
+const { defaultProviders, getProviderCapability } = require('./provider-capabilities')
 
 const DIR = path.join(os.homedir(), '.maxxtoken')
 const FILE = path.join(DIR, 'config.json')
-const TRAY_METRICS = new Set(['burnbar', 'left', 'spent', 'percent', 'target', 'reset', 'tokens'])
+const TRAY_METRICS = new Set(['burnbar', 'pins', 'left', 'spent', 'percent', 'target', 'reset', 'tokens'])
 const USAGE_METER_MODES = new Set(['used', 'left'])
 
 // Default subscriptions. Costs are what people typically overspend on.
@@ -23,66 +25,25 @@ const DEFAULT_CONFIG = {
   quotaWarningSessionEnabled: true,
   quotaWarningWeeklyEnabled: true,
   trayMetric: 'burnbar',
+  trayPins: [],
+  metricLayouts: {},
+  expandedProviderIds: [],
+  openUsagePrefs: openUsagePreferences.normalize(),
+  accountLayoutBindings: {},
   usageMeterMode: 'used',
   // Local read-only HTTP API (loopback only) for statuslines/scripts/tmux.
   localApiPort: 7878,
   tokenHistoryDays: 30,
   saveModeSuggestions: false,
+  logLevel: 'info',
+  proxy: { enabled: false, url: '', bypassLoopback: true },
+  unknownModelFallback: { enabled: false, models: {} },
+  pricingSupplementUrl: '',
   onboardingComplete: false,
   // null = not yet decided, true = on, false = declined.
   missions: null,
   missionHistory: [],
-  // tier drives which providers the UI lists:
-  //   'core'     — the popular agents both CodexBar + OpenUsage track; shown by default.
-  //   'extended' — secondary/API providers; revealed later via a "more providers" drawer.
-  //   'hidden'   — long-tail/niche providers nobody monitors; kept in code (reversible,
-  //                adapters intact) but never listed in the UI.
-  providers: {
-    claude: { name: 'Claude', plan: 'Max', monthly: 200, enabled: false, tier: 'core' },
-    // Codex CLI runs on the OpenAI / ChatGPT Pro subscription.
-    codex: { name: 'ChatGPT', plan: 'Pro', monthly: 200, enabled: false, tier: 'core' },
-    opencode: { name: 'OpenCode', plan: 'Go', monthly: 60, enabled: false, tier: 'core' },
-    opencodego: { name: 'OpenCode Go', plan: 'Go', monthly: 60, enabled: false, tier: 'core' },
-    openai: { name: 'OpenAI API', plan: 'Admin API', monthly: 50, enabled: false, tier: 'extended' },
-    azureopenai: { name: 'Azure OpenAI', plan: 'Deployment', monthly: 20, enabled: false, tier: 'hidden' },
-    cursor: { name: 'Cursor', plan: 'Pro', monthly: 20, enabled: false, tier: 'core' },
-    copilot: { name: 'Copilot', plan: 'Pro', monthly: 10, enabled: false, tier: 'core' },
-    windsurf: { name: 'Windsurf', plan: 'Pro', monthly: 15, enabled: false, tier: 'core' },
-    kiro: { name: 'Kiro', plan: 'Free', monthly: 50, enabled: false, tier: 'core' },
-    alibaba: { name: 'Alibaba', plan: 'Coding Plan', monthly: 20, enabled: false, tier: 'hidden' },
-    alibabatokenplan: { name: 'Alibaba Token Plan', plan: 'Token Plan', monthly: 20, enabled: false, tier: 'hidden' },
-    augment: { name: 'Augment', plan: 'Code', monthly: 30, enabled: false, tier: 'hidden' },
-    warp: { name: 'Warp', plan: 'AI', monthly: 20, enabled: false, tier: 'hidden' },
-    elevenlabs: { name: 'ElevenLabs', plan: 'Creator', monthly: 22, enabled: false, tier: 'hidden' },
-    kilo: { name: 'Kilo', plan: 'Pass', monthly: 20, enabled: false, tier: 'hidden' },
-    kimi: { name: 'Kimi', plan: 'Basic', monthly: 15, enabled: false, tier: 'core' },
-    moonshot: { name: 'Moonshot / Kimi API', plan: 'API', monthly: 20, enabled: false, tier: 'extended' },
-    kimik2: { name: 'Kimi K2', plan: 'Credits', monthly: 20, enabled: false, tier: 'extended' },
-    doubao: { name: 'Doubao', plan: 'Ark API', monthly: 20, enabled: false, tier: 'hidden' },
-    grok: { name: 'Grok', plan: 'Build', monthly: 99, enabled: false, tier: 'core' },
-    groq: { name: 'Groq', plan: 'API', monthly: 20, enabled: false, tier: 'hidden' },
-    gemini: { name: 'Gemini', plan: 'Pro', monthly: 20, enabled: false, tier: 'core' },
-    openrouter: { name: 'OpenRouter', plan: 'API', monthly: 20, enabled: false, tier: 'extended' },
-    mistral: { name: 'Mistral', plan: 'API', monthly: 20, enabled: false, tier: 'extended' },
-    codebuff: { name: 'Codebuff', plan: 'Pro', monthly: 20, enabled: false, tier: 'hidden' },
-    commandcode: { name: 'Command Code', plan: 'Pro', monthly: 30, enabled: false, tier: 'hidden' },
-    crof: { name: 'Crof', plan: 'API', monthly: 20, enabled: false, tier: 'hidden' },
-    venice: { name: 'Venice', plan: 'API', monthly: 20, enabled: false, tier: 'hidden' },
-    deepseek: { name: 'DeepSeek', plan: 'API', monthly: 10, enabled: false, tier: 'extended' },
-    deepgram: { name: 'Deepgram', plan: 'API', monthly: 20, enabled: false, tier: 'hidden' },
-    stepfun: { name: 'StepFun', plan: 'Step Plan', monthly: 20, enabled: false, tier: 'hidden' },
-    llmproxy: { name: 'LLM Proxy', plan: 'Quota Stats', monthly: 20, enabled: false, tier: 'hidden' },
-    ollama: { name: 'Ollama', plan: 'Cloud', monthly: 20, enabled: false, tier: 'extended' },
-    abacus: { name: 'Abacus AI', plan: 'Credits', monthly: 20, enabled: false, tier: 'hidden' },
-    amp: { name: 'Amp', plan: 'Credits', monthly: 40, enabled: false, tier: 'core' },
-    antigravity: { name: 'Antigravity', plan: 'Google AI', monthly: 20, enabled: false, tier: 'core' },
-    manus: { name: 'Manus', plan: 'Pro', monthly: 20, enabled: false, tier: 'hidden' },
-    vertexai: { name: 'Vertex AI', plan: 'Google Cloud', monthly: 20, enabled: false, tier: 'extended' },
-    synthetic: { name: 'Synthetic', plan: 'API', monthly: 20, enabled: false, tier: 'hidden' },
-    mimo: { name: 'Xiaomi MiMo', plan: 'Credits', monthly: 20, enabled: false, tier: 'hidden' },
-    bedrock: { name: 'AWS Bedrock', plan: 'Cost Explorer', monthly: 20, enabled: false, tier: 'extended' },
-    t3chat: { name: 'T3 Chat', plan: 'Pro', monthly: 20, enabled: false, tier: 'hidden' },
-  },
+  providers: defaultProviders(),
 }
 
 function loadConfig(file = FILE) {
@@ -103,13 +64,23 @@ function loadConfig(file = FILE) {
       quotaWarningSessionEnabled: raw.quotaWarningSessionEnabled ?? DEFAULT_CONFIG.quotaWarningSessionEnabled,
       quotaWarningWeeklyEnabled: raw.quotaWarningWeeklyEnabled ?? DEFAULT_CONFIG.quotaWarningWeeklyEnabled,
       trayMetric: normalizeTrayMetric(raw.trayMetric),
+      trayPins: normalizeTrayPins(raw.trayPins),
+      metricLayouts: normalizeMetricLayouts(raw.metricLayouts),
+      expandedProviderIds: normalizeProviderIds(raw.expandedProviderIds),
+      openUsagePrefs: openUsagePreferences.normalize(raw.openUsagePrefs),
+      accountLayoutBindings: normalizeAccountLayoutBindings(raw.accountLayoutBindings),
       usageMeterMode: normalizeUsageMeterMode(raw.usageMeterMode),
       localApiPort: clampNumber(raw.localApiPort, 1, 65535, DEFAULT_CONFIG.localApiPort),
       tokenHistoryDays: normalizeTokenHistoryDays(raw.tokenHistoryDays),
       saveModeSuggestions: raw.saveModeSuggestions === true,
+      logLevel: normalizeLogLevel(raw.logLevel),
+      proxy: normalizeProxyConfig(raw.proxy),
+      unknownModelFallback: normalizeUnknownModelFallback(raw.unknownModelFallback),
+      pricingSupplementUrl: normalizePricingSupplementUrl(raw.pricingSupplementUrl),
       onboardingComplete: raw.onboardingComplete === true,
       missions: typeof raw.missions === 'boolean' ? raw.missions : null,
       missionHistory: normalizeMissionHistory(raw.missionHistory),
+      providerOptOuts: normalizeProviderOptOuts(raw.providerOptOuts),
       providerOrder: normalizeProviderOrder(raw.providerOrder, providers),
       providers,
     }
@@ -125,7 +96,7 @@ function normalizeProviderOrder(rawOrder, providers) {
   if (Array.isArray(rawOrder)) {
     for (const id of rawOrder) {
       const canonical = canonicalProviderId(id)
-      if (!providers[canonical] || seen.has(canonical)) continue
+      if ((!providers[canonical] && !isAccountInstanceId(canonical)) || seen.has(canonical)) continue
       seen.add(canonical)
       out.push(canonical)
     }
@@ -165,7 +136,7 @@ function normalizeProviders(rawProviders) {
     }
   }
   for (const [id, provider] of Object.entries(providers)) {
-    providers[id] = normalizeProviderConfig(provider)
+    providers[id] = normalizeProviderConfig(provider, id)
   }
   return providers
 }
@@ -176,12 +147,22 @@ function saveConfig(config, file = FILE) {
   const normalized = {
     ...config,
     trayMetric: normalizeTrayMetric(config.trayMetric),
+    trayPins: normalizeTrayPins(config.trayPins),
+    metricLayouts: normalizeMetricLayouts(config.metricLayouts),
+    expandedProviderIds: normalizeProviderIds(config.expandedProviderIds),
+    openUsagePrefs: openUsagePreferences.normalize(config.openUsagePrefs),
+    accountLayoutBindings: normalizeAccountLayoutBindings(config.accountLayoutBindings),
     usageMeterMode: normalizeUsageMeterMode(config.usageMeterMode),
     tokenHistoryDays: normalizeTokenHistoryDays(config.tokenHistoryDays),
+    logLevel: normalizeLogLevel(config.logLevel),
+    proxy: normalizeProxyConfig(config.proxy),
+    unknownModelFallback: normalizeUnknownModelFallback(config.unknownModelFallback),
+    pricingSupplementUrl: normalizePricingSupplementUrl(config.pricingSupplementUrl),
     quotaWarningThresholds: normalizeQuotaWarningThresholds(config.quotaWarningThresholds),
     quotaWarningSessionThresholds: normalizeQuotaWarningThresholds(config.quotaWarningSessionThresholds || config.quotaWarningThresholds),
     quotaWarningWeeklyThresholds: normalizeQuotaWarningThresholds(config.quotaWarningWeeklyThresholds || config.quotaWarningThresholds),
     missionHistory: normalizeMissionHistory(config.missionHistory),
+    providerOptOuts: normalizeProviderOptOuts(config.providerOptOuts),
     providerOrder: normalizeProviderOrder(config.providerOrder, providers),
     providers,
   }
@@ -219,6 +200,63 @@ function normalizeTrayMetric(value) {
   return TRAY_METRICS.has(value) ? value : DEFAULT_CONFIG.trayMetric
 }
 
+function normalizeProviderIds(value) {
+  return Array.isArray(value)
+    ? [...new Set(value.map(canonicalProviderId).filter((id) => DEFAULT_CONFIG.providers[id] || isAccountInstanceId(id)))].slice(0, 50)
+    : []
+}
+
+function isAccountInstanceId(id) {
+  return /^(claude|codex)@[0-9a-f]{12}$/.test(id)
+}
+
+function normalizeAccountLayoutBindings(value) {
+  const out = {}
+  for (const family of ['claude', 'codex']) {
+    if (typeof value?.[family] === 'string' && value[family].startsWith(`${family}@`) && isAccountInstanceId(value[family])) out[family] = value[family]
+  }
+  return out
+}
+
+function normalizeMetricIdList(value) {
+  return Array.isArray(value)
+    ? [...new Set(value.filter((id) => typeof id === 'string' && id.length > 0 && id.length <= 180))].slice(0, 80)
+    : []
+}
+
+function normalizeMetricLayouts(value) {
+  const layouts = {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return layouts
+  for (const [rawId, rawLayout] of Object.entries(value)) {
+    const id = canonicalProviderId(rawId)
+    if ((!DEFAULT_CONFIG.providers[id] && !isAccountInstanceId(id)) || !rawLayout || typeof rawLayout !== 'object') continue
+    layouts[id] = {
+      version: 1,
+      order: normalizeMetricIdList(rawLayout.order),
+      primary: normalizeMetricIdList(rawLayout.primary),
+      hidden: normalizeMetricIdList(rawLayout.hidden),
+      knownMetricIds: normalizeMetricIdList(rawLayout.knownMetricIds),
+    }
+  }
+  return layouts
+}
+
+function normalizeTrayPins(value) {
+  const pins = []
+  const perProvider = new Map()
+  for (const raw of Array.isArray(value) ? value : []) {
+    if (!raw || typeof raw !== 'object') continue
+    const providerId = canonicalProviderId(raw.providerId)
+    const metricId = typeof raw.metricId === 'string' ? raw.metricId.slice(0, 180) : ''
+    if ((!DEFAULT_CONFIG.providers[providerId] && !isAccountInstanceId(providerId)) || !metricId) continue
+    const count = perProvider.get(providerId) || 0
+    if (count >= 2) continue
+    perProvider.set(providerId, count + 1)
+    pins.push({ providerId, metricId, style: raw.style === 'text' ? 'text' : 'bar' })
+  }
+  return pins.slice(0, 12)
+}
+
 function normalizeUsageMeterMode(value) {
   const normalized = value === 'remaining' ? 'left' : value
   return USAGE_METER_MODES.has(normalized) ? normalized : DEFAULT_CONFIG.usageMeterMode
@@ -236,11 +274,85 @@ function normalizeQuotaWarningThresholds(raw) {
   return unique.length ? unique : [...DEFAULT_CONFIG.quotaWarningThresholds]
 }
 
-function normalizeProviderConfig(provider) {
+function normalizeProviderConfig(provider, id = provider?.id) {
   const next = { ...provider }
+  const capability = getProviderCapability(id)
+  if (capability) {
+    next.tier = capability.tier
+    next.status = capability.status
+    next.auth = capability.auth
+  }
   if (next.alertsEnabled != null) next.alertsEnabled = next.alertsEnabled !== false
   if (next.alertReservePct != null) next.alertReservePct = clampNumber(next.alertReservePct, 1, 99, DEFAULT_CONFIG.maxxAlertReservePct)
   return next
+}
+
+function normalizeLogLevel(value) {
+  return ['error', 'warn', 'info', 'debug'].includes(value) ? value : DEFAULT_CONFIG.logLevel
+}
+
+function normalizeProxyConfig(value) {
+  const raw = value && typeof value === 'object' ? value : {}
+  let url = String(raw.url || '').trim()
+  if (url) {
+    try {
+      const parsed = new URL(url)
+      if (!['http:', 'https:', 'socks5:'].includes(parsed.protocol)) throw new Error('unsupported proxy protocol')
+      parsed.username = ''
+      parsed.password = ''
+      url = parsed.toString().replace(/\/$/, '')
+    } catch {
+      url = ''
+    }
+  }
+  return {
+    enabled: raw.enabled === true && !!url,
+    url,
+    bypassLoopback: true,
+  }
+}
+
+function normalizePricingSupplementUrl(value) {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && !url.username && !url.password ? url.toString() : ''
+  } catch { return '' }
+}
+
+function normalizeUnknownModelFallback(value) {
+  const raw = value && typeof value === 'object' ? value : {}
+  const models = {}
+  for (const [providerId, model] of Object.entries(raw.models || {})) {
+    const id = canonicalProviderId(providerId)
+    const label = typeof model === 'string' ? model.trim().slice(0, 160) : ''
+    if (DEFAULT_CONFIG.providers[id] && label) models[id] = label
+  }
+  return { enabled: raw.enabled === true, models }
+}
+
+function normalizeProviderOptOuts(value) {
+  return Array.isArray(value)
+    ? [...new Set(value.map(canonicalProviderId).filter((id) => DEFAULT_CONFIG.providers[id]))]
+    : []
+}
+
+function mergeProviderOptOuts(currentConfig = {}, nextConfig = {}, options = {}) {
+  const optOuts = new Set(normalizeProviderOptOuts(currentConfig.providerOptOuts))
+  const currentProviders = currentConfig.providers || {}
+  const nextProviders = nextConfig.providers || {}
+  const firstOnboardingSave = currentConfig.onboardingComplete !== true && nextConfig.onboardingComplete === true
+  const explicitIds = new Set((options.explicitProviderIds || []).map(canonicalProviderId))
+  for (const id of Object.keys(DEFAULT_CONFIG.providers)) {
+    const capability = getProviderCapability(id)
+    if (firstOnboardingSave && !explicitIds.size && (capability?.tier !== 'core' || capability?.status !== 'supported')) continue
+    if (firstOnboardingSave && explicitIds.size && !explicitIds.has(id)) continue
+    const before = currentProviders[id]?.enabled === true
+    const after = nextProviders[id]?.enabled === true
+    if (!firstOnboardingSave && before === after && !explicitIds.has(id)) continue
+    if (after) optOuts.delete(id)
+    else optOuts.add(id)
+  }
+  return normalizeProviderOptOuts([...optOuts])
 }
 
 module.exports = {
@@ -248,5 +360,7 @@ module.exports = {
   saveConfig,
   billingCycle,
   FILE,
-  _private: { normalizeProviders, normalizeTrayMetric, normalizeUsageMeterMode, normalizeTokenHistoryDays, normalizeQuotaWarningThresholds, normalizeProviderConfig, normalizeMissionHistory },
+  DEFAULT_CONFIG,
+  mergeProviderOptOuts,
+  _private: { normalizeProviders, normalizeTrayMetric, normalizeTrayPins, normalizeMetricLayouts, normalizeProviderIds, normalizeUsageMeterMode, normalizeTokenHistoryDays, normalizeQuotaWarningThresholds, normalizeProviderConfig, normalizeMissionHistory, normalizeLogLevel, normalizeProxyConfig, normalizePricingSupplementUrl, normalizeUnknownModelFallback, normalizeProviderOptOuts },
 }

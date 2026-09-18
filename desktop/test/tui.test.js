@@ -196,6 +196,10 @@ test('tui cli parses options and rejects bad ones', () => {
   assert.equal(opts.mode, 'left')
   assert.equal(opts.ascii, true)
   assert.equal(opts.color, false)
+  const limits = tui.parseArgs(['limits', '--provider', 'claude', '--provider', 'codex', '--force-refresh'])
+  assert.equal(limits.limits, true)
+  assert.deepEqual(limits.providerIds, ['claude', 'codex'])
+  assert.equal(limits.forceRefresh, true)
   const withFile = tui.parseArgs(['--file', '/tmp/x.json'])
   assert.equal(withFile.file, '/tmp/x.json')
   assert.equal(withFile.source, 'cache')
@@ -224,6 +228,26 @@ test('tui marks in-process snapshots as read-only', async () => {
   }
   await tui._private.fetchLiveSnapshot(true, aggregate)
   assert.deepEqual(received, { heavy: true, persistHistory: false })
+})
+
+test('tui stable limits command filters providers and returns documented unknown-provider code', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'maxxtoken-limits-'))
+  const file = path.join(tmp, 'widget-snapshot.json')
+  fs.writeFileSync(file, JSON.stringify(fixtureSnapshot()))
+  const io = () => {
+    const out = []
+    const err = []
+    return { out, err, io: { stdout: { write: (text) => out.push(text), isTTY: false }, stderr: { write: (text) => err.push(text) }, stdin: null, env: {} } }
+  }
+  const selected = io()
+  assert.equal(await tui.run(['limits', '--file', file, '--provider', 'claude'], selected.io), 0)
+  const contract = JSON.parse(selected.out.join(''))
+  assert.equal(contract.schemaVersion, '1.0')
+  assert.deepEqual(contract.providers.map((provider) => provider.id), ['claude'])
+
+  const unknown = io()
+  assert.equal(await tui.run(['limits', '--file', file, '--provider', 'unknown'], unknown.io), 3)
+  assert.match(unknown.err.join(''), /Unknown provider/)
 })
 
 test('tui cli --once renders a saved snapshot file and --json echoes it', async () => {

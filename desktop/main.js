@@ -1,10 +1,14 @@
-const { app, Tray, BrowserWindow, Menu, nativeImage, ipcMain, shell, dialog, screen, clipboard, Notification } = require('electron')
+if (process.argv.includes('--cli')) {
+  require('./lib/cli-entry').start(require('electron').app, process.argv.slice(process.argv.indexOf('--cli') + 1))
+  return
+}
+
+const { app, Tray, BrowserWindow, Menu, nativeImage, ipcMain, shell, dialog, screen, clipboard, Notification, globalShortcut, nativeTheme, systemPreferences } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const fs = require('fs')
 const path = require('path')
-const zlib = require('zlib')
 const { fork } = require('child_process')
-const { loadConfig, saveConfig, FILE } = require('./lib/config')
+const { loadConfig, saveConfig, mergeProviderOptOuts, FILE } = require('./lib/config')
 const { generateIdeas, generateBurnIdeas, recordIdeaFeedback } = require('./lib/ideas')
 const { scanBacklogMissions, backlogPrompt } = require('./lib/backlog')
 const { openBuild } = require('./lib/launch')
@@ -18,103 +22,95 @@ const providerLinks = require('./lib/provider-links')
 const { canonicalProviderId } = require('./lib/provider-ids')
 const widgetSnapshot = require('./lib/widget-snapshot')
 const { trayTitleFromSnapshot } = require('./lib/tray-title')
+const { renderTrayBurnbarPng, trayBurnbarStateFromSnapshot, trayPinnedStateFromSnapshot } = require('./lib/tray-burn-icon')
 const { buildUsageExport } = require('./lib/usage-export')
 const { estimateMissionPreflight } = require('./lib/preflight-estimate')
 const { recommendModelFit } = require('./lib/model-fit')
 const { scanContextBloat } = require('./lib/context-bloat-fixer')
 const localApi = require('./lib/local-api')
 const logger = require('./lib/logger')
+const openUsagePreferences = require('./lib/openusage-preferences')
+const updatePreferences = require('./lib/update-preferences')
+const { bindLegacyLayouts } = require('./lib/account-layout-migration')
+const { buildCard } = require('./lib/share-card')
+const paceNotifications = require('./lib/pace-notifications')
+const capturePrivacy = require('./lib/capture-privacy')
+const { createHistorySync } = require('./lib/cloud-history-sync')
+let privacyMonitor = null
+let historySync = null
+let historySyncTimer = null
+let lastLocalSnapshot = null
+let paceNotificationState = undefined
+const shortcutController = openUsagePreferences.createShortcutController(globalShortcut, () => togglePopover())
+
+function systemDisplayPreferences() {
+  return {
+    dark: nativeTheme.shouldUseDarkColors,
+    highContrast: nativeTheme.shouldUseHighContrastColors,
+    reducedTransparency: nativeTheme.prefersReducedTransparency,
+    reducedMotion: systemPreferences.getAnimationSettings().prefersReducedMotion,
+  }
+}
+
+function openUsagePreferencesState() {
+  return { ...loadConfig().openUsagePrefs, shortcutStatus: shortcutController.status(), systemPreferences: systemDisplayPreferences(), capturePrivacyStatus: privacyMonitor?.getStatus(), sync: syncStatus() }
+}
+
+function syncStatus() {
+  const state = historySync?.getStatus() || { enabled: false, supported: process.platform === 'darwin' }
+  return { ...state, status: !state.supported ? 'unsupported' : !state.enabled ? 'off' : state.syncing ? 'syncing' : state.error ? 'error' : state.lastSuccessAt ? 'ok' : 'off', message: state.error || (state.supported ? '' : 'History sync is available on macOS.'), lastSyncedAt: state.lastSuccessAt || null }
+}
+
+function withPeerHistory(snapshot) {
+  if (!snapshot || !historySync) return snapshot
+  const providers = historySync.mergeHistory(snapshot.providers)
+  if (providers === snapshot.providers) return snapshot
+  const tokens = require('./lib/aggregate')._private.tokenTotalsFromProviders(providers)
+  return { ...snapshot, providers, totals: { ...snapshot.totals, tokens } }
+}
+
+function ensureHistorySync() {
+  if (historySync) return historySync
+  const file = path.join(path.dirname(FILE), 'sync-device.json')
+  let id
+  try { id = JSON.parse(fs.readFileSync(file, 'utf8')).id } catch {}
+  if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/.test(id)) {
+    id = require('crypto').randomUUID()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ id }), { mode: 0o600 })
+  }
+  historySync = createHistorySync({
+    deviceId: id,
+    deviceName: `Mac ${id.slice(0, 6)}`,
+    getProviders: () => lastLocalSnapshot?.providers || [],
+    onChange: () => {
+      if (lastLocalSnapshot) lastSnapshot = withPeerHistory(lastLocalSnapshot)
+      sendSnapshotToPopover(lastSnapshot)
+      if (popover && !popover.isDestroyed()) popover.webContents.send('history-sync-status', syncStatus())
+    },
+  })
+  return historySync
+}
+
+async function applyOpenUsagePreferences(preferences) {
+  privacyMonitor?.setEnabled(preferences.capturePrivacy)
+  if ((preferences.sync.enabled && lastLocalSnapshot) || historySync) await ensureHistorySync().setEnabled(preferences.sync.enabled)
+  updateTrayAppearance(lastSnapshot)
+}
+
+function sendSystemPreferences() {
+  if (popover && !popover.isDestroyed()) popover.webContents.send('system-preferences', systemDisplayPreferences())
+}
 logger.init(app.getPath('userData'))
 process.on('uncaughtException', (err) => logger.error('main', 'uncaught exception', { error: err && err.stack ? err.stack : String(err) }))
 process.on('unhandledRejection', (err) => logger.error('main', 'unhandled rejection', { error: err && err.stack ? err.stack : String(err) }))
 
-// Provider id -> the CLI binary that spends that subscription.
-const CLI_FOR = {
-  claude: 'claude',
-  codex: 'codex',
-  cursor: 'cursor',
-  copilot: 'copilot',
-  windsurf: 'windsurf',
-  kiro: 'kiro-cli',
-  opencode: 'opencode',
-  opencodego: 'opencodego',
-  alibaba: 'alibaba-coding-plan',
-  augment: 'auggie',
-  warp: 'warp',
-  elevenlabs: 'elevenlabs',
-  kilo: 'kilo',
-  kimi: 'kimi',
-  moonshot: 'moonshot',
-  kimik2: 'kimik2',
-  doubao: 'doubao',
-  gemini: 'gemini',
-  grok: 'grok',
-  amp: 'amp',
-  codebuff: 'codebuff',
-  commandcode: 'commandcode',
-  crof: 'crof',
-  venice: 'venice',
-  stepfun: 'stepfun',
-  llmproxy: 'llmproxy',
-  ollama: 'ollama',
-  abacus: 'abacusai',
-  factory: 'factory',
-  antigravity: 'antigravity',
-  minimax: 'minimax',
-  manus: 'manus',
-  vertexai: 'vertexai',
-  synthetic: 'synthetic',
-  mimo: 'mimo',
-  bedrock: 'bedrock',
-  zai: 'zai',
-  t3chat: 't3chat',
+const { PROVIDER_CAPABILITIES } = require('./lib/provider-capabilities')
+const CLI_FOR = Object.fromEntries(Object.values(PROVIDER_CAPABILITIES).filter((entry) => entry.discovery.cliBins.length).map((entry) => [entry.id, entry.discovery.cliBins[0]]))
+const KEY_PROVIDERS = new Set(Object.values(PROVIDER_CAPABILITIES).filter((entry) => ['key', 'cookie'].includes(entry.auth)).map((entry) => entry.id))
+function providerCli(provider) {
+  return CLI_FOR[provider?.providerFamily || String(provider?.id || '').split('@')[0]]
 }
-
-// Provider ids that authenticate via a user-pasted secret (API key, cookie header, etc.).
-const KEY_PROVIDERS = new Set([
-  'openai',
-  'azureopenai',
-  'cursor',
-  'copilot',
-  'windsurf',
-  'opencode',
-  'opencodego',
-  'alibaba',
-  'alibabatokenplan',
-  'augment',
-  'warp',
-  'elevenlabs',
-  'kilo',
-  'openrouter',
-  'grok',
-  'groq',
-  'perplexity',
-  'mistral',
-  'codebuff',
-  'commandcode',
-  'crof',
-  'venice',
-  'moonshot',
-  'kimik2',
-  'doubao',
-  'deepseek',
-  'deepgram',
-  'stepfun',
-  'llmproxy',
-  'ollama',
-  'abacus',
-  'amp',
-  'factory',
-  'antigravity',
-  'minimax',
-  'manus',
-  'vertexai',
-  'synthetic',
-  'mimo',
-  'bedrock',
-  'zai',
-  't3chat',
-])
 
 let tray = null
 let popover = null
@@ -126,6 +122,7 @@ let popoverHiddenAt = 0
 const TRAY_REOPEN_GUARD_MS = 250
 let refreshTimer = null
 let heavyRefreshTimer = null
+let nextRefreshAt = null
 let lastSnapshot = null
 let snapshotInFlight = null
 let snapshotInFlightCancel = null
@@ -146,14 +143,6 @@ const HEAVY_REFRESH_INTERVAL_MS = 60 * 60 * 1000
 const OPEN_REFRESH_THROTTLE_MS = 30 * 1000
 const SNAPSHOT_WORKER_TIMEOUT_MS = 90 * 1000
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
-const TRAY_BURN = {
-  lime: '#B6FF3C',
-  coral: '#FF6B5C',
-  empty: '#2E2E2E',
-  white: '#F5F5F5',
-  black: '#000000',
-}
-
 function fullSnapshotFromWidgetCache(cache) {
   if (!cache || typeof cache !== 'object') return null
   const totals = cache.totals || {}
@@ -161,7 +150,7 @@ function fullSnapshotFromWidgetCache(cache) {
   const cachedProviders = (cache.providers || []).map((provider) => ({
     ...provider,
     links: provider.links || providerLinks.linksForProvider(provider.id),
-    monthly: provider.monthly ?? config.providers?.[provider.id]?.monthly ?? 0,
+    monthly: provider.monthly ?? config.providers?.[provider.providerFamily || provider.id.split('@')[0]]?.monthly ?? 0,
     windows: provider.windows?.length ? provider.windows : [provider.primaryWindow, provider.secondaryWindow].filter(Boolean),
     tokenUsage: provider.tokenUsage
       ? {
@@ -218,11 +207,22 @@ function fullSnapshotFromWidgetCache(cache) {
 }
 
 function cachedSnapshot() {
-  return fullSnapshotFromWidgetCache(widgetSnapshot.readWidgetSnapshot())
+  const accounts = require('./lib/provider-accounts')
+  try {
+    const discovered = [...accounts.discoverClaudeAccounts(), ...accounts.discoverCodexAccounts()]
+    return require('./lib/provider-refresh').restoreCachedRefresh(fullSnapshotFromWidgetCache(accounts.guardCachedSnapshotAccounts(widgetSnapshot.readWidgetSnapshot(), discovered)), nextRefreshAt)
+  } catch {
+    return null
+  }
 }
 
 function setTraySnapshot(snap) {
-  lastSnapshot = snap
+  snap = { ...snap, refresh: { ...snap.refresh, inProgress: false, pendingProviderIds: [], nextRefreshAt } }
+  lastLocalSnapshot = snap
+  if (!historySync && loadConfig().openUsagePrefs.sync.enabled) applyOpenUsagePreferences(loadConfig().openUsagePrefs).catch((error) => logger.warn('history-sync', 'initialization failed', { error: error.message }))
+  lastSnapshot = withPeerHistory(snap)
+  const migration = bindLegacyLayouts(loadConfig(), snap?.providers)
+  if (migration.changed) saveConfig(migration.config)
   persistDetectedProviderPlans(snap)
   try {
     widgetSnapshot.saveWidgetSnapshot(snap)
@@ -232,6 +232,19 @@ function setTraySnapshot(snap) {
   updateTrayAppearance(snap, loadConfig())
   maybePostMaxxAlert(snap)
   maybePostQuotaNotifications(snap)
+  maybePostPaceNotifications(snap)
+}
+
+function maybePostPaceNotifications(snap) {
+  const config = loadConfig()
+  const result = paceNotifications.evaluateSnapshotWithState(snap, config.openUsagePrefs, paceNotificationState)
+  paceNotificationState = result.state
+  if (!app.isReady() || !Notification.isSupported() || !config.onboardingComplete) return
+  for (const event of result.events) {
+    const note = new Notification({ title: event.title, body: event.body, silent: true })
+    note.on('click', () => showPopover())
+    note.show()
+  }
 }
 
 function persistDetectedProviderPlans(snap) {
@@ -247,7 +260,8 @@ function persistDetectedProviderPlans(snap) {
   const config = loadConfig()
   let changed = false
   for (const provider of detected) {
-    const id = canonicalProviderId(provider.id)
+    const id = canonicalProviderId(provider.providerFamily || provider.id)
+    if (provider.account && !provider.account.isDefault) continue
     const current = config.providers?.[id]
     const plan = provider.plan.trim()
     if (!current || current.plan === plan) continue
@@ -280,7 +294,15 @@ function persistBrowserKeys(discovered) {
   browserKeysStore.saveAll(merged)
 }
 
-function snapshotViaWorker(heavy = true) {
+function publishSnapshotProgress(snap) {
+  if (!snap) return
+  lastLocalSnapshot = { ...snap, refresh: { ...snap.refresh, nextRefreshAt } }
+  lastSnapshot = withPeerHistory(lastLocalSnapshot)
+  updateTrayAppearance(lastSnapshot)
+  sendSnapshotToPopover(lastSnapshot)
+}
+
+function snapshotViaWorker(heavy = true, options = {}) {
   const requestId = ++workerRequestId
   const start = Date.now()
   logger.info('snapshot-worker', 'starting', { requestId, heavy })
@@ -324,7 +346,12 @@ function snapshotViaWorker(heavy = true) {
       finish(new Error(`snapshot worker timed out after ${SNAPSHOT_WORKER_TIMEOUT_MS}ms`))
     }, SNAPSHOT_WORKER_TIMEOUT_MS)
     child.on('message', (message) => {
-      if (!message || message.type !== 'snapshot-result' || message.requestId !== requestId) return
+      if (settled || !message || message.requestId !== requestId) return
+      if (message.type === 'snapshot-progress') {
+        publishSnapshotProgress(message.snap)
+        return
+      }
+      if (message.type !== 'snapshot-result') return
       persistBrowserKeys(message.browserKeys)
       if (message.ok) finish(null, message.snap)
       else finish(new Error(message.error || 'snapshot worker failed'))
@@ -334,7 +361,10 @@ function snapshotViaWorker(heavy = true) {
       activeSnapshotWorkers.delete(child)
       if (!settled) finish(new Error(`snapshot worker exited early (${signal || code})`))
     })
-    child.send({ type: 'snapshot', requestId, heavy, secrets: allKeys(), browserKeys: getBrowserKeys() })
+    const skipSavedKeys = process.env.MAXXTOKEN_SKIP_SAVED_KEYS === '1'
+    const workerSecrets = skipSavedKeys ? {} : allKeys()
+    const workerBrowserKeys = skipSavedKeys ? {} : getBrowserKeys()
+    child.send({ type: 'snapshot', requestId, heavy, forceRefresh: options.forceRefresh === true, providerIds: options.providerIds, previousSnapshot: lastLocalSnapshot || lastSnapshot, secrets: workerSecrets, browserKeys: workerBrowserKeys })
   })
   promise.cancel = (reason) => {
     if (cancel) cancel(reason)
@@ -387,180 +417,10 @@ function trayIcon() {
   return image
 }
 
-function trayPrimaryWindow(provider) {
-  const windows = Array.isArray(provider?.windows) ? provider.windows : []
-  return windows.find((window) => window?.kind === '5h') || null
-}
-
-function trayPctForProvider(provider, config) {
-  const primary = trayPrimaryWindow(provider) || provider
-  const used = Number(primary?.usedPct ?? provider?.capturedPct)
-  const left = Number(primary === provider ? provider?.remainingPct : primary?.remainingPct)
-  if (config?.usageMeterMode === 'left') {
-    if (Number.isFinite(left)) return Math.max(0, Math.min(100, left))
-    if (Number.isFinite(used)) return Math.max(0, Math.min(100, 100 - used))
-    return 100
-  }
-  if (Number.isFinite(used)) return Math.max(0, Math.min(100, used))
-  if (Number.isFinite(left)) return Math.max(0, Math.min(100, 100 - left))
-  return 0
-}
-
-function trayProviderWarning(provider, config) {
-  const primary = trayPrimaryWindow(provider) || provider
-  const remaining = Number(primary === provider ? provider?.remainingPct : primary?.remainingPct)
-  const used = Number(primary?.usedPct ?? provider?.capturedPct)
-  const reserve = Number(config?.maxxAlertReservePct) || 25
-  if (Number.isFinite(remaining) && remaining <= reserve) return true
-  return Number.isFinite(used) && used >= 100 - reserve
-}
-
-function trayActiveProviders(snap, config) {
-  const providers = Array.isArray(snap?.providers) ? snap.providers : []
-  const byId = new Map(providers.filter((provider) => provider?.id).map((provider) => [provider.id, provider]))
-  const snapshotEnabledIds = Array.isArray(snap?.enabledProviderIds) ? snap.enabledProviderIds : []
-  const configuredIds = [
-    ...(Array.isArray(config?.providerOrder) ? config.providerOrder : []),
-    ...Object.keys(config?.providers || {}),
-  ]
-  const enabledIds = []
-  const seen = new Set()
-  for (const id of [...snapshotEnabledIds, ...configuredIds]) {
-    if (seen.has(id)) continue
-    seen.add(id)
-    if (snapshotEnabledIds.includes(id) || config?.providers?.[id]?.enabled) enabledIds.push(id)
-  }
-  if (enabledIds.length) {
-    return enabledIds.map((id) => byId.get(id) || {
-      id,
-      name: config?.providers?.[id]?.name || id,
-      capturedPct: 0,
-      remainingPct: 100,
-      connected: false,
-    })
-  }
-  const active = providers.filter((provider) => {
-    if (!provider?.id) return false
-    return provider.connected !== false || provider.capturedPct != null || provider.remainingPct != null
-  })
-  return active.length ? active : providers.slice(0, 1)
-}
-
-function pngCrcTable() {
-  const table = []
-  for (let n = 0; n < 256; n++) {
-    let c = n
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
-    table[n] = c >>> 0
-  }
-  return table
-}
-
-const PNG_CRC = pngCrcTable()
-
-function pngCrc(type, data) {
-  let c = 0xffffffff
-  const bytes = Buffer.concat([Buffer.from(type), data])
-  for (const byte of bytes) c = PNG_CRC[(c ^ byte) & 0xff] ^ (c >>> 8)
-  return (c ^ 0xffffffff) >>> 0
-}
-
-function pngChunk(type, data) {
-  const out = Buffer.alloc(12 + data.length)
-  out.writeUInt32BE(data.length, 0)
-  out.write(type, 4, 4, 'ascii')
-  data.copy(out, 8)
-  out.writeUInt32BE(pngCrc(type, data), 8 + data.length)
-  return out
-}
-
-function rgba(hex) {
-  const s = hex.replace('#', '')
-  return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16), 255]
-}
-
-function createPng(width, height, draw) {
-  const pixels = Buffer.alloc(width * height * 4)
-  const set = (x, y, color) => {
-    if (x < 0 || y < 0 || x >= width || y >= height) return
-    const i = (y * width + x) * 4
-    pixels[i] = color[0]
-    pixels[i + 1] = color[1]
-    pixels[i + 2] = color[2]
-    pixels[i + 3] = color[3]
-  }
-  draw(set)
-
-  const raw = Buffer.alloc((width * 4 + 1) * height)
-  for (let y = 0; y < height; y++) {
-    raw[y * (width * 4 + 1)] = 0
-    pixels.copy(raw, y * (width * 4 + 1) + 1, y * width * 4, (y + 1) * width * 4)
-  }
-
-  const ihdr = Buffer.alloc(13)
-  ihdr.writeUInt32BE(width, 0)
-  ihdr.writeUInt32BE(height, 4)
-  ihdr[8] = 8
-  ihdr[9] = 6
-  ihdr[10] = 0
-  ihdr[11] = 0
-  ihdr[12] = 0
-
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    pngChunk('IHDR', ihdr),
-    pngChunk('IDAT', zlib.deflateSync(raw)),
-    pngChunk('IEND', Buffer.alloc(0)),
-  ])
-}
-
-function drawRect(set, scale, x, y, w, h, color) {
-  const xx = Math.round(x * scale)
-  const yy = Math.round(y * scale)
-  const ww = Math.round(w * scale)
-  const hh = Math.round(h * scale)
-  for (let py = yy; py < yy + hh; py++) {
-    for (let px = xx; px < xx + ww; px++) set(px, py, color)
-  }
-}
-
-// Continuous fill bar: empty track + a solid filled portion to pct (no segments).
-function drawTrayBar(set, scale, { x, y, barW, barH, pct, color }) {
-  const empty = rgba(TRAY_BURN.empty)
-  drawRect(set, scale, x, y, barW, barH, empty)
-  const fillW = Math.max(0, Math.min(barW, (Math.max(0, Math.min(100, pct)) / 100) * barW))
-  if (fillW > 0) drawRect(set, scale, x, y, fillW, barH, color)
-}
-
 function trayBurnbarImage(snap, config) {
-  const providers = trayActiveProviders(snap, config).slice(0, 3)
-  const multi = providers.length > 1
-  // Receipt glyph removed — icon is now just the burn bar(s). Continuous fill
-  // (no segmented cells); width matches the prior 4-cell bar so layout is stable.
-  const barW = 22
-  const barH = 4
-  const height = 22
-  const width = barW
   const scale = 2
-  const white = rgba(TRAY_BURN.white)
-
-  const png = createPng(width * scale, height * scale, (set) => {
-    if (multi) {
-      const rowH = barH + 2
-      const startY = Math.round((height - providers.length * rowH) / 2)
-      providers.forEach((item, index) => {
-        const pct = trayPctForProvider(item, config)
-        const color = trayProviderWarning(item, config) ? rgba(TRAY_BURN.coral) : white
-        drawTrayBar(set, scale, { x: 0, y: startY + index * rowH, barW, barH, pct, color })
-      })
-    } else {
-      const provider = providers[0] || {}
-      const pct = trayPctForProvider(provider, config)
-      const color = trayProviderWarning(provider, config) ? rgba(TRAY_BURN.coral) : white
-      const y = Math.round((height - barH) / 2)
-      drawTrayBar(set, scale, { x: 0, y, barW, barH, pct, color })
-    }
-  })
+  const { bars } = trayBurnbarStateFromSnapshot(snap, config)
+  const png = renderTrayBurnbarPng(bars, { scale })
   const image = nativeImage.createFromBuffer(png, { scaleFactor: scale })
   image.setTemplateImage(false)
   return image
@@ -576,10 +436,30 @@ function setTrayStatus(title) {
 
 function updateTrayAppearance(snap, config = loadConfig()) {
   if (!tray) return
+  if (privacyMonitor?.getStatus().concealUsage) {
+    tray.setImage(trayIcon())
+    if (process.platform === 'darwin') tray.setTitle('')
+    tray.setToolTip('MaxxToken — usage hidden during screen capture')
+    return
+  }
+  if (config.trayMetric === 'pins') {
+    const state = trayPinnedStateFromSnapshot(snap, config)
+    tray.setImage(trayIcon())
+    if (process.platform === 'darwin') tray.setTitle(state.title)
+    tray.setToolTip(state.tooltip)
+    if (process.platform === 'darwin' && state.bars.length) {
+      const png = renderTrayBurnbarPng(state.bars, { scale: 2 })
+      const image = nativeImage.createFromBuffer(png, { scaleFactor: 2 })
+      image.setTemplateImage(false)
+      tray.setImage(image)
+    }
+    return
+  }
   if (process.platform === 'darwin' && config.trayMetric === 'burnbar') {
+    const { tooltip } = trayBurnbarStateFromSnapshot(snap, config)
     tray.setImage(trayBurnbarImage(snap, config))
     tray.setTitle('')
-    tray.setToolTip('MaxxToken - BURN bars')
+    tray.setToolTip(tooltip)
     return
   }
   setTrayStatus(trayTitleFromSnapshot(snap, config.trayMetric))
@@ -704,7 +584,7 @@ async function showPopover() {
   refreshOnOpen()
 }
 
-async function readSnapshot({ staleOk = false, force = false, heavy = true, restart = false } = {}) {
+async function readSnapshot({ staleOk = false, force = false, heavy = true, restart = false, providerIds, forceRefresh = false } = {}) {
   if (staleOk && lastSnapshot) {
     return lastSnapshot
   }
@@ -724,13 +604,19 @@ async function readSnapshot({ staleOk = false, force = false, heavy = true, rest
   }
 
   if (!snapshotInFlight) {
-    const worker = snapshotViaWorker(heavy)
+    const worker = snapshotViaWorker(heavy, { providerIds, forceRefresh })
     snapshotInFlightCancel = worker.cancel
     let wrapped = null
     wrapped = worker
       .then((snap) => {
         setTraySnapshot(snap)
-        return snap
+        return lastSnapshot
+      })
+      .catch((error) => {
+        if (snapshotInFlight === wrapped && !error.cancelled) {
+          publishSnapshotProgress(require('./lib/provider-refresh').failPending(lastLocalSnapshot, 'Refresh interrupted. Try again.'))
+        }
+        throw error
       })
       .finally(() => {
         if (snapshotInFlight === wrapped) {
@@ -749,8 +635,8 @@ function sendSnapshotToPopover(snap) {
   }
 }
 
-async function syncSnapshot({ force = true, heavy = true, restart = false } = {}) {
-  const snap = await readSnapshot({ force, heavy, restart })
+async function syncSnapshot({ force = true, heavy = true, restart = false, providerIds, forceRefresh = false } = {}) {
+  const snap = await readSnapshot({ force, heavy, restart, providerIds, forceRefresh })
   updateTray().catch(() => {})
   sendSnapshotToPopover(snap)
   return snap
@@ -848,22 +734,200 @@ ipcMain.handle('export-usage', async () => {
   logger.info('export-usage', 'wrote', { filePath: picked.filePath, providers: payload.providers.length })
   return { ok: true, filePath: picked.filePath, providers: payload.providers.length }
 })
-ipcMain.handle('sync-now', () => syncSnapshot({ force: true, restart: true }))
+ipcMain.handle('sync-now', () => syncSnapshot({ force: true, forceRefresh: true, restart: true }))
 ipcMain.handle('refresh-provider', async (_e, id) => {
   id = canonicalProviderId(id)
   const config = loadConfig()
-  if (!config.providers[id]) throw new Error('Unknown provider')
-  return syncSnapshot({ force: true, restart: true })
+  const instance = lastSnapshot?.providers?.find((provider) => provider.id === id)
+  if (!config.providers[id] && !config.providers[instance?.providerFamily]) throw new Error('Unknown provider')
+  if (snapshotInFlight) await snapshotInFlight.catch(() => {})
+  return syncSnapshot({ force: true, forceRefresh: true, providerIds: [id] })
 })
 ipcMain.handle('get-config', () => loadConfig())
-ipcMain.handle('detect-providers', () => {
+function diagnosticsState() {
+  return require('./lib/diagnostics').describe(loadConfig(), { logPath: logger.getLogPath() })
+}
+function configureRuntime(config) {
+  logger.setLevel(config.logLevel)
+  require('./lib/http').configureProxy(config.proxy, require('./lib/secrets').getProxyCredentials())
+  require('./lib/token-cost').configurePricing({ unknownModelFallback: config.unknownModelFallback, pricingSupplementUrl: config.pricingSupplementUrl })
+}
+function cliState() {
+  const status = require('./lib/cli-installer').getCliStatus({ version: app.getVersion(), executablePath: process.execPath })
+  return { ...status, version: status.installedVersion, compatible: status.healthy }
+}
+ipcMain.handle('get-diagnostics', () => diagnosticsState())
+ipcMain.handle('set-log-level', (_e, level) => {
+  const saved = saveConfig(require('./lib/diagnostics').setLogLevel(loadConfig(), level))
+  logger.setLevel(saved.logLevel)
+  return diagnosticsState()
+})
+ipcMain.handle('copy-log-path', () => {
+  const logPath = logger.getLogPath()
+  if (!logPath) return { ok: false, error: 'Log path is unavailable.' }
+  clipboard.writeText(logPath)
+  return { ok: true }
+})
+ipcMain.handle('reset-settings', async () => {
+  const result = await dialog.showMessageBox(popover, { type: 'question', message: 'Reset MaxxToken settings?', detail: 'This resets appearance, provider selection, alerts, and layouts. Saved credentials and usage history are kept.', buttons: ['Cancel', 'Reset settings'], defaultId: 0, cancelId: 0 })
+  if (result.response !== 1) return { ok: false, cancelled: true }
+  const config = saveConfig(require('./lib/diagnostics').resetSettings(loadConfig()))
+  configureRuntime(config)
+  shortcutController.set(config.openUsagePrefs.globalShortcut)
+  await applyOpenUsagePreferences(config.openUsagePrefs)
+  reapplyUpdatePreferences(config.openUsagePrefs.updates)
+  applyLoginItemSettings(config)
+  syncSnapshot({ force: true, restart: true }).catch(() => {})
+  return { ok: true, config }
+})
+ipcMain.handle('get-cli-status', () => cliState())
+ipcMain.handle('install-cli', () => {
+  if (!app.isPackaged) return { ok: false, error: 'Install the packaged MaxxToken app before installing its CLI.' }
+  try {
+    require('./lib/cli-installer').installCli({ executablePath: process.execPath, version: app.getVersion() })
+    return { ok: true, ...cliState() }
+  } catch (error) { return { ok: false, error: error.message } }
+})
+ipcMain.handle('uninstall-cli', () => {
+  try {
+    require('./lib/cli-installer').uninstallCli()
+    return { ok: true, ...cliState() }
+  } catch (error) { return { ok: false, error: error.message } }
+})
+ipcMain.handle('get-pricing-fallback-options', () => {
+  const pricing = require('./lib/token-cost')
+  return { claude: pricing.pricingFallbackOptions('claude'), codex: pricing.pricingFallbackOptions('codex') }
+})
+ipcMain.handle('get-proxy-settings', () => require('./lib/http').getProxyState())
+ipcMain.handle('set-proxy-settings', (_e, payload) => {
+  const http = require('./lib/http')
+  const proxy = { enabled: payload?.enabled === true, url: http.normalizedProxyUrl(payload?.url) || '', bypassLoopback: true }
+  if (proxy.enabled && !proxy.url) throw new Error('Enter a proxy address before enabling it.')
+  const secretStore = require('./lib/secrets')
+  if (payload?.credentials != null) secretStore.setProxyCredentials(payload.credentials)
+  const config = saveConfig({ ...loadConfig(), proxy })
+  configureRuntime(config)
+  return http.getProxyState()
+})
+ipcMain.handle('get-openusage-prefs', () => openUsagePreferencesState())
+ipcMain.handle('get-system-preferences', () => systemDisplayPreferences())
+ipcMain.handle('set-openusage-prefs', async (_e, patch) => {
   const config = loadConfig()
+  const next = openUsagePreferences.merge(config.openUsagePrefs, patch)
+  if (next.globalShortcut !== config.openUsagePrefs.globalShortcut) {
+    const result = shortcutController.set(next.globalShortcut)
+    if (!result.ok) return { ...openUsagePreferencesState(), error: result.error }
+  }
+  config.openUsagePrefs = next
+  saveConfig(config)
+  if (patch?.updates) {
+    reapplyUpdatePreferences(next.updates)
+  }
+  await applyOpenUsagePreferences(next)
+  sendSystemPreferences()
+  return openUsagePreferencesState()
+})
+ipcMain.handle('get-sync-status', () => syncStatus())
+const activeCreditClaims = new Set()
+function resolveCodexAccount(instanceId) {
+  if (typeof instanceId !== 'string' || !/^codex@[0-9a-f]{12}$/.test(instanceId)) throw new Error('Choose a specific Codex account.')
+  const account = require('./lib/provider-accounts').discoverCodexAccounts().find((item) => item.id === instanceId)
+  if (!account) throw new Error('That Codex login is no longer available. Refresh and try again.')
+  return account
+}
+ipcMain.handle('codex:prepare-reset-credit', async (_e, payload) => {
+  try {
+    const account = resolveCodexAccount(payload?.providerInstanceId)
+    return await require('./lib/adapters/codex').prepareResetCredit(account, payload?.creditId)
+  } catch (error) {
+    return { ok: false, error: error.message || 'Could not check that credit.' }
+  }
+})
+ipcMain.handle('codex:redeem-reset-credit', async (_e, payload) => {
+  const key = payload?.redeemRequestId
+  if (typeof key !== 'string' || !/^[0-9a-f-]{36}$/.test(key)) return { ok: false, error: 'Check the credit before using it.' }
+  if (activeCreditClaims.has(key)) return { ok: false, error: 'This credit is already being processed.' }
+  activeCreditClaims.add(key)
+  try {
+    const account = resolveCodexAccount(payload.providerInstanceId)
+    const confirmation = await dialog.showMessageBox(popover, {
+      type: 'warning', title: 'Use one Codex reset credit?',
+      message: 'Use one reset credit for this Codex account?',
+      detail: `${account.label || 'Selected account'}\nThis consumes the selected credit and resets eligible usage limits. This cannot be undone.`,
+      buttons: ['Cancel', 'Use one credit'], defaultId: 0, cancelId: 0, noLink: true,
+    })
+    if (confirmation.response !== 1) return { ok: false, code: 'cancelled', cancelled: true }
+    const currentAccount = resolveCodexAccount(payload.providerInstanceId)
+    const result = await require('./lib/adapters/codex').redeemResetCredit(currentAccount, { ...payload, confirmed: true }, { skipTokenHistory: true })
+    if (!result.ok) return result
+    try {
+      const refreshStartedAt = Date.now()
+      const snapshot = await syncSnapshot({ force: true, heavy: false, restart: true })
+      const refreshed = snapshot?.providers?.find((provider) => provider.id === currentAccount.id)
+      if (!refreshed?.connected || refreshed.error || refreshed.account?.identityStamp !== currentAccount.identityStamp || !Number.isFinite(Number(refreshed.lastUpdatedAt)) || Number(refreshed.lastUpdatedAt) < refreshStartedAt) {
+        throw new Error('Waiting for refreshed account usage.')
+      }
+      return { ok: true, code: result.code, alreadyRedeemed: result.alreadyRedeemed, snapshot }
+    } catch {
+      return { ok: false, code: 'refresh_pending', redeemed: true, error: 'Credit applied; usage refresh is pending. Retry to check the same credit.' }
+    }
+  } catch (error) {
+    return { ok: false, error: error.message || 'Could not apply that credit. Retry to check the same request.' }
+  } finally {
+    activeCreditClaims.delete(key)
+  }
+})
+ipcMain.handle('get-capture-privacy-status', () => privacyMonitor?.getStatus())
+ipcMain.handle('set-history-sync', async (_e, value) => {
+  const config = loadConfig()
+  config.openUsagePrefs = openUsagePreferences.merge(config.openUsagePrefs, { sync: { enabled: value?.enabled === true } })
+  saveConfig(config)
+  await applyOpenUsagePreferences(config.openUsagePrefs)
+  return syncStatus()
+})
+ipcMain.handle('register-global-shortcut', (_e, accelerator) => {
+  const result = shortcutController.set(accelerator)
+  if (result.ok) {
+    const config = loadConfig()
+    config.openUsagePrefs = openUsagePreferences.merge(config.openUsagePrefs, { globalShortcut: result.accelerator })
+    saveConfig(config)
+  }
+  return result
+})
+let copyingCard = false
+ipcMain.handle('copy-burn-card-png', async (_e, payload) => {
+  if (copyingCard) return { ok: false, error: 'A card is already being copied.' }
+  copyingCard = true
+  let cardWindow
+  try {
+    const appearance = loadConfig().openUsagePrefs.appearance
+    const theme = appearance === 'system' ? (nativeTheme.shouldUseDarkColors ? 'dark' : 'light') : appearance
+    const card = buildCard(lastSnapshot, { ...payload, theme })
+    cardWindow = new BrowserWindow({ width: card.width, height: card.height, show: false, useContentSize: true, frame: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } })
+    await cardWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(card.html)}`)
+    await cardWindow.webContents.executeJavaScript('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))')
+    const contentHeight = await cardWindow.webContents.executeJavaScript('Math.ceil(Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)) + 1')
+    cardWindow.setContentSize(card.width, Math.min(6000, Math.max(card.height, contentHeight)))
+    await cardWindow.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    const image = await cardWindow.webContents.capturePage(undefined, { stayHidden: true })
+    if (image.isEmpty()) throw new Error('The card could not be rendered. Try again.')
+    clipboard.writeImage(image)
+    return { ok: true, width: image.getSize().width, height: image.getSize().height }
+  } catch (error) {
+    return { ok: false, error: error.message || 'Could not copy the image.' }
+  } finally {
+    if (cardWindow && !cardWindow.isDestroyed()) cardWindow.destroy()
+    copyingCard = false
+  }
+})
+function detectedProviders(config = loadConfig()) {
   const detections = providerDetection.detectLocalProviders()
   for (const id of Object.keys(config.providers || {})) {
-    if (hasKey(id)) detections[id] = { detected: true, reason: 'Saved credentials found', evidence: 'secrets' }
+    if (hasKey(id)) detections[id] = { detected: true, reason: 'Saved credentials found', evidence: 'secrets', evidenceType: 'credentials' }
   }
   return detections
-})
+}
+ipcMain.handle('detect-providers', () => detectedProviders())
 ipcMain.handle('get-api-key-state', () => {
   // Renderer shouldn't see the raw key — just whether each provider is wired.
   const state = {}
@@ -913,9 +977,26 @@ ipcMain.handle('set-missions', (_e, enabled) => {
   return cfg
 })
 ipcMain.handle('save-config', async (_e, config) => {
+  const current = loadConfig()
+  config.openUsagePrefs = current.openUsagePrefs
+  config.logLevel = current.logLevel
+  config.proxy = current.proxy
+  config.providerOptOuts = mergeProviderOptOuts(current, config)
   const saved = saveConfig(config)
+  configureRuntime(saved)
   applyLoginItemSettings(saved)
-  return syncSnapshot({ force: true, heavy: false, restart: true })
+  const reprice = JSON.stringify(saved.unknownModelFallback) !== JSON.stringify(current.unknownModelFallback) || saved.pricingSupplementUrl !== current.pricingSupplementUrl
+  return syncSnapshot({ force: true, heavy: reprice, restart: true })
+})
+ipcMain.handle('save-burn-preferences', (_e, preferences) => {
+  const config = loadConfig()
+  config.metricLayouts = preferences?.metricLayouts
+  config.trayPins = preferences?.trayPins
+  config.expandedProviderIds = preferences?.expandedProviderIds
+  if (preferences?.trayMetric === 'pins' || preferences?.trayMetric === 'burnbar') config.trayMetric = preferences.trayMetric
+  const saved = saveConfig(config)
+  updateTrayAppearance(lastSnapshot, saved)
+  return saved
 })
 ipcMain.on('close-popover', () => popover && popover.hide())
 ipcMain.handle('set-popover-mode', (_e, mode) => setPopoverMode(mode))
@@ -959,7 +1040,8 @@ ipcMain.handle('reveal-path', async (_e, targetPath) => {
   }
 })
 ipcMain.handle('open-provider-link', (_e, payload) => {
-  const url = providerLinks.linkForProvider(payload && payload.id, payload && payload.kind)
+  const provider = lastSnapshot?.providers?.find((entry) => entry.id === payload?.id)
+  const url = providerLinks.linkForProvider(provider?.providerFamily || payload?.id, payload?.kind)
   if (!url) throw new Error('Unknown provider link')
   shell.openExternal(url)
   return { ok: true }
@@ -968,11 +1050,11 @@ ipcMain.handle('open-provider-link', (_e, payload) => {
 // Idea Stream: route generation/build to the most-underused subscription.
 function leastUsedProvider(snap) {
   const target = snap.maxxTarget
-  if (target?.id && CLI_FOR[target.id]) return { id: target.id, name: target.name, cli: CLI_FOR[target.id] }
-  const tracked = snap.providers.filter((p) => p.connected && p.capturedPct != null && CLI_FOR[p.id])
+  if (target?.id && providerCli(target)) return { id: target.id, name: target.name, cli: providerCli(target) }
+  const tracked = snap.providers.filter((p) => p.connected && p.capturedPct != null && providerCli(p))
   if (!tracked.length) return { id: 'claude', name: 'Claude', cli: 'claude' }
   const p = tracked.sort((a, b) => a.capturedPct - b.capturedPct)[0]
-  return { id: p.id, name: p.name, cli: CLI_FOR[p.id] }
+  return { id: p.id, name: p.name, cli: providerCli(p) }
 }
 
 // Soonest future reset across a provider's windows (+ its own resetAt), in ms,
@@ -988,14 +1070,14 @@ function providerResetAt(provider, now = Date.now()) {
 
 function mostLeftProvider(snap) {
   const providers = Array.isArray(snap?.providers) ? snap.providers : []
-  const tracked = providers.filter((p) => p.connected && CLI_FOR[p.id])
+  const tracked = providers.filter((p) => p.connected && providerCli(p))
   if (!tracked.length) return { id: 'claude', name: 'Claude', plan: 'Max', cli: 'claude', leftValue: null, usedPct: null }
   const p = tracked
     .map((provider) => ({
       id: provider.id,
       name: provider.name,
       plan: provider.plan || '',
-      cli: CLI_FOR[provider.id],
+      cli: providerCli(provider),
       leftValue: Number(provider.leftValue ?? provider.burnValue ?? provider.remainingValue),
       usedPct: provider.capturedPct == null ? null : Math.round(provider.capturedPct),
       resetAt: providerResetAt(provider),
@@ -1017,14 +1099,14 @@ function projectMissionModels(snap, selectedIds = null) {
   const selected = selectedIds instanceof Set ? selectedIds : null
   const providers = Array.isArray(snap?.providers) ? snap.providers : []
   const rows = providers
-    .filter((p) => p.connected && CLI_FOR[p.id])
+    .filter((p) => p.connected && providerCli(p))
     .map((p) => ({
       id: p.id,
       name: p.name,
       plan: p.plan || '',
-      cli: CLI_FOR[p.id],
+      cli: providerCli(p),
       usedPct: p.capturedPct == null ? null : Math.round(p.capturedPct),
-      supportsPrompt: PROMPT_CAPABLE_CLIS.has(CLI_FOR[p.id]),
+      supportsPrompt: PROMPT_CAPABLE_CLIS.has(providerCli(p)),
     }))
     .sort((a, b) => {
       const ap = Number.isFinite(a.usedPct) ? a.usedPct : 101
@@ -1503,40 +1585,54 @@ function setupLicenseRevalidation() {
   licenseRevalidateTimer = setInterval(kick, 24 * 60 * 60 * 1000)
 }
 
-let updateTimer = null
 let updatePromptShown = false
 // `version` is ALWAYS the running app's version and must never be overwritten by
 // update-feed events (those describe the latest *available* release, surfaced
 // separately as `availableVersion`). Conflating them made "Current version" show
 // the newest published release instead of what's installed.
-let updateState = { status: 'idle', version: app.getVersion(), availableVersion: null }
+const initialUpdatePreferences = updatePreferences.normalize(loadConfig().openUsagePrefs?.updates)
+let updateState = { status: 'idle', version: app.getVersion(), availableVersion: null, ...initialUpdatePreferences }
 
 function emitUpdate(patch) {
   updateState = { ...updateState, ...patch }
   if (popover && !popover.isDestroyed()) popover.webContents.send('update-status', updateState)
 }
 
+const updatePolicy = updatePreferences.createUpdatePolicy({
+  updater: autoUpdater,
+  isPackaged: () => app.isPackaged,
+  getPreferences: () => loadConfig().openUsagePrefs?.updates,
+  onChecking: () => emitUpdate({ status: 'checking', error: null }),
+  onAvailable: (info) => emitUpdate({ status: 'downloading', availableVersion: info?.version || null, percent: 0, error: null }),
+  onNotAvailable: (info) => emitUpdate({ status: 'up-to-date', availableVersion: info?.version || null, percent: 0, error: null }),
+  onError: (error) => emitUpdate({ status: 'error', error: error?.message || String(error) }),
+})
+
+function currentUpdatePreferences() {
+  const preferences = updatePreferences.normalize(loadConfig().openUsagePrefs?.updates)
+  return { ...preferences, manifests: updatePreferences.manifestNames(preferences) }
+}
+
+function reapplyUpdatePreferences(preferences) {
+  const current = updatePreferences.normalize(preferences)
+  emitUpdate({ ...current, status: 'idle', availableVersion: null, percent: 0, error: null })
+  updatePolicy.apply()
+  return current
+}
+
 function setupAutoUpdate() {
   if (!app.isPackaged) return // updates only run in a built, signed app
 
-  autoUpdater.autoDownload = true
-  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
 
-  autoUpdater.on('checking-for-update', () => emitUpdate({ status: 'checking' }))
-  autoUpdater.on('update-available', (info) =>
-    emitUpdate({ status: 'downloading', availableVersion: info && info.version, percent: 0 }),
-  )
-  autoUpdater.on('update-not-available', (info) =>
-    emitUpdate({ status: 'up-to-date', availableVersion: (info && info.version) || null }),
-  )
   autoUpdater.on('download-progress', (p) =>
-    emitUpdate({ status: 'downloading', percent: Math.round(p.percent || 0) }),
+    updatePolicy.hasCurrentCandidate() && emitUpdate({ status: 'downloading', percent: Math.round(p.percent || 0) }),
   )
-  autoUpdater.on('error', (err) =>
-    emitUpdate({ status: 'error', error: err && err.message ? err.message : String(err) }),
-  )
+  autoUpdater.on('error', () => {})
 
   autoUpdater.on('update-downloaded', async (info) => {
+    if (!updatePolicy.markDownloaded(info?.version)) return
     emitUpdate({ status: 'ready', availableVersion: info && info.version })
     if (updatePromptShown) return
     updatePromptShown = true
@@ -1547,32 +1643,39 @@ function setupAutoUpdate() {
       cancelId: 1,
       title: 'MaxxToken update ready',
       message: `Version ${info.version} is ready to install.`,
-      detail: 'Restart MaxxToken to apply it. Otherwise it installs next time you quit.',
+      detail: 'Restart MaxxToken to apply it, or choose Restart & install in Settings later.',
     })
-    if (response === 0) autoUpdater.quitAndInstall()
+    if (response === 0 && updatePolicy.canInstall(info?.version)) autoUpdater.quitAndInstall()
     else updatePromptShown = false
   })
 
-  autoUpdater.checkForUpdates().catch(() => {})
-  updateTimer = setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 6 * 60 * 60 * 1000)
+  reapplyUpdatePreferences(loadConfig().openUsagePrefs?.updates)
 }
 
 ipcMain.handle('get-update-status', () => updateState)
+ipcMain.handle('get-update-preferences', () => currentUpdatePreferences())
+ipcMain.handle('set-update-preferences', (_e, patch) => {
+  const config = loadConfig()
+  const preferences = updatePreferences.merge(config.openUsagePrefs?.updates, patch)
+  config.openUsagePrefs = openUsagePreferences.merge(config.openUsagePrefs, { updates: preferences })
+  saveConfig(config)
+  reapplyUpdatePreferences(preferences)
+  return currentUpdatePreferences()
+})
 ipcMain.handle('check-updates', async () => {
   if (!app.isPackaged) {
     emitUpdate({ status: 'dev', version: app.getVersion() })
     return updateState
   }
-  emitUpdate({ status: 'checking' })
   try {
-    await autoUpdater.checkForUpdates()
+    await updatePolicy.checkManual()
   } catch (err) {
     emitUpdate({ status: 'error', error: err && err.message ? err.message : String(err) })
   }
   return updateState
 })
 ipcMain.handle('install-update', () => {
-  if (updateState.status === 'ready') autoUpdater.quitAndInstall()
+  if (updateState.status === 'ready' && updatePolicy.canInstall(updateState.availableVersion)) autoUpdater.quitAndInstall()
   return updateState
 })
 
@@ -1590,15 +1693,39 @@ if (!gotSingleInstanceLock) {
 
   app.whenReady().then(() => {
     if (app.dock) app.dock.hide()
+    let initialConfig = loadConfig()
+    if (initialConfig.onboardingComplete) {
+      const detectedConfig = providerDetection.applyDetectionsToConfig(initialConfig, detectedProviders(initialConfig))
+      if (Object.keys(detectedConfig.providers).some((id) => detectedConfig.providers[id].enabled !== initialConfig.providers[id]?.enabled)) initialConfig = saveConfig(detectedConfig)
+    }
+    configureRuntime(initialConfig)
     applyLoginItemSettings()
+    nextRefreshAt = Date.now() + REFRESH_INTERVAL_MS
     lastSnapshot = cachedSnapshot()
+    lastLocalSnapshot = lastSnapshot
     if (lastSnapshot) logger.info('snapshot-cache', 'loaded', { generatedAt: lastSnapshot.generatedAt })
     createPopover()
     createTray()
+    privacyMonitor = capturePrivacy.createCapturePrivacyMonitor({
+      resourcesPath: process.resourcesPath,
+      onChange: (state) => {
+        updateTrayAppearance(lastSnapshot)
+        if (popover && !popover.isDestroyed()) popover.webContents.send('capture-privacy-status', state)
+      },
+    })
+    applyOpenUsagePreferences(loadConfig().openUsagePrefs).catch((error) => logger.warn('preferences', 'initialization failed', { error: error.message }))
+    historySyncTimer = setInterval(() => {
+      if (historySync?.getStatus().enabled && lastLocalSnapshot) historySync.syncNow().catch((error) => logger.warn('history-sync', 'refresh failed', { error: error.message }))
+    }, 60000)
+    shortcutController.set(loadConfig().openUsagePrefs.globalShortcut)
+    nativeTheme.on('updated', sendSystemPreferences)
     // Prime token/cost data once on launch, then split cadence: light every
     // 30s (windows + balances), heavy hourly (also scans token-history logs).
     syncSnapshot({ force: true, heavy: true }).catch(() => {})
-    refreshTimer = setInterval(() => syncSnapshot({ force: true, heavy: false }).catch(() => {}), REFRESH_INTERVAL_MS)
+    refreshTimer = setInterval(() => {
+      nextRefreshAt = Date.now() + REFRESH_INTERVAL_MS
+      syncSnapshot({ force: true, heavy: false }).catch(() => {})
+    }, REFRESH_INTERVAL_MS)
     heavyRefreshTimer = setInterval(() => syncSnapshot({ force: true, heavy: true }).catch(() => {}), HEAVY_REFRESH_INTERVAL_MS)
     localApi.startLocalApi({
       port: loadConfig().localApiPort,
@@ -1612,9 +1739,13 @@ if (!gotSingleInstanceLock) {
 }
 
 app.on('before-quit', () => {
+  clearInterval(historySyncTimer)
+  privacyMonitor?.stop()
+  shortcutController.dispose()
+  nativeTheme.removeListener('updated', sendSystemPreferences)
   clearInterval(refreshTimer)
   clearInterval(heavyRefreshTimer)
-  clearInterval(updateTimer)
+  updatePolicy.stop()
   clearInterval(licenseRevalidateTimer)
   localApi.stopLocalApi()
   for (const child of activeSnapshotWorkers) {

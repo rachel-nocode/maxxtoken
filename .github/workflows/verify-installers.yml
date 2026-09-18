@@ -1,0 +1,77 @@
+name: Verify release installers
+run-name: Verify installers ${{ inputs.tag }}
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing draft or published release tag
+        required: true
+        type: string
+permissions:
+  contents: write
+jobs:
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Download and verify Mac app
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${RELEASE_TAG#v}"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern '*-mac.zip' --dir "$RUNNER_TEMP/download"
+          ditto -x -k "$RUNNER_TEMP/download/MaxxToken-$version-universal-mac.zip" "$RUNNER_TEMP/application"
+          app="$RUNNER_TEMP/application/MaxxToken.app"
+          codesign --verify --deep --strict "$app"
+          codesign -dv --verbose=4 "$app" 2>&1 | grep -F 'TeamIdentifier=5U92RP4C5J'
+          spctl --assess --type execute --verbose=2 "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$version"
+          uname -m
+          test "$("$app/Contents/MacOS/MaxxToken" --cli --version)" = "$version"
+          "$app/Contents/Resources/screen-capture-probe"
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Install and launch Windows x64 app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Invalid release tag' }
+          if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { throw 'Requires Windows x64 runner' }
+          $version = $env:RELEASE_TAG.Substring(1)
+          $download = Join-Path $env:RUNNER_TEMP 'download'
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern '*-setup.exe' --dir $download
+          if ($LASTEXITCODE -ne 0) { throw 'Installer download failed' }
+          $installer = Join-Path $download "MaxxToken-$version-setup.exe"
+          $installed = Join-Path $env:RUNNER_TEMP 'MaxxToken'
+          $setup = Start-Process $installer -ArgumentList "/S /D=$installed" -PassThru -Wait
+          if ($setup.ExitCode -ne 0) { throw "Installer exit $($setup.ExitCode)" }
+          $exe = Join-Path $installed 'MaxxToken.exe'
+          if (-not (Test-Path $exe)) { throw 'Application missing after install' }
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) { throw 'Payload is not x64' }
+          Get-Process MaxxToken -ErrorAction SilentlyContinue | Stop-Process -Force
+          $stdout = Join-Path $env:RUNNER_TEMP 'version.txt'
+          $stderr = Join-Path $env:RUNNER_TEMP 'version-errors.txt'
+          $cli = Start-Process $exe -ArgumentList '--cli --version' -PassThru -Wait -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if ($cli.ExitCode -ne 0) { throw "CLI exit $($cli.ExitCode)" }
+          if ((Get-Content $stdout -Raw).Trim() -ne $version) { throw 'Wrong installed version' }
+          $desktop = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 12
+          $desktop.Refresh()
+          if ($desktop.HasExited) { throw 'Desktop app exited during launch' }
+          Write-Output "Installed and launched MaxxToken $version on Windows x64"
+          Get-Process MaxxToken -ErrorAction SilentlyContinue | Stop-Process -Force
